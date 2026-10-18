@@ -883,6 +883,12 @@ export function labelPoints(features, view, maplibregl, options = {}) {
       : { type: "Point", coordinates: lngLatOf(point) };
     out.push({ type: "Feature", id: state.ids.get(key), properties, geometry });
   }
+  // Ids only of the labels placed now (they were kept for every feature
+  // ever labelled: browsing a city grew the map without end). A label that
+  // comes back gets a new id, which the source takes as added.
+  if (state.ids.size > points.size) {
+    for (const key of state.ids.keys()) if (!points.has(key)) state.ids.delete(key);
+  }
   return { type: "FeatureCollection", features: out, boxes };
 }
 
