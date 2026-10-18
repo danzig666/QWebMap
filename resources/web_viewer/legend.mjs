@@ -148,6 +148,17 @@ export class Legend {
         list.append(item);
       }
       block.append(list);
+      // A live WMS layer: the server's own legend image.
+      if (typeof layer.legendUrl === "string" && layer.legendUrl.startsWith("https://")) {
+        const img = document.createElement("img");
+        img.className = "q2vt-legend-wms";
+        img.alt = "";
+        img.loading = "lazy";
+        img.referrerPolicy = "strict-origin-when-cross-origin";
+        img.addEventListener("error", () => img.remove());
+        img.src = layer.legendUrl;
+        block.append(img);
+      }
       node.append(block);
       shown++;
     }

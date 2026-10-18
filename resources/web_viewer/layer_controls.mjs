@@ -149,6 +149,15 @@ export class LayerControls {
         });
         actions.push(more);
       }
+      // "Zoom to layer" (an option of the map): the layer's extent within the map's.
+      if (this.manifest.interaction?.zoomToLayer && Array.isArray(layer.bounds) && layer.bounds.length === 4) {
+        const zoom = button("q2vt-icon-btn q2vt-zoom-layer", `${t("layer.zoomTo")}: ${layer.title}`, "zoomin");
+        zoom.addEventListener("click", () => {
+          const [w, s, e, n] = layer.bounds;
+          this.map.fitBounds([[w, s], [e, n]], { padding: 40, maxZoom: Math.min(18, this.map.getMaxZoom()) });
+        });
+        actions.unshift(zoom);
+      }
       const expander = rules.length > 1 ? this.expander(item, layer.title, false) : null;
       const row = this.row("layers", layer.id, layer.title, { swatch, locked, kind: "layer", expander, actions });
       item.append(row);

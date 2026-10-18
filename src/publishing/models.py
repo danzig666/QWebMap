@@ -112,6 +112,10 @@ class LayerConfig:
     # Without a maximum zoom: as sharp as the image (its own resolution sets
     # the zoom); False: the publication's maximum tile zoom.
     raster_match_native: bool = True
+    # A web tile (XYZ) or WMS layer: the visitor's browser loads it live from
+    # its server (https, no login) instead of QGIS rendering it into the
+    # release; a WMS layer then answers clicks (GetFeatureInfo).
+    raster_live: bool = True
 
 
 @dataclass
@@ -293,6 +297,8 @@ class InteractionConfig:
     # drawing (points, lines, areas, text) kept in the shared link, exported
     # as GeoJSON / KML; nothing is stored on the site.
     drawing: bool = False
+    # a button in each layer's row that zooms to the layer's extent;
+    zoom_to_layer: bool = False
     # Google Street View in the viewer (a tap on the map opens the panorama
     # looking toward the tapped point). The key is public in the page:
     # restrict it to the site's address (HTTP referrer) in Google Cloud.
@@ -445,6 +451,7 @@ class ExportBundle:
     crs: Optional[Dict[str, Any]] = None                     # project CRS (coordinate readout)
     warnings: List[str] = field(default_factory=list)
     raster_archives: List[dict] = field(default_factory=list)  # {layerId, path, ...} (private paths)
+    live_rasters: List[dict] = field(default_factory=list)  # {layerId, sourceId, styleLayerId, source, paint}
     basemap: Optional[dict] = None                            # extract + style templates (private)
     themes: List[dict] = field(default_factory=list)          # viewer presets
 

@@ -244,6 +244,15 @@ it. Python's `python -m http.server`, for example, does not support ranges; use 
 *Preview* to look at an export locally. (The `.pack` files are read even from a server that
 sometimes sends a whole file, but the map archive is not.)
 
+## Live WMS and web tile layers
+
+Raster layers loaded live (4.50.0) are not part of the release: the visitor's browser loads
+them from their own server, so that server must be reachable over `https`, must allow other
+sites' pages to use its images (`Access-Control-Allow-Origin`, checked while exporting) and must
+keep working for as long as the map is online. The page's Content-Security-Policy allows exactly
+those servers. A WMS server that does not allow reading its GetFeatureInfo answers from another
+site still works: the popup then offers a link that opens the answer in a new tab.
+
 ## Troubleshooting (viewer error codes)
 
 | Code | Meaning |

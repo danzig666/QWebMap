@@ -49,6 +49,17 @@ function validateManifest(manifest) {
     if (!["pmtiles", "xyz"].includes(source.kind)) throw new ViewerError("Q2VT_PUB_MANIFEST", `source kind ${source.kind}`);
     checkRelative(source.href, "source");
   }
+  // Raster layers loaded live from their own tile / WMS server (https only).
+  if (manifest.liveRasters !== undefined && !Array.isArray(manifest.liveRasters)) {
+    throw new ViewerError("Q2VT_PUB_MANIFEST", "liveRasters");
+  }
+  for (const live of manifest.liveRasters || []) {
+    if (!String(live.id).startsWith("q2vt_raster_") || !["xyz", "wms"].includes(live.kind)
+        || !Array.isArray(live.tiles) || !live.tiles.length
+        || !live.tiles.every((u) => typeof u === "string" && u.startsWith("https://"))) {
+      throw new ViewerError("Q2VT_PUB_MANIFEST", `live raster ${live.id}`);
+    }
+  }
   checkRelative(manifest.style, "style");
   for (const key of ["groups", "layers", "rules", "components"]) {
     if (!Array.isArray(manifest[key])) throw new ViewerError("Q2VT_PUB_MANIFEST", `${key} missing`);

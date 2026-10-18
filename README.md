@@ -274,6 +274,16 @@ into a public, self-contained web map. The window title shows the plugin version
   *Image format* (WebP by default, falling back to PNG if QGIS cannot write WebP; PNG or JPEG),
   *Sharpest detail* (like the image, like the map, or a pixel size in metres, with an estimate),
   *Shown from zoom*, quality and opacity.
+- **Live web tile and WMS layers**: an XYZ tile layer or a WMS layer of the project is loaded by
+  the visitor's browser from its own server instead (*Load live from its server*, on by default
+  for such layers): nothing is rendered into the release, and the map follows the service. It
+  needs an `https` address without a QGIS login, and a server that allows other sites' pages to
+  use its images (CORS; checked while exporting, otherwise the layer is rendered). Opacity,
+  saturation, contrast and brightness come from QGIS. A click on a live WMS layer shows what the
+  server knows there (GetFeatureInfo), and its legend comes from the server. WMTS layers are
+  rendered.
+- **Zoom to layer** (*Interaction* tab, off by default): a button in the web map's layer list
+  zooms to the layer's features within the map's extent.
 - **OpenStreetMap vector basemap** (*Basemap* tab, Protomaps): copied into the release in the
   styles you tick (light, dark, white, grayscale, black), from the latest Protomaps daily build
   (internet needed while exporting) or a PMTiles file, with its most detailed zoom, the area
@@ -502,7 +512,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.49.1**. Newest first:
+This README describes QWebMap **4.50.0**. Newest first:
+
+**4.50.0** — live WMS and web tile layers, zoom to layer
+- XYZ tile and WMS layers of the project are loaded live from their own server in the web map (https, no login, CORS allowed; otherwise rendered as before); a click on a WMS layer shows its GetFeatureInfo answer, and its legend comes from the server. Optional *Zoom-to-layer buttons* in the layer list (off by default).
 
 **4.49.1** — sharp lines on scaled screens again
 - The web map is drawn at the screen's own pixel ratio again (up to 2): at 1x, a screen scaled 125 % stretched it and blurred the lines.

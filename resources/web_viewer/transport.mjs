@@ -118,6 +118,7 @@ export function bindStyle(style, manifest, manifestUrl, styleUrl) {
   }
   // Raster sources only for the QGIS raster layers' own image archives.
   const rasterIds = new Set(manifest.sources.filter((s) => s.role === "raster").map((s) => s.id));
+  for (const live of manifest.liveRasters || []) rasterIds.add(live.id);
   for (const [id, source] of Object.entries(style.sources)) {
     if (source.type === "raster" && rasterIds.has(id)) continue;
     if (NON_VECTOR.has(source.type) || source.type === "geojson") {
@@ -143,6 +144,20 @@ export function bindStyle(style, manifest, manifestUrl, styleUrl) {
     source.minzoom = binding.minTileZoom;
     source.maxzoom = binding.maxTileZoom;
     if (binding.bounds) source.bounds = binding.bounds;
+  }
+  // Raster layers loaded live from their own tile / WMS server.
+  for (const live of manifest.liveRasters || []) {
+    const source = style.sources[live.id];
+    if (!source || source.type !== "raster") {
+      throw new ViewerError("Q2VT_PUB_STYLE", `The style has no raster source "${live.id}".`);
+    }
+    delete source.url;
+    source.tiles = live.tiles.filter((u) => typeof u === "string" && u.startsWith("https://"));
+    source.scheme = live.scheme === "tms" ? "tms" : "xyz";
+    source.tileSize = live.tileSize || 256;
+    source.minzoom = live.minTileZoom;
+    source.maxzoom = live.maxTileZoom;
+    if (live.bounds) source.bounds = live.bounds;
   }
   if (typeof style.sprite === "string" && !/^[a-z]+:/i.test(style.sprite)) {
     style.sprite = resolveUrl(checkRelative(style.sprite, "sprite"), styleUrl);

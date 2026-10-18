@@ -200,9 +200,33 @@ def _set_zoom_range(entry: dict, layer, config) -> None:
         entry["maxZoom"] = _zoom_of_scale(high)  # zoomed-in limit
 
 
+def layer_bounds(layer, extent_3857: Optional[QgsRectangle]) -> Optional[List[float]]:
+    """[west, south, east, north] of a layer's extent within the export
+    extent (the viewer's "zoom to layer"); None when they do not meet."""
+    try:
+        extent = layer.extent()
+        if extent is None or extent.isEmpty() or not extent.isFinite():
+            return None
+        box = QgsCoordinateTransform(layer.crs(), QgsCoordinateReferenceSystem("EPSG:3857"),
+                                     QgsProject.instance()).transformBoundingBox(extent)
+    except Exception:  # pylint: disable=broad-except
+        return None
+    if extent_3857 is not None and not extent_3857.isEmpty():
+        box = box.intersect(extent_3857)
+        if box.isEmpty():
+            return None
+    lonlat = QgsCoordinateTransform(QgsCoordinateReferenceSystem("EPSG:3857"),
+                                    QgsCoordinateReferenceSystem("EPSG:4326"),
+                                    QgsProject.instance()).transformBoundingBox(box)
+    return [round(lonlat.xMinimum(), 7), round(lonlat.yMinimum(), 7),
+            round(lonlat.xMaximum(), 7), round(lonlat.yMaximum(), 7)]
+
+
 def logical_model(project: QgsProject, profile: PublicationProfile, rules, style: dict,
-                  swatches: Optional[Dict[str, str]] = None) -> dict:
-    """groups / layers / rules / components of the manifest."""
+                  swatches: Optional[Dict[str, str]] = None,
+                  extent_3857: Optional[QgsRectangle] = None) -> dict:
+    """groups / layers / rules / components of the manifest. ``extent_3857``
+    with the viewer's "zoom to layer": each layer's bounds within it."""
     swatches = swatches or {}
     paths = _tree_paths(project)
     included = [c for c in profile.layers if c.included and project.mapLayer(c.layer_id)]
@@ -236,6 +260,10 @@ def logical_model(project: QgsProject, profile: PublicationProfile, rules, style
         path = paths.get(layer.id(), ((), 0))[0]
         if isinstance(layer, QgsRasterLayer):
             layers.append(_raster_entry(layer, config, lid, path, paths, components))
+            if profile.interaction.zoom_to_layer:
+                bounds = layer_bounds(layer, extent_3857)
+                if bounds:
+                    layers[-1]["bounds"] = bounds
             continue
         entry = {
             "id": lid, "groupId": group_logical_id(path) if path else None,
@@ -254,6 +282,10 @@ def logical_model(project: QgsProject, profile: PublicationProfile, rules, style
             "deepLinks": bool(config.deep_links), "ruleIds": [], "componentIds": [],
             "swatch": swatches.get(lid),
         }
+        if profile.interaction.zoom_to_layer:
+            bounds = layer_bounds(layer, extent_3857)
+            if bounds:
+                entry["bounds"] = bounds
         _set_zoom_range(entry, layer, config)
         renderer = layer.renderer()
         try:

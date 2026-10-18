@@ -176,5 +176,8 @@
   "error.addon": "An add-on of this map could not be loaded.",
   "app.locate": "Show my location",
   "app.locateOutside": "Your location is outside this map's area.",
-  "app.locateFailed": "Your location could not be determined."
+  "app.locateFailed": "Your location could not be determined.",
+  "wms.open": "Open the server's answer",
+  "wms.blocked": "The map server does not let this page read its answer.",
+  "layer.zoomTo": "Zoom to layer"
 }

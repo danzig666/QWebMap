@@ -20,7 +20,7 @@ import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .disclosure import assert_disclosure
 from .errors import Cancelled, PublishingError
@@ -329,6 +329,7 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
     os.makedirs(work_dir, exist_ok=True)
     if _local_root(os.path.abspath(base_dir or profile.output.local_directory)):
         progress.info(f"Network output folder: the work files are on this computer, in {work_dir}")
+    live_rasters, raster_configs = _live_rasters(project, raster_configs, extent_3857, progress)
     raster_plans = _plan_rasters(project, profile, raster_configs, extent_3857)
     if staged is not None:
         staged.weigh(_stage_weights(profile, raster_plans))
@@ -386,7 +387,7 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         stage("LEGEND")
         legend_dir = os.path.join(exporter.output_path, "legend")
         swatches = qgis_model.render_swatches(project, vector_profile, legend_dir)
-        model = qgis_model.logical_model(project, profile, exporter.rules, bundle.style, swatches)
+        model = qgis_model.logical_model(project, profile, exporter.rules, bundle.style, swatches, extent_3857)
         bundle.groups, bundle.layers = model["groups"], model["layers"]
         bundle.rules, bundle.components = model["rules"], model["components"]
         _filter_fields(bundle.layers, profile, records.filter_domains)
@@ -459,11 +460,12 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         split = 0.6 if raster_configs and profile.terrain.layer_id else (1.0 if raster_configs else 0.0)
         bundle.raster_archives = _render_rasters(project, profile, raster_configs, raster_plans,
                                                  work_dir, progress.sub(0.0, split), bundle.warnings, cache)
+        bundle.live_rasters = live_rasters
         bundle.warnings.extend(_vector_blend_warnings(project, profile))
         bundle.terrain = _render_terrain(project, profile, extent_3857, work_dir, progress.sub(split, 1.0),
                                          bundle.warnings)
         progress.check()
-        published = {r["layerId"] for r in bundle.raster_archives}
+        published = {r["layerId"] for r in bundle.raster_archives + bundle.live_rasters}
         dropped = {c["layerId"] for c in bundle.components if c["role"] == "raster"} - published
         if dropped:  # raster layers that draw nothing in the extent
             bundle.layers = [layer for layer in bundle.layers if layer["id"] not in dropped]
@@ -611,6 +613,47 @@ def flatten_release(release, publication_dir: str, progress=None) -> None:
     release.release_dir = publication_dir
     release.entry = entry
     release.publication_dir = publication_dir
+
+
+def _live_rasters(project, configs, extent_3857, progress) -> Tuple[List[dict], list]:
+    """([live raster], [configs still rendered]): web tile (XYZ) and WMS
+    layers the visitor's browser loads from their own server (live_raster)."""
+    from . import live_raster  # pylint: disable=import-outside-toplevel
+    from .provenance import layer_logical_id  # pylint: disable=import-outside-toplevel
+    from .raster_tiles import raster_source_id, raster_style_layer_id  # pylint: disable=import-outside-toplevel
+    live, rendered = [], []
+    bounds = _extent_lonlat(extent_3857)
+    for config in configs:
+        layer = project.mapLayer(config.layer_id)
+        source, why = live_raster.live_source(layer) if config.raster_live else (None, "")
+        if source is None:
+            if config.raster_live and layer.providerType() == "wms":
+                progress.info(f'Raster layer "{layer.name()}" is rendered into the release: {why}.')
+            rendered.append(config)
+            continue
+        if bounds and live_raster.cors_allowed(source, ((bounds[0] + bounds[2]) / 2,
+                                                        (bounds[1] + bounds[3]) / 2)) is False:
+            progress.info(f'Raster layer "{layer.name()}" is rendered into the release: its server does '
+                          "not let other sites' pages use its images (CORS).")
+            rendered.append(config)
+            continue
+        lid = layer_logical_id(layer.id())
+        progress.info(f'Raster layer "{layer.name()}": loaded live from its server ({source["kind"].upper()}).')
+        live.append({"layerId": lid, "sourceId": raster_source_id(lid), "styleLayerId": raster_style_layer_id(lid),
+                     "source": source, "paint": live_raster.paint(layer), "bounds": bounds})
+    return live, rendered
+
+
+def _extent_lonlat(extent_3857) -> Optional[List[float]]:
+    """[west, south, east, north] of the export extent."""
+    if extent_3857 is None or extent_3857.isEmpty():
+        return None
+    from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform,  # pylint: disable=import-outside-toplevel
+                           QgsProject)
+    box = QgsCoordinateTransform(QgsCoordinateReferenceSystem("EPSG:3857"),
+                                 QgsCoordinateReferenceSystem("EPSG:4326"),
+                                 QgsProject.instance()).transformBoundingBox(extent_3857)
+    return [round(box.xMinimum(), 7), round(box.yMinimum(), 7), round(box.xMaximum(), 7), round(box.yMaximum(), 7)]
 
 
 def _plan_rasters(project, profile, configs, extent_3857) -> Dict[str, object]:

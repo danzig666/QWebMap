@@ -344,20 +344,23 @@ def validate_release_dir(staging: str, style: dict, archive_layers: Optional[Ite
                          secrets: Iterable[str] = (), canaries: Iterable[str] = (),
                          pmtiles_sample: int = 64,
                          raster_sources: Optional[Dict[str, str]] = None,
-                         map_sha256: Optional[str] = None) -> List[str]:
+                         map_sha256: Optional[str] = None,
+                         live_sources: Iterable[str] = ()) -> List[str]:
     """Raise PublishingError for an invalid release folder; return warnings.
 
     ``raster_sources``: {source id: release path} of the QGIS raster
     layers' image archives (the only raster sources a style may have).
     ``map_sha256``: of ``data/map.pmtiles`` as built and validated (its
-    tiles checked then): the same file is not decoded again."""
+    tiles checked then): the same file is not decoded again.
+    ``live_sources``: raster sources the viewer binds to a live tile or WMS
+    server (manifest ``liveRasters``); no URL in the style either."""
     warnings = []
     files = walk_files(staging)
     for rel in files:
         safe_relative_path(rel)
         check_public_file(rel)
     raster_sources = raster_sources or {}
-    assert_vector_only(style, raster_sources=set(raster_sources))
+    assert_vector_only(style, raster_sources=set(raster_sources) | set(live_sources))
     for source_id, href in raster_sources.items():
         if href not in files:
             raise PublishingError("Q2VT_PUB_BUNDLE_INVALID", f"{href} missing")
@@ -454,6 +457,7 @@ def build_release(bundle: ExportBundle, profile: PublicationProfile, publication
                 staging, style, archive.vector_layers if archive else None, secrets, canaries,
                 raster_sources={s["id"]: s["href"] for s in manifest["sources"]
                                 if s.get("role") == "raster"},
+                live_sources=[s["id"] for s in manifest.get("liveRasters") or []],
                 map_sha256=archive.sha256 if transport == "pmtiles" and archive is not None
                 and archive.payload_checked else None)
             for validator in extra_validators or []:  # e.g. field disclosure
@@ -532,6 +536,7 @@ def _assemble(bundle, profile, staging, release_id, transport, progress, extra_f
     # No blank map while a zoom's tiles load (after the check: it changes ranges on purpose).
     bridge_zoom_bands(style)
     raster_sources = _add_raster_layers(style, bundle, staging, progress)
+    live_rasters = _add_live_rasters(style, bundle)
     basemap_manifest = _add_basemap(style, bundle, profile, staging)
     write_json_atomic(os.path.join(staging, "style.json"), style)
     # 3. Styling assets.
@@ -547,7 +552,8 @@ def _assemble(bundle, profile, staging, release_id, transport, progress, extra_f
     for name, src in LICENSES.items():
         _copy(src, os.path.join(staging, "licenses", name))
     from .xyz import origins as xyz_origins  # pylint: disable=import-outside-toplevel
-    web_tiles = xyz_origins(url for entry in (basemap_manifest or {}).get("xyz", []) for url in entry["tiles"])
+    web_tiles = xyz_origins([url for entry in (basemap_manifest or {}).get("xyz", []) for url in entry["tiles"]]
+                            + [url for entry in live_rasters for url in entry["tiles"]])
     write_text_atomic(os.path.join(staging, "index.html"),
                       _render_index(os.path.join(WEB_VIEWER, "index.html"), profile.title,
                                     connect_origins, web_tiles,
@@ -573,6 +579,8 @@ def _assemble(bundle, profile, staging, release_id, transport, progress, extra_f
     manifest["addons"] = sorted(f"assets/{rel}" for rel in _viewer_files()
                                 if re.fullmatch(r"addons/[a-z0-9_-]+\.mjs", rel))
     manifest["sources"].extend(raster_sources)
+    if live_rasters:
+        manifest["liveRasters"] = live_rasters
     manifest["basemap"] = basemap_manifest
     manifest["logo"] = manifest_logo
     for builder in extra_builders:
@@ -678,6 +686,65 @@ def _add_raster_layers(style: dict, bundle: ExportBundle, staging: str, progress
                         "sha256": d.sha256, "sizeBytes": d.size_bytes, "layerId": raster["layerId"]})
         progress.check()
     return sources
+
+
+def _raster_position(style: dict, owner: dict, rank: int) -> int:
+    """Index of a raster layer of tree position ``rank`` in the style: under
+    every layer above it in the tree and under all labels."""
+    for index, existing in enumerate(style["layers"]):
+        above = owner.get(existing.get("id"))
+        if above and (above[0] < rank or above[1] in ("label", "callout")):
+            return index
+    return len(style["layers"])
+
+
+def _add_live_rasters(style: dict, bundle: ExportBundle) -> List[dict]:
+    """Draw the live raster layers (web tiles, WMS: live_raster) in the
+    style at their layer-tree position, their source without an address
+    (the viewer binds it from the manifest's ``liveRasters``). Returns
+    those entries."""
+    if not bundle.live_rasters:
+        return []
+    order = {layer["id"]: layer.get("order", 0) for layer in bundle.layers}
+    owner = {}
+    for component in bundle.components:
+        for style_id in component["styleLayerIds"]:
+            owner[style_id] = (order.get(component["layerId"], 0), component["role"])
+    for layer in style["layers"]:  # the rendered raster layers already placed
+        rid = (layer.get("metadata") or {}).get("q2vt:raster-layer")
+        if rid:
+            owner[layer["id"]] = (order.get(rid, 0), "raster")
+    entries = {layer["id"]: layer for layer in bundle.layers}
+    out = []
+    for live in sorted(bundle.live_rasters, key=lambda r: -order.get(r["layerId"], 0)):
+        source, sid, rank = live["source"], live["sourceId"], order.get(live["layerId"], 0)
+        style["sources"][sid] = {"type": "raster", "tileSize": 256, "minzoom": source["minzoom"],
+                                 "maxzoom": source["maxzoom"]}
+        if live.get("bounds"):
+            style["sources"][sid]["bounds"] = live["bounds"]
+        layer_def = {"id": live["styleLayerId"], "type": "raster", "source": sid,
+                     "paint": {**live.get("paint", {}), "raster-fade-duration": 150},
+                     "metadata": {"q2vt:raster-layer": live["layerId"], "q2vt:live": source["kind"]}}
+        entry = entries.get(live["layerId"], {})
+        if entry.get("minZoom") is not None:
+            layer_def["minzoom"] = entry["minZoom"]
+        if entry.get("maxZoom") is not None:
+            layer_def["maxzoom"] = entry["maxZoom"]
+        style["layers"].insert(_raster_position(style, owner, rank), layer_def)
+        owner[layer_def["id"]] = (rank, "raster")
+        record = {"id": sid, "layerId": live["layerId"], "kind": source["kind"], "tiles": source["tiles"],
+                  "scheme": source.get("scheme", "xyz"), "tileType": source.get("format", "png"),
+                  "tileSize": 256, "minTileZoom": source["minzoom"], "maxTileZoom": source["maxzoom"]}
+        if live.get("bounds"):
+            record["bounds"] = live["bounds"]
+        if source.get("wms"):
+            record["wms"] = source["wms"]
+            if entry is not None and source["wms"].get("legend"):
+                entry["legendUrl"] = source["wms"]["legend"]
+        if entry is not None:
+            entry["live"] = source["kind"]
+        out.append(record)
+    return out
 
 
 def _collect_fonts(value, out: dict) -> None:

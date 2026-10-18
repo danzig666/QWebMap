@@ -39,6 +39,7 @@ const PATHS = {
   cube: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
   mountain: '<path d="M2.5 19.5l7-12 4 6.5 2.5-3.5 5.5 9z"/>',
   chart: '<path d="M4 19.5h16"/><path d="M4 16l4.5-5 3.5 3 4-6 4 4"/>',
+  zoomin: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8 11h6M11 8v6"/>',
   inset: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><rect x="11.5" y="11" width="6.5" height="6" rx="1"/>',
   doc: '<path d="M7 3.5h7l4 4v13H7z"/><path d="M14 3.5v4h4M9.5 12h6M9.5 15.5h6"/>',
 };
