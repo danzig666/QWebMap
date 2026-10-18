@@ -58,9 +58,7 @@ def test_hairlines_are_half_a_device_pixel_on_every_screen(site, tmp_path, monke
         curve = json.loads(width)
         assert device == ratio
         assert curve[:3] == ["interpolate", ["linear"], ["zoom"]]
-        # Half of one of the map's pixels: low memory (the default) draws
-        # one device pixel per CSS pixel on every screen.
-        assert curve[4] == pytest.approx(0.35) and curve[6] == pytest.approx(0.6)
+        assert curve[4] == pytest.approx(0.35 / ratio) and curve[6] == pytest.approx(0.6 / ratio)
     # Still drawn: dark pixels where the outlines are (no fills).
     image = Image.open(shot).convert("L")
     assert image.size[0] == 1200 * ratio
@@ -80,22 +78,23 @@ def test_low_memory_is_the_default(site, tmp_path):
 
 
 def test_low_memory_caps_the_pixel_ratio(site, tmp_path, monkeypatch):
-    """A 3x screen: the map draws at 1 device pixel per CSS pixel (its
-    drawing buffer 1/9 of the screen's) and the hairlines follow the map's
-    ratio, again when that ratio changes."""
+    """A 3x screen: the map draws at 2 device pixels per CSS pixel (its
+    drawing buffer 4/9 of the screen's) and the hairlines follow the map's
+    ratio (half of one of its pixels), again when that ratio changes. Below
+    2 the screen's own ratio: a 1x canvas stretched by 1.25 blurred lines."""
     sys.path.insert(0, HERE)
     from test_web_viewer_views import _run  # pylint: disable=import-error
     monkeypatch.setenv("Q2VT_DSF", "3")
     out = _run(site, [{"eval": "const m = q2vtViewer.map; return [m.getPixelRatio(), m.getCanvas().width];"},
                       {"eval": WIDTHS},
-                      {"eval": "q2vtViewer.map.setPixelRatio(2); return q2vtViewer.map.getCanvas().width;"},
+                      {"eval": "q2vtViewer.map.setPixelRatio(1); return q2vtViewer.map.getCanvas().width;"},
                       {"eval": WIDTHS}], tmp_path)
-    (ratio, canvas), before, canvas_2x, after = out
-    assert ratio == 1 and canvas == 1200 and canvas_2x == 1200 * 2
+    (ratio, canvas), before, canvas_1x, after = out
+    assert ratio == 2 and canvas == 1200 * 2 and canvas_1x == 1200
     assert before and len(before) == len(after)
     for (width, device), (later, _) in zip(before, after):
         assert device == 3
-        assert json.loads(width)[4] == pytest.approx(0.35) and json.loads(later)[4] == pytest.approx(0.35 / 2)
+        assert json.loads(width)[4] == pytest.approx(0.35 / 2) and json.loads(later)[4] == pytest.approx(0.35)
 
 
 def test_moving_and_switching_layers_do_not_copy_the_style(site, tmp_path):
@@ -160,3 +159,15 @@ def test_tiles_out_of_view_are_released_when_the_page_is_hidden(site, tmp_path):
     ], tmp_path)
     assert out[0]["before"] > 0 and out[0]["hidden"] == 0, out
     assert out[0]["release"] == "function" and out[0]["loaded"] and out[0]["shown"], out
+
+
+def test_a_scaled_screen_is_drawn_at_its_own_ratio(site, tmp_path, monkeypatch):
+    """Windows scaled 125 %: the map draws at 1.25 device pixels per CSS
+    pixel. Drawn at 1 and stretched by 1.25 (4.49.0) every line blurred
+    unevenly."""
+    sys.path.insert(0, HERE)
+    from test_web_viewer_views import _run  # pylint: disable=import-error
+    monkeypatch.setenv("Q2VT_DSF", "1.25")
+    (out,) = _run(site, [{"eval": "const m = q2vtViewer.map; return [m.getPixelRatio(), m.getCanvas().width];"}],
+                  tmp_path)
+    assert out == [1.25, 1500], out

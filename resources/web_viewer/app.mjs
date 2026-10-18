@@ -20,10 +20,11 @@ const RELEASE_ID = /^r-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$/;
 // Style layers end at zoom 24 (the style spec maximum) and MapLibre hides a
 // layer at exactly its maxzoom: the browser stops just short of it.
 const MAX_VIEW_ZOOM = 23.99;
-// Low memory: the map draws one device pixel per CSS pixel. Its WebGL
-// buffers grow with the square of the screen's scale: a 1920x1080 screen
-// scaled 150 % took 160 MB of them (50 MB at 1x), 200 % 200 MB.
-const MAX_PIXEL_RATIO = 1;
+// Low memory: the map draws at most 2 device pixels per CSS pixel (a 3x
+// phone: 4/9 of the pixels in every buffer). Below that at the screen's
+// own ratio: a canvas drawn at 1x and stretched by 1.25 (Windows scaled
+// 125 %) blurred every line unevenly (4.49.0).
+const MAX_PIXEL_RATIO = 2;
 // Low memory: the tiles kept out of view are let go after a minute without
 // moving the map (and while the page is hidden).
 const IDLE_RELEASE_MS = 60000;

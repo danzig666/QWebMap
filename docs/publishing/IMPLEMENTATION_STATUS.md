@@ -1977,3 +1977,9 @@ held ~25 MB; the page's WebGL buffers 50 MB at 100 % screen scale, 160 MB at 150
   source with `updateData` (without it, `setData` of all the groups that share it).
 - **Label id leak**: `state.ids` kept an id for every feature ever labelled; now only for the
   labels placed.
+
+## 4.49.1 — pixel ratio back to the screen's (at most 2)
+
+Pixel ratio 1 (4.49.0) made the browser stretch the canvas by 1.25 on a Windows screen scaled
+125 %: every line blurred unevenly. Low memory draws at the screen's own ratio again, capped
+at 2 (`MAX_PIXEL_RATIO`); the shared label source and the id leak fix stay.
