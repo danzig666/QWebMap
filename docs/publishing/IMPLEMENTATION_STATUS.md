@@ -1962,3 +1962,18 @@ style had 809 layers, 445 of them per-zoom copies of map-unit marker layers.
   style, which the dataset keys do not cover).
 - `layer_merge`: pieces with data-driven `icon-image` (sprite variants) join only when equal.
 - Overview map: thin hairlines multiplied back by the main map's pixel ratio.
+
+## 4.49.0 — memory on scaled screens and while browsing
+
+Measured on the published city map while zooming and panning (Chromium, 1920×1080): the tiles
+held ~25 MB; the page's WebGL buffers 50 MB at 100 % screen scale, 160 MB at 150 %, 200 MB at
+200 %; the visible-label code ~80 MB of JavaScript after browsing (14 GeoJSON sources).
+
+- **Low memory: pixel ratio 1** (`MAX_PIXEL_RATIO` in app.mjs): at 150 % the page took
+  464 → 355 MB after loading, 692 → 523 MB after browsing and the idle release.
+- **Visible labels in one source** (`q2vt_visible_points`, curved labels' pieces in
+  `q2vt_visible_curved`): each group's layers filter on `q2vt_vgroup` (`groupFilter`, in the
+  syntax of the layer's own filter); ids are `id × groups + group index`; diffs go to the shared
+  source with `updateData` (without it, `setData` of all the groups that share it).
+- **Label id leak**: `state.ids` kept an id for every feature ever labelled; now only for the
+  labels placed.

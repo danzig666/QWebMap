@@ -502,7 +502,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.48.2**. Newest first:
+This README describes QWebMap **4.49.0**. Newest first:
+
+**4.49.0** — less browser memory on scaled screens
+- *Low memory web map* draws the map at one device pixel per CSS pixel (on a screen scaled 150 % its WebGL buffers took 160 MB instead of 50 MB; the map looks a little softer there); labels placed on visible parts share one source instead of one per layer; a label leak that grew while browsing is fixed.
 
 **4.48.2** — search behind its magnifier
 - The web map's search field opens when its magnifier is clicked, on every screen (it was shown open on wider screens).
