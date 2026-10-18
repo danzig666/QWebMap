@@ -142,7 +142,7 @@ const measure = () => {
 // The label points are written once the tiles are in (a loaded machine:
 // later than the map's idle).
 let out = measure();
-for (let i = 0; i < 50 && !out.pairs.length; i++) {
+for (let i = 0; i < 150 && !out.pairs.length; i++) {
   await new Promise((r) => setTimeout(r, 100));
   out = measure();
 }

@@ -2130,7 +2130,9 @@ class PublishDialog(QDialog):
         self.o_low_memory.setToolTip(tr(
             "The browser keeps the map tiles of about one zoom level besides those on screen (otherwise "
             "five): much less memory with detailed maps (a city's parcels), at the cost of loading tiles "
-            "again when you return to a place (usually from the browser's cache)."))
+            "again when you return to a place (usually from the browser's cache). The map is also drawn at "
+            "one device pixel per CSS pixel: on a scaled or high-resolution screen it looks a little "
+            "softer, but takes a third of the memory or less."))
         self.o_light_tiles = QCheckBox(tr("Lighter tiles when zoomed out: leave out features under half a pixel"))
         self.o_light_tiles.setToolTip(tr(
             "Fills and thin lines smaller than half a pixel at a zoom level are left out of that zoom's "

@@ -1003,7 +1003,7 @@ def test_pole_label_moves_off_a_maplibre_label_inside_its_polygon():
         const [w, h] = m.layoutBoxes(layout, 0, 0.001)({name});
         return [x - w, y - h, x + w, y + h];
       };
-      const at = out['q2vt_visible_parks'].features[0].geometry.coordinates;
+      const at = out['q2vt_visible_points'].features[0].geometry.coordinates;
       return [box(park.layout, parkName, at), box(place.layout, placeName, [0.5, 0.516 - 0.016])];
     })()"""
     park, place = _js(expr)

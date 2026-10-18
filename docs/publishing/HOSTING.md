@@ -105,8 +105,10 @@ tab shows sizes, not a bill).
 * **Low memory web map** (*Output*, on by default): the browser keeps the tiles of about one
   zoom level besides those on screen (MapLibre's default: five). A detailed map (a city's
   parcels) took over 1 GB in the browser; with this option tiles are loaded again when you
-  return to a place (usually from the browser's cache). It also draws the map at a pixel ratio
-  of at most 2 (a 3x phone screen), releases the out-of-view tiles when the tab is hidden or
+  return to a place (usually from the browser's cache). It also draws the map at one device pixel
+  per CSS pixel (on a screen scaled 150 % its WebGL buffers took 160 MB instead of 50 MB;
+  the map looks a little softer there), keeps all labels placed on visible parts in one
+  source, releases the out-of-view tiles when the tab is hidden or
   the map has not moved for a minute, and the overview map draws only plain fills and lines.
 * **Lighter tiles when zoomed out** (*Output*, on by default): fills and thin lines smaller
   than half a pixel at a zoom level are left out of that zoom's tiles, and the tiles below

@@ -148,7 +148,7 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   style.layers.forEach((layer, index) => {
     const polygons = layer.metadata && layer.metadata["q2vt:visible-polygons"];
     if (!polygons || layer.source !== sourceId) return;
-    if (!groups.has(polygons)) groups.set(polygons, { source: SOURCE_PREFIX + polygons, layers: [] });
+    if (!groups.has(polygons)) groups.set(polygons, { layers: [] });
     const before = style.layers.slice(index + 1).find((l) => !(l.metadata && l.metadata["q2vt:visible-polygons"]));
     groups.get(polygons).layers.push({ def: layer, before: before ? before.id : undefined });
     if (layer.metadata["q2vt:label-anchor"] === "pole") groups.get(polygons).anchor = "pole";
@@ -189,6 +189,15 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   }
 
   const firstLayer = style.layers.length ? style.layers[0].id : undefined;
+  // The label points of all groups in one GeoJSON source (curved labels'
+  // pieces of line in another, cut differently): a source each kept its
+  // own tiles and index in the browser. A group's layers take its points
+  // only (GROUP_FIELD); the ids are made unique across the groups.
+  [...groups.values()].forEach((group, index) => {
+    group.source = SOURCE_PREFIX + (group.curved ? "curved" : "points");
+    group.index = index;
+  });
+  const added = new Set();
   for (const [polygons, group] of groups) {
     // MapLibre loads a source's tiles only for visible layers: an invisible
     // fill keeps the polygons loaded whatever else is shown. Its filter
@@ -203,7 +212,7 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
       minzoom: Math.min(...zooms.map((z) => z[0])), maxzoom: Math.max(...zooms.map((z) => z[1])),
       paint: { "fill-opacity": 0 },
     }, firstLayer);
-    map.addSource(group.source, {
+    if (!added.has(group.source)) added.add(group.source) && map.addSource(group.source, {
       type: "geojson", data: { type: "FeatureCollection", features: [] },
       // A curved label's piece of line whole in every tile it crosses: each
       // tile then finds the same middle, kept by the one tile it falls in
@@ -216,10 +225,11 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
     for (const { def } of group.layers) map.removeLayer(def.id);
   }
   // Re-add in style order, each before the first following unmoved layer.
-  for (const group of groups.values()) {
+  for (const [polygons, group] of groups) {
     for (const { def, before } of group.layers) {
       const moved = { ...def, source: group.source };
       delete moved["source-layer"];
+      moved.filter = groupFilter(polygons, def.filter);
       // The position is computed here (room, screen fit, other labels):
       // MapLibre must not shift the label a box width off it (that pushed
       // labels out of their polygon and off the screen).
@@ -341,7 +351,10 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
         always: !!group.always,
         around: aroundOption(group.around, zoom, perPx),
       });
-      write(map.getSource(group.source), data, polygons);
+      // Unique ids in the shared source: id * groups + the group's index.
+      data.features = data.features.map((f) => ({ ...f, id: f.id * groups.size + group.index,
+        properties: { ...f.properties, [GROUP_FIELD]: polygons } }));
+      write(map.getSource(group.source), data, polygons, group.source);
       // "Allow overlap at no cost" works both ways (QGIS: no conflict when
       // either label has it): the others need not keep clear of these.
       if (data.boxes && group.overlap !== "always" && groupShown(map, group, zoom)) placed.push(...data.boxes);
@@ -351,13 +364,16 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   // the label tiles around the added, moved or removed points (setData
   // reloads all). Nothing changed: nothing written (else idle -> update
   // would loop forever).
-  const write = (source, data, polygons) => {
-    const before = written.get(polygons);
+  const write = (source, data, polygons, sourceName) => {
+    const before = written.get(polygons) || new Map();
     const now = new Map(data.features.map((f) => [f.id, [...f.geometry.coordinates, JSON.stringify(f.properties)]]));
     written.set(polygons, now);
     latest.set(polygons, data.features);
-    if (!before || typeof source.updateData !== "function") {
-      if (before || data.features.length) source.setData(data);
+    if (typeof source.updateData !== "function") {
+      // The groups' points together (they share the source).
+      const features = [];
+      for (const [name, group] of groups) if (group.source === sourceName) features.push(...(latest.get(name) || []));
+      source.setData({ type: "FeatureCollection", features });
       return;
     }
     const diff = { remove: [], add: [], update: [] };
@@ -416,11 +432,25 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
       for (const group of groups.values()) {
         const source = map.getSource(group.source);
         if (source) source.setData({ type: "FeatureCollection", features: [] });
-        written.clear();
-        latest.clear();
       }
+      written.clear();
+      latest.clear();
     },
   };
+}
+
+// The group (polygon source layer) of a label point in the shared sources.
+export const GROUP_FIELD = "q2vt_vgroup";
+
+// A label layer's filter for its group's points in the shared source, within
+// its own filter (in that filter's syntax: legacy filters do not mix with
+// expressions).
+export function groupFilter(polygons, filter) {
+  const legacy = (f) => Array.isArray(f) && (["all", "any", "none"].includes(f[0]) ? f.slice(1).some(legacy)
+    : ["has", "!has", "==", "!=", "<", ">", "<=", ">=", "in", "!in"].includes(f[0]) && typeof f[1] === "string");
+  if (filter && legacy(filter)) return ["all", ["==", GROUP_FIELD, polygons], filter];
+  const own = ["==", ["get", GROUP_FIELD], polygons];
+  return filter ? ["all", own, filter] : own;
 }
 
 // The labels of a repeated line label are kept as "<feature key><sep><k>".
