@@ -1983,3 +1983,21 @@ held ~25 MB; the page's WebGL buffers 50 MB at 100 % screen scale, 160 MB at 150
 Pixel ratio 1 (4.49.0) made the browser stretch the canvas by 1.25 on a Windows screen scaled
 125 %: every line blurred unevenly. Low memory draws at the screen's own ratio again, capped
 at 2 (`MAX_PIXEL_RATIO`); the shared label source and the id leak fix stay.
+
+## 4.50.0 — live WMS / XYZ raster layers, GetFeatureInfo, zoom to layer
+
+- **Export** (`live_raster.py`, `controller._live_rasters`): `wms` provider layers with
+  `LayerConfig.raster_live` (default on) are described from `decodeUri`: XYZ `{z}/{x}/{y}`
+  templates, WMS layers (GetMap in EPSG:3857 through `xyz.wms_template`). Refused, so rendered as
+  before: logins/headers, non-https, `{q}` templates, WMTS, servers whose sample tile (zoom 12 at
+  the extent's centre) answers without a matching `Access-Control-Allow-Origin` (no answer: kept
+  live). Paint from QGIS: opacity, saturation/grayscale, contrast, brightness.
+- **Release**: the style keeps a URL-less `q2vt_raster_*` source (vector-only guard allows the
+  live ids); `manifest.liveRasters` carries tiles, scheme, zooms, bounds and the WMS service
+  (url, layers, styles, info formats, legend); layer entries get `live` and `legendUrl`; the
+  servers' origins join img-src / connect-src.
+- **Viewer**: `bindStyle` binds the live sources; `wms_info.mjs` asks the visible live WMS layers
+  (101 px box around the click, JSON → HTML → text) when no feature was hit, renders answers as
+  text only, and links to the answer when CORS hides it; legend image from GetLegendGraphic.
+- **Zoom to layer** (`InteractionConfig.zoom_to_layer`, default off): layer entries get
+  `bounds` (layer extent ∩ export extent); the layer list shows a `fitBounds` button.

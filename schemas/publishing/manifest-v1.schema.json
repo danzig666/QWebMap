@@ -380,6 +380,24 @@
               "string",
               "null"
             ]
+          },
+          "bounds": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "live": {
+            "enum": [
+              "xyz",
+              "wms"
+            ]
+          },
+          "legendUrl": {
+            "type": "string",
+            "pattern": "^https://"
           }
         }
       }
@@ -812,6 +830,108 @@
       "items": {
         "type": "string",
         "pattern": "^assets/addons/[a-z0-9_-]+\\.mjs$"
+      }
+    },
+    "liveRasters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "layerId",
+          "kind",
+          "tiles",
+          "minTileZoom",
+          "maxTileZoom"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^q2vt_raster_"
+          },
+          "layerId": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "xyz",
+              "wms"
+            ]
+          },
+          "tiles": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^https://"
+            }
+          },
+          "scheme": {
+            "enum": [
+              "xyz",
+              "tms"
+            ]
+          },
+          "tileType": {
+            "enum": [
+              "png",
+              "jpg"
+            ]
+          },
+          "tileSize": {
+            "type": "integer"
+          },
+          "minTileZoom": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxTileZoom": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bounds": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "wms": {
+            "type": "object",
+            "required": [
+              "url",
+              "layers"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "url": {
+                "type": "string",
+                "pattern": "^https://"
+              },
+              "layers": {
+                "type": "string"
+              },
+              "styles": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "infoFormats": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "legend": {
+                "type": "string",
+                "pattern": "^https://"
+              }
+            }
+          }
+        }
       }
     }
   },

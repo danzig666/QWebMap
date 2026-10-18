@@ -11,6 +11,7 @@
 import { BackEntry } from "./backstack.mjs";
 import { t, formatNumber } from "./i18n.mjs";
 import { matchesFilters } from "./style_control.mjs";
+import { WmsInfo } from "./wms_info.mjs";
 
 const KEY = "q2vt_feature_key";
 const SAFE_URL = /^(https?:|mailto:)/i;
@@ -55,6 +56,7 @@ function element(tag, className, text) {
 export class Identify {
   constructor(ctx) {
     Object.assign(this, ctx); // map, manifest, maplibregl, control, state, lookup, viewer
+    this.wms = new WmsInfo({ map: this.map, manifest: this.manifest, control: this.control, state: this.state });
     this.layers = new Map(this.manifest.layers.map((l) => [l.id, l]));
     this.popup = new this.maplibregl.Popup({ maxWidth: "380px", focusAfterOpen: true, closeOnClick: false });
     // Back closes the popup (backstack.mjs).
@@ -97,6 +99,14 @@ export class Identify {
     const hits = this.hits(event.point);
     if (!hits.length) {
       this.popup.remove();
+      // Live WMS layers: what their servers know about this place.
+      const ticket = this.ticket;
+      const info = this.wms && this.wms.available ? await this.wms.query(event.lngLat).catch(() => null) : null;
+      if (info && ticket === this.ticket) {
+        this.popup.setLngLat(event.lngLat).setDOMContent(info).addTo(this.map);
+        this.back.open();
+        return;
+      }
       if (this.onEmpty) this.onEmpty();
       return;
     }

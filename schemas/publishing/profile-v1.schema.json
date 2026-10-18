@@ -94,7 +94,11 @@
           "type": "string"
         },
         "extentMode": {
-          "enum": ["canvas", "layer", "fixed"]
+          "enum": [
+            "canvas",
+            "layer",
+            "fixed"
+          ]
         },
         "confirmCanvasExtent": {
           "type": "boolean"
@@ -173,6 +177,9 @@
         },
         "addressStreetField": {
           "type": "string"
+        },
+        "zoomToLayer": {
+          "type": "boolean"
         }
       }
     },
@@ -827,6 +834,9 @@
         },
         "heightField": {
           "type": "string"
+        },
+        "rasterLive": {
+          "type": "boolean"
         }
       }
     },

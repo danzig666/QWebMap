@@ -1230,7 +1230,8 @@ class PublishDialog(QDialog):
                 ("geolocation", tr("My location button")),
                 ("street_search", tr("Search street names (OpenStreetMap)")),
                 ("overview_map", tr("Overview map (inset)")), ("three_d", tr("3D view")),
-                ("drawing", tr("Drawing tools")), ("street_view", tr("Street View (Google)"))]):
+                ("drawing", tr("Drawing tools")), ("zoom_to_layer", tr("Zoom-to-layer buttons")),
+                ("street_view", tr("Street View (Google)"))]):
             self.i_flags[key] = QCheckBox(label)
         self.i_google_key = QLineEdit()
         self.i_google_key.setPlaceholderText(tr("Google Maps API key (needed for Street View)"))
@@ -1257,6 +1258,8 @@ class PublishDialog(QDialog):
             "permission; needs https). Outside the map's extent it only says so and does not move "
             "the map."))
         self.i_flags["overview_map"].setToolTip(tr("A small overview map in a corner with the current view marked."))
+        self.i_flags["zoom_to_layer"].setToolTip(tr(
+            "A button in each layer's row of the Layers tab that zooms the map to the layer's extent."))
         self.i_flags["three_d"].setToolTip(tr(
             "A 3D button on the map: tilted view with the terrain relief (Basemap tab) and the polygons "
             "of layers with a 3D height field raised."))
@@ -1388,11 +1391,20 @@ class PublishDialog(QDialog):
         self.r_opacity = QDoubleSpinBox()
         self.r_opacity.setRange(0, 1)
         self.r_opacity.setSingleStep(0.1)
+        self.r_live = QCheckBox(tr("Load live from its server (web tiles / WMS)"))
+        self.r_live.setToolTip(tr(
+            "An XYZ tile or WMS layer: the visitors' browsers load its images from its own server "
+            "while browsing (always up to date, nothing to render or upload), and a click on a WMS "
+            "layer shows what the server knows about that place (GetFeatureInfo). Needs an https "
+            "address without login and a server that allows other sites to use its images (CORS); "
+            "otherwise, or when unticked, QGIS renders the layer into the release."))
+        self.r_live.toggled.connect(self._raster_live_toggled)
         self.r_legend = QCheckBox(tr("Show in the legend"))
         self.r_legend.toggled.connect(self._legend_box_toggled)
         self.r_estimate = QLabel()
         self.r_estimate.setWordWrap(True)
         form.addRow(tr("Title in the viewer"), self.r_title)
+        form.addRow("", self.r_live)
         form.addRow(tr("Image format"), self.r_format)
         form.addRow(tr("Sharpest detail"), self.r_detail)
         form.addRow(tr("Shown from zoom"), self.r_min)
@@ -1405,6 +1417,11 @@ class PublishDialog(QDialog):
                                   "vector tiles. Zoomed in beyond the sharpest detail, the images are "
                                   "enlarged.")))
         return page
+
+    def _raster_live_toggled(self, live: bool) -> None:
+        """The rendering settings do not apply to a layer loaded live."""
+        for widget in (self.r_format, self.r_detail, self.r_min, self.r_quality, self.r_estimate):
+            widget.setEnabled(not (live and self.r_live.isEnabled()))
 
     def _raster_detail(self):
         """(raster_max_zoom, raster_match_native) of the "Sharpest detail" choice."""
@@ -2598,6 +2615,12 @@ class PublishDialog(QDialog):
             self.r_detail.clear()
             self.r_detail.blockSignals(False)
             self.r_quality.setValue(config.raster_quality)
+            web = layer.providerType() == "wms"
+            self.r_live.blockSignals(True)
+            self.r_live.setEnabled(web)
+            self.r_live.setChecked(web and config.raster_live)
+            self.r_live.blockSignals(False)
+            self._raster_live_toggled(self.r_live.isChecked())
             self.r_opacity.setValue(config.opacity)
             self.r_legend.setChecked(config.legend)
             self._raster_estimate()
@@ -2669,6 +2692,8 @@ class PublishDialog(QDialog):
             config.raster_min_zoom = self.r_min.value() if self.r_min.value() >= 0 else None
             config.raster_max_zoom, config.raster_match_native = self._raster_detail()
             config.raster_quality = self.r_quality.value()
+            if self.r_live.isEnabled():
+                config.raster_live = self.r_live.isChecked()
             config.raster_hidpi = False
             config.opacity = float(self.r_opacity.value())
             config.legend = self.r_legend.isChecked()
