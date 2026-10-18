@@ -502,7 +502,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.49.0**. Newest first:
+This README describes QWebMap **4.49.1**. Newest first:
+
+**4.49.1** — sharp lines on scaled screens again
+- The web map is drawn at the screen's own pixel ratio again (up to 2): at 1x, a screen scaled 125 % stretched it and blurred the lines.
 
 **4.49.0** — less browser memory on scaled screens
 - *Low memory web map* draws the map at one device pixel per CSS pixel (on a screen scaled 150 % its WebGL buffers took 160 MB instead of 50 MB; the map looks a little softer there); labels placed on visible parts share one source instead of one per layer; a label leak that grew while browsing is fixed.
