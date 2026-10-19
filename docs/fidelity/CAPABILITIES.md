@@ -19,7 +19,7 @@ Generated from `src/core/fidelity/capabilities.py` by `tools/generate_capabiliti
 | `CentroidFill` | marker | materialized | Marker points at the QGIS position (exterior-ring centroid, or GEOS point-on-surface when requested and needed). | Markers are not clipped to the polygon. |
 | `EllipseMarker` | marker | sprite | Rendered by QGIS to a sprite. | — |
 | `FilledMarker` | marker | sprite | Rendered by QGIS to a sprite. | — |
-| `MaskMarker` | marker | approximate | Drawn as its shape in the map's background colour where the marker is, over the layers drawn before it (QGIS cuts only the masked symbol layers there). | Everything below the marker is covered, not only the masked symbol layers; exact over a plain background. |
+| `MaskMarker` | marker | approximate | Drawn as its shape in the map's background colour where the marker is, over the layers drawn before it (QGIS cuts only the masked symbol layers there). QGIS 4 selective masking source sets count as the marker's own list. | Everything below the marker is covered, not only the masked symbol layers; exact over a plain background. |
 | `RasterMarker` | marker | sprite | Rendered by QGIS to a sprite. | — |
 | `SimpleMarker` | marker | sprite | Plain circles (solid or no stroke, no offset/effect) become native circle layers with data-defined size, colours and stroke width; other shapes are rendered by QGIS to sprites. | Data-defined appearance other than size/angle/opacity needs one sprite variant per distinct value (budget: Q2VT_SPRITE_VARIANTS_BUDGET). |
 | `SvgMarker` | marker | sprite | Rendered by QGIS to an oversampled sprite; data-defined SVG parameters produce sprite variants. | Data-defined appearance is bounded by the sprite variant budget. |

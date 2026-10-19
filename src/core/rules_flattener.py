@@ -177,9 +177,17 @@ class RulesFlattener:
         # Renderer rules whose symbol draws nothing (no brush, no pen): no
         # tiles, but QGIS renders their features and labels them.
         self._invisible_rules: List[FlattenedRule] = []
+        # What the project's selective masking source sets mask (QGIS 4),
+        # resolved in flatten_all_rules.
+        from .fidelity import masks  # pylint: disable=import-outside-toplevel
+        self._set_masks = masks.SourceSetMasks()
 
     def flatten_all_rules(self) -> List[FlattenedRule]:
         """Extract and flatten all rules from visible vector layers."""
+        from .fidelity import masks  # pylint: disable=import-outside-toplevel
+        self._set_masks = masks.resolve_source_sets(
+            [node.layer() for node in self.layer_tree_root.findLayers()
+             if self._is_valid_layer(node.layer())])
         for layer_idx, node in enumerate(self.layer_tree_root.findLayers()):
             if self._is_valid_layer(node.layer()):
                 self._process_layer_rules(node.layer(), layer_idx)
@@ -287,6 +295,8 @@ class RulesFlattener:
             self._drop_missing_field_properties(rule_system, layer, rule_type)
             if rule_type == 0:
                 self._knock_out_mask_markers(rule_system, layer)
+            else:
+                self._add_set_label_masks(rule_system, layer)
             root_rule = self._prepare_root_rule(rule_system, layer, rule_type)
             if rule_type == 0:
                 self._draw_seq = 0
@@ -315,7 +325,8 @@ class RulesFlattener:
         (fidelity.masks), on the cloned rule system."""
         from .fidelity import masks  # pylint: disable=import-outside-toplevel
         colour = masks.background_colour()
-        count = sum(masks.knock_out_mask_markers(rule.symbol(), colour)
+        layer_masks = masks.layer_masks(layer.renderer(), self._set_masks, layer.id())
+        count = sum(masks.knock_out_mask_markers(rule.symbol(), colour, layer_masks)
                     for rule in rule_system.rootRule().descendants())
         if count:
             self.diagnostics.add(
@@ -323,6 +334,24 @@ class RulesFlattener:
                 f"Layer '{layer.name()}': {count} mask marker(s) drawn as their shape in the "
                 f"background colour (covering every layer below, not only the masked ones).",
                 layer_id=layer.id())
+
+    def _add_set_label_masks(self, rule_system, layer) -> None:
+        """Labels masking through a source set (QGIS 4) mask as with the
+        mask's own list: the set's symbol layers join the list, on the
+        cloned rule system. QGIS names a label source by its labeling
+        provider: the rule key, "" for simple labeling."""
+        from .fidelity import masks  # pylint: disable=import-outside-toplevel
+        if not self._set_masks.labels:
+            return
+        rule_based = isinstance(layer.labeling(), QgsRuleBasedLabeling)
+        for rule in rule_system.rootRule().descendants():
+            settings = rule.settings()
+            refs = self._set_masks.labels.get((layer.id(), rule.ruleKey() if rule_based else ""))
+            if settings is None or not refs:
+                continue
+            settings = QgsPalLayerSettings(settings)
+            if masks.add_masked_symbol_layers(settings, refs):
+                rule.setSettings(settings)
 
     def _add_diagram_rules(self, layer, layer_idx: int) -> None:
         """The layer's diagrams as one more renderer rule: a placeholder marker

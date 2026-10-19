@@ -204,7 +204,8 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
                 "Markers crossing the polygon edge are not clipped.")),
     Capability("MaskMarker", "marker", Strategy.APPROXIMATE,
                "Drawn as its shape in the map's background colour where the marker is, over "
-               "the layers drawn before it (QGIS cuts only the masked symbol layers there).",
+               "the layers drawn before it (QGIS cuts only the masked symbol layers there). "
+               "QGIS 4 selective masking source sets count as the marker's own list.",
                ("Everything below the marker is covered, not only the masked symbol layers; "
                 "exact over a plain background.",),
                ("tests/integration/test_masks.py",)),
