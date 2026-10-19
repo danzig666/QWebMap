@@ -43,8 +43,9 @@ def test_variant_zip(tmp_path):
     variant = tmp_path / "variant.json"
     variant.write_text(json.dumps({"suffix": "xx", "name": "QWebMap XX"}))
     out = tmp_path / "plugin.zip"
-    subprocess.run([sys.executable, os.path.join(ROOT, "tools", "build_release.py"),
-                    "--variant", str(variant), "--out", str(out)], check=True, capture_output=True)
+    run = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "build_release.py"),
+                          "--variant", str(variant), "--out", str(out)], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr[-2000:]
     with zipfile.ZipFile(out) as archive:
         meta = archive.read("QWebMap/metadata.txt").decode("utf-8")
     original = open(os.path.join(ROOT, "metadata.txt"), encoding="utf-8").read()

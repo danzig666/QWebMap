@@ -124,6 +124,7 @@ from qgis.core import (
 from ..utils import crash_log, main_thread
 from ..utils.config import _DATA_SIMPLIFICATION_TOLERANCE, _EPSG_CRS, _FIELD_PREFIX
 from ..utils.flattened_rule import FlattenedRule
+from ..utils.qt_compat import enum_int
 from .ddp_fetcher import DataDefinedPropertiesFetcher
 from . import export_cache
 from .datasets import DatasetInfo, ExportedDataset, gpkg_info
@@ -2042,7 +2043,7 @@ class RulesExporter:
                 fields.append(field)
         kinds = {6: QVariant.Double, 2: QVariant.Int, 4: QVariant.LongLong, 1: QVariant.Bool}
         for ftype, _, name in part_fields:
-            fields.append(QgsField(name, kinds.get(ftype, QVariant.String)))
+            fields.append(QgsField(name, kinds.get(enum_int(ftype), QVariant.String)))
         context = self._worker_expression_context()
         context.setFields(layer.fields())
         scope = QgsExpressionContextScope()
@@ -3226,7 +3227,7 @@ class RulesExporter:
             if source_fields.indexFromName(name) >= 0:
                 mapping.append((2, f'"{name}"', name))
         return [
-            {"type": m[0], "expression": m[1], "name": m[2]} for m in mapping
+            {"type": enum_int(m[0], 10), "expression": m[1], "name": m[2]} for m in mapping
         ]
 
     # -------------------------------------------------------------------
@@ -4118,7 +4119,7 @@ class RulesExporter:
             flat_rule.line_label_midpoint = True
             return
         try:
-            flags = int(settings.lineSettings().placementFlags())
+            flags = enum_int(settings.lineSettings().placementFlags(), 1)
         except (AttributeError, TypeError):
             flags = 1
         from .maplibre_converter import TextPropertyExtractor  # pylint: disable=import-outside-toplevel
@@ -4165,9 +4166,9 @@ class RulesExporter:
             return False
         placement = int(getattr(settings.placement, "value", settings.placement))
         if flat_rule.get_attr("g") == 2:
-            return placement in (int(Qgis.LabelPlacement.Line),
-                                 int(Qgis.LabelPlacement.PerimeterCurved))
-        return placement in (int(Qgis.LabelPlacement.Line), int(Qgis.LabelPlacement.Curved))
+            return placement in (enum_int(Qgis.LabelPlacement.Line),
+                                 enum_int(Qgis.LabelPlacement.PerimeterCurved))
+        return placement in (enum_int(Qgis.LabelPlacement.Line), enum_int(Qgis.LabelPlacement.Curved))
 
     def _label_line(self, flat_rule: FlattenedRule) -> str:
         """The line a label drawn once per feature is placed on: the longest

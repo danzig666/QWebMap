@@ -18,6 +18,16 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from . import xyz
 
+def enum_int(value):
+    """An enum's integer (PyQt5: an int already; PyQt6: a Python enum).
+    (Here, not utils.qt_compat: the unit tests import this module alone.)"""
+    value = getattr(value, "value", value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 # Formats a WMS GetFeatureInfo answer may be asked in, best first: features
 # as GeoJSON (GeoServer, QGIS Server, MapServer with OGR output), an HTML
 # table, plain text.
@@ -27,19 +37,21 @@ INFO_JSON, INFO_HTML, INFO_TEXT = "application/json", "text/html", "text/plain"
 def _flag(provider, name: str) -> bool:
     """A raster interface capability of ``provider`` (QGIS 3.x and 3.36+ names)."""
     try:
-        caps = int(provider.capabilities())
+        caps = enum_int(provider.capabilities())
+        if caps is None:
+            return False
     except Exception:  # pylint: disable=broad-except
         return False
     try:
         from qgis.core import Qgis  # pylint: disable=import-outside-toplevel
         value = getattr(Qgis.RasterInterfaceCapability, name, None)
         if value is not None:
-            return bool(caps & int(value))
+            return bool(caps & (enum_int(value) or 0))
     except (ImportError, AttributeError, TypeError):
         pass
     from qgis.core import QgsRasterInterface  # pylint: disable=import-outside-toplevel
     value = getattr(QgsRasterInterface, name, None)
-    return value is not None and bool(caps & int(value))
+    return value is not None and bool(caps & (enum_int(value) or 0))
 
 
 def info_formats(provider) -> List[str]:

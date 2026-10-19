@@ -611,7 +611,7 @@ def test_map_unit_point_pattern_matches_qgis(plugin, tmp_path, disp_x, disp_y, o
     pp = QgsPointPatternFillSymbolLayer()
     marker = _marker(Qgis.MarkerShape.Square, 3)
     marker.symbolLayer(0).setSizeUnit(Qgis.RenderUnit.MapUnits)
-    marker.symbolLayer(0).setStrokeStyle(0)
+    marker.symbolLayer(0).setStrokeStyle(Qt.PenStyle.NoPen)
     pp.setSubSymbol(marker)
     for name, value in (("DistanceX", 12), ("DistanceY", 10), ("DisplacementX", disp_x),
                         ("DisplacementY", disp_y), ("OffsetX", off_x), ("OffsetY", off_y)):
@@ -897,7 +897,7 @@ def _map_unit_point_pattern(spacing, size, stroke=False):
     marker = _marker(Qgis.MarkerShape.Square, size)
     marker.symbolLayer(0).setSizeUnit(Qgis.RenderUnit.MapUnits)
     if not stroke:
-        marker.symbolLayer(0).setStrokeStyle(0)  # Qt.NoPen
+        marker.symbolLayer(0).setStrokeStyle(Qt.PenStyle.NoPen)  # Qt.NoPen
     pp.setSubSymbol(marker)
     for name in ("DistanceX", "DistanceY"):
         getattr(pp, f"set{name}")(spacing)
@@ -1166,7 +1166,7 @@ def test_map_unit_arrows_match_qgis(plugin, tmp_path, curved, repeated, head_typ
     arrow.setIsRepeated(repeated)
     arrow.setHeadType(QgsArrowSymbolLayer.HeadType(head_type))
     arrow.subSymbol().symbolLayer(0).setColor(QColor("black"))
-    arrow.subSymbol().symbolLayer(0).setStrokeStyle(0)
+    arrow.subSymbol().symbolLayer(0).setStrokeStyle(Qt.PenStyle.NoPen)
     layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([arrow])))
     reference = ink_mask(render([layer], EXTENT, (240, 240)))
     outputs, rules, diags = _export(plugin, layer, tmp_path)
@@ -1205,7 +1205,7 @@ def test_arrow_outline_is_a_line_on_the_arrow_rings(plugin, tmp_path):
 
     assert [r.get_attr("c") for r in rules] == [2, 1]  # the outline above the fill
     assert all(r.recipe.kind == "arrow_polygons" for r in rules)
-    assert rules[0].rule.symbol().symbolLayer(0).strokeStyle() == 0  # Qt.NoPen
+    assert rules[0].rule.symbol().symbolLayer(0).strokeStyle() == Qt.PenStyle.NoPen
     line = rules[1].rule.symbol()
     assert line.type() == Qgis.SymbolType.Line
     assert line.symbolLayer(0).layerType() == "SimpleLine"
@@ -1283,7 +1283,7 @@ def test_arrow_fill_offset_grows_with_the_map_in_map_units(plugin, tmp_path, uni
         getattr(arrow, f"set{name}Unit")(Qgis.RenderUnit.MapUnits)
     arrow.setIsCurved(False)
     fill = arrow.subSymbol().symbolLayer(0)
-    fill.setStrokeStyle(0)
+    fill.setStrokeStyle(Qt.PenStyle.NoPen)
     fill.setOffset(QPointF(12, -6))
     fill.setOffsetUnit(unit)
     layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([arrow])))
@@ -1317,7 +1317,7 @@ def test_point_pattern_clip_modes_match_qgis(plugin, tmp_path, clip):
     pp = QgsPointPatternFillSymbolLayer()
     marker = _marker(Qgis.MarkerShape.HalfSquare, 4)
     marker.symbolLayer(0).setSizeUnit(Qgis.RenderUnit.MapUnits)
-    marker.symbolLayer(0).setStrokeStyle(0)
+    marker.symbolLayer(0).setStrokeStyle(Qt.PenStyle.NoPen)
     pp.setSubSymbol(marker)
     for name, value in (("DistanceX", 15), ("DistanceY", 12)):
         getattr(pp, f"set{name}")(value)
@@ -2758,7 +2758,7 @@ def _percent_pattern(unit, offset, displacement, spacing, clip):
     pp = QgsPointPatternFillSymbolLayer()
     marker = _marker(Qgis.MarkerShape.Square, 3)
     marker.symbolLayer(0).setSizeUnit(unit)
-    marker.symbolLayer(0).setStrokeStyle(0)
+    marker.symbolLayer(0).setStrokeStyle(Qt.PenStyle.NoPen)
     pp.setSubSymbol(marker)
     for name in ("DistanceX", "DistanceY"):
         getattr(pp, f"set{name}")(spacing)
@@ -3249,12 +3249,12 @@ def test_smooth_passes_are_capped_in_exported_generators(plugin, expression, cap
     300 m polygon); beyond five the outline moves by millimetres."""
     from qgis.core import QgsExpression
     from q2vt_plugin.src.core.rules_exporter import MAX_SMOOTH_ITERATIONS, _capped_smoothing
-    out = _capped_smoothing(expression)
+    out = _capped_smoothing(expression)  # QGIS 4 writes 0.3 as 0.29999999999999999
     assert not QgsExpression(out).hasParserError()
     if not capped:
         assert out == expression
         return
-    passes = [int(p) for p in __import__("re").findall(r"smooth\(.*?, (\d+), 0\.3|, (\d+), 0\.25", out) for p in p if p]
+    passes = [int(p) for p in __import__("re").findall(r"smooth\(.*?, (\d+), 0\.(?:3|2999+\d*)|, (\d+), 0\.25", out) for p in p if p]
     assert passes and max(passes) == MAX_SMOOTH_ITERATIONS
 
 

@@ -512,7 +512,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.50.2**. Newest first:
+This README describes QWebMap **4.50.3**. Newest first:
+
+**4.50.3** — QGIS 4 (Qt6) support
+- Tested on QGIS 4.2 (Qt6): the whole test suite passes there, and the plugin is marked Qt6-ready, so QGIS 4 installs it. Hatches drawn with a marker line are exact on QGIS 4 too (they fell back to an approximation).
 
 **4.50.2** — angled labels no longer show level while panning
 - On a heavy map, labels placed at an angle (*Free* placement, e.g. parcel numbers in narrow parcels) showed level for a moment after panning, then turned; they appear at their angle at once.

@@ -27,6 +27,8 @@ an "around" placement's distance (the diagram is drawn over the point).
 
 from typing import List, Optional, Tuple
 
+from ...utils.qt_compat import enum_int
+
 from qgis.core import (Qgis, QgsCentroidFillSymbolLayer, QgsDiagramLayerSettings,
                        QgsExpression, QgsFillSymbol, QgsLinearlyInterpolatedDiagramRenderer,
                        QgsLineSymbol, QgsMarkerLineSymbolLayer, QgsMarkerSymbol, QgsProperty,
@@ -143,7 +145,7 @@ def diagram_spec(layer) -> Tuple[Optional[dict], List[str]]:
         "rotation": float(settings.rotationOffset),
         "clockwise": settings.direction() == settings.Direction.Clockwise,
         "orientation": {0: "up", 1: "down", 2: "left", 3: "right"}.get(
-            int(settings.diagramOrientation), "up"),
+            enum_int(settings.diagramOrientation), "up"),
         "interpolated": interpolated,
         "scale": None,
     }

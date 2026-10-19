@@ -47,6 +47,17 @@ check("QgsUnitTypes.RenderMillimeters", lambda: __import__("qgis.core", fromlist
 check("Qgis.RenderUnit.Millimeters", lambda: Qgis.RenderUnit.Millimeters)
 check("int(enum)", lambda: int(Qgis.RenderUnit.Millimeters))
 check("QgsWkbTypes.PolygonGeometry", lambda: __import__("qgis.core", fromlist=["QgsWkbTypes"]).QgsWkbTypes.PolygonGeometry)
+def smooth_nodes():
+    from qgis.core import QgsExpression, QgsExpressionNode  # noqa: E402
+    expression = QgsExpression("smooth($geometry, iterations:=8, offset:=0.3)")
+    node = expression.rootNode()
+    args = node.args()
+    return {"dump": node.dump(), "types": [str(a.nodeType()) for a in args.list()],
+            "dumps": [a.dump() for a in args.list()], "names": list(args.names()) if hasattr(args, "names") else None,
+            "ntLiteral": str(QgsExpressionNode.ntLiteral), "ntFunction": str(QgsExpressionNode.ntFunction)}
+
+
+check("smooth named args", smooth_nodes)
 # Few annotations (at most 10 a step), each a few KB at most.
 for start in range(0, len(out), 8):
     chunk = "\n".join(out[start:start + 8])

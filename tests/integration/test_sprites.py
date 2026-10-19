@@ -313,7 +313,7 @@ def test_filled_marker_outline_is_not_cut_off(sg):
     """A 5 m filled circle with a 0.8 m outline at 0.04 m/px is 145 px wide:
     its bounds leave the outline out, and the ring was cut to the canvas."""
     from qgis.core import QgsFilledMarkerSymbolLayer, QgsSimpleFillSymbolLayer
-    fill = QgsSimpleFillSymbolLayer(QColor(0, 0, 0, 0), Qt.SolidPattern, QColor("green"))
+    fill = QgsSimpleFillSymbolLayer(QColor(0, 0, 0, 0), Qt.BrushStyle.SolidPattern, QColor("green"))
     fill.setStrokeWidth(0.8)
     fill.setStrokeWidthUnit(Qgis.RenderUnit.MapUnits)
     ring = QgsFilledMarkerSymbolLayer()

@@ -18,7 +18,7 @@ from qgis.core import (Qgis, QgsCentroidFillSymbolLayer, QgsCoordinateReferenceS
                        QgsLineSymbol, QgsMarkerLineSymbolLayer, QgsMarkerSymbol, QgsProcessingFeedback,
                        QgsProject, QgsProperty, QgsRectangle, QgsShapeburstFillSymbolLayer,
                        QgsSimpleMarkerSymbolLayer, QgsSingleSymbolRenderer, QgsSymbol, QgsVectorLayer)
-from qgis.PyQt.QtCore import QVariant
+from qgis.PyQt.QtCore import QVariant, Qt
 from qgis.PyQt.QtGui import QColor
 
 from q2vt_fixtures import reset_project, to_geopackage
@@ -132,7 +132,7 @@ def test_markers_take_the_parent_opacity(tmp_path, case):
     the parent's opacity in. They were drawn opaque in the browser."""
     marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, 3 if case != "centroid_fill" else 8)
     marker.setColor(QColor("red"))
-    marker.setStrokeStyle(0)
+    marker.setStrokeStyle(Qt.PenStyle.NoPen)
     if case == "centroid_fill":
         centroid = QgsCentroidFillSymbolLayer()
         centroid.setSubSymbol(QgsMarkerSymbol([marker]))

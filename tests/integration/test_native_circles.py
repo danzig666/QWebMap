@@ -169,7 +169,7 @@ def test_marker_sized_by_map_unit_extents_grows_with_the_map(exporter):
     from qgis.core import QgsEllipseSymbolLayer
     exporter.maxzoom = 16
     box = QgsEllipseSymbolLayer()
-    box.setShape(Qgis.MarkerShape.Square)
+    box.setShape(QgsEllipseSymbolLayer.Shape(int(Qgis.MarkerShape.Square)))  # (the same value as before)
     box.setSize(30)
     box.setSizeUnit(Qgis.RenderUnit.Millimeters)
     box.setSymbolWidth(28)

@@ -10,7 +10,7 @@ import sys
 
 import pytest
 from qgis.core import QgsField, QgsRasterLayer, QgsSettings, QgsVectorLayer
-from qgis.PyQt.QtCore import QVariant
+from qgis.PyQt.QtCore import QVariant, Qt
 from qgis.PyQt.QtWidgets import QMessageBox
 
 from q2vt_fixtures import reset_project
@@ -31,7 +31,7 @@ def dialog(plugin, tmp_path, monkeypatch):
     from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error
     window = PublishDialog(iface=None)
     item = next(window._tree_items())  # pylint: disable=protected-access
-    item.setCheckState(1, 2)
+    item.setCheckState(1, Qt.CheckState.Checked)
     window._fill_interaction_layers()  # pylint: disable=protected-access
     yield window, project, parcels
     window.close()

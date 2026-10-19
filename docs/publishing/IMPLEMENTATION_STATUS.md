@@ -2040,3 +2040,15 @@ the Debrecen map). The advance placement now writes `freeAngle(loaded, bare box)
 while panning the published map: 59 level-then-turned labels in 12 pans before, about 0.2 per
 pan after (the rest: an in-view choice that differs from the advance one).
 
+
+## 4.50.3 — QGIS 4 / Qt6
+
+`.github/workflows/qt6.yml` (manual) runs the unit, integration and browser suites in
+`qgis/qgis:4.2.3`; `tools/ci/qt6_probe.py` records the PyQt6 enum behaviour the code relies on
+(`src/utils/qt_compat.py`). Plugin fix: QGIS 4 marker lines report `blankSegmentsUnit` = map
+units by default (blank segments are a data-defined property only), so `usesMapUnits()` was
+true for every marker-line hatch; `_register_drawn_line_pattern` now uses
+`_symbol_layer_uses_map_units`, which skips that unit unless `Property.BlankSegments` is
+active. Test-side: Qt6 enums, `os._exit` after the session (PyQt6 teardown crash), QGIS 4's
+`0.29999999999999999` in expression dumps, slightly narrower QGIS 4 map-unit dots.
+`metadata.txt`: `supportsQt6=True`.

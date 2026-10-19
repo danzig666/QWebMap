@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from .disclosure import assert_disclosure
+from ..utils.qt_compat import enum_int
 from .errors import Cancelled, PublishingError
 from .feature_index import build_feature_index
 from .models import PublicationProfile, ReleaseState
@@ -889,7 +890,7 @@ def _address_records(project, profile, street_area, pieces, progress, warnings) 
         if geometry.isEmpty():
             continue
         geometry.transform(to_wgs84)
-        point = geometry if geometry.type() == 0 and not geometry.isMultipart() else geometry.pointOnSurface()
+        point = geometry if enum_int(geometry.type()) == 0 and not geometry.isMultipart() else geometry.pointOnSurface()
         if engine and not engine.intersects(point.constGet()):
             continue
         xy = point.asPoint()
