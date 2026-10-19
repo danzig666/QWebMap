@@ -33,7 +33,8 @@ export function scaleValue(value, factor) {
     const input = value[0] === "interpolate" ? 2 : 1;
     if (Array.isArray(value[input]) && value[input][0] === "zoom") {
       const out = value.slice();
-      for (let i = input + 2; i < out.length; i += 2) out[i] = scaleValue(out[i], factor);
+      // The outputs: interpolate [.., input, z, v, z, v], step [.., input, v, z, v].
+      for (let i = 4; i < out.length; i += 2) out[i] = scaleValue(out[i], factor);
       if (value[0] === "step") out[2] = scaleValue(value[2], factor);
       return out;
     }

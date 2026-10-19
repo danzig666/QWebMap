@@ -28,7 +28,9 @@
         "properties": {
           "key": {"type": "string"}, "path": {"type": "string"}, "part": {"type": "integer", "minimum": 0},
           "records": {"type": "integer", "minimum": 0}, "bytes": {"type": "integer", "minimum": 0},
-          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "offset": {"type": "integer", "minimum": 0}, "length": {"type": "integer", "minimum": 0},
+          "encoding": {"enum": ["gzip"]}
         }
       }
     }

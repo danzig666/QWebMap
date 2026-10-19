@@ -27,7 +27,7 @@ def wms_template(service_url: str, layers: str, image_format: str = "image/png",
     crs = "CRS" if version.startswith("1.3") else "SRS"
     query = [("SERVICE", "WMS"), ("VERSION", version), ("REQUEST", "GetMap"), ("LAYERS", layers),
              ("STYLES", styles), (crs, "EPSG:3857"), ("WIDTH", "256"), ("HEIGHT", "256"),
-             ("FORMAT", image_format), ("TRANSPARENT", "TRUE" if image_format.endswith("png") else "FALSE")]
+             ("FORMAT", image_format), ("TRANSPARENT", "FALSE" if "jp" in image_format.lower() else "TRUE")]
     # The service's own values fully encoded: a MapServer map=/srv/… path is
     # not taken for a leaked local path by the release scan.
     text = "&".join(filter(None, [urlencode(own, quote_via=quote, safe=":,"),

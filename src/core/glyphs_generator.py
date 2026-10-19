@@ -137,8 +137,11 @@ class GlyphGenerator:
                 default_style = next((s for s in styles if s.lower() in
                                       ("regular", "normal", "book", "roman", "medium")), None)
                 return family, default_style or (styles[0] if styles else "Regular")
+            # fontstack_name writes "Normal" as "Regular" (a localized Qt5
+            # on Windows, fontconfig aliases): compare the canonical names.
+            canon = lambda s: "regular" if s.lower() in ("normal", "regular") else s.lower()  # noqa: E731
             for style in styles:
-                if remainder.lower() == style.lower():
+                if canon(remainder) == canon(style):
                     return family, style
         return None
 

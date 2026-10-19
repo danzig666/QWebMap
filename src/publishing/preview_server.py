@@ -154,7 +154,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":  # (a HEAD answer has no body)
+            self.wfile.write(body)
         self._record(status.value, 0)
 
     def _record(self, status: int, sent: int):

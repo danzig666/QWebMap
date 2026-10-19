@@ -2010,7 +2010,7 @@ class RulesFlattener:
         return translate
 
     @staticmethod
-    def _convert_fill_outline_to_line_symbol(fill_symbol: QgsFillSymbol) -> QgsFillSymbol | None:
+    def _convert_fill_outline_to_line_symbol(fill_symbol: QgsFillSymbol) -> Optional[QgsFillSymbol]:
         """ Convert a QgsFillSymbol containing a single QgsSimpleFillSymbolLayer into 
         a cloned QgsFillSymbol containing a single QgsSimpleLineSymbolLayer representing
         the original outline.

@@ -95,12 +95,15 @@ def guide_html() -> str:
             "to an earlier one, and <b>Releases to keep</b> limits how many stay in the bucket.")),
     ]
     items = "".join(f"<li><p><b>{title}</b><br>{body}</p></li>" for title, body in steps)
+    # (Not inside the f-strings: a string continued across lines in a
+    # replacement field needs Python 3.12.)
+    intro = tr("One-time setup in the Cloudflare dashboard (about 10 minutes). Afterwards "
+               "publishing is one click.")
+    note = tr("Nothing is created, made public or deleted in your Cloudflare account "
+              "by the plugin: it only uploads into the bucket and prefix you enter.")
     return (f"<h2>{tr('Publishing to Cloudflare R2')}</h2>"
-            f"<p>{tr('One-time setup in the Cloudflare dashboard (about 10 minutes). Afterwards '
-                    'publishing is one click.')}</p><ol>{items}</ol>"
-            f"<p><i>{tr('Nothing is created, made public or deleted in your Cloudflare account '
-                       'by the plugin: it only uploads into the bucket and prefix you enter.')}"
-            "</i></p>")
+            f"<p>{intro}</p><ol>{items}</ol>"
+            f"<p><i>{note}</i></p>")
 
 
 class R2GuideDialog(QDialog):

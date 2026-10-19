@@ -57,8 +57,10 @@ export class Legend {
     // Raster layers: drawn when switched on and inside their area and zooms.
     const bounds = this.map.getBounds();
     const zoom = this.map.getZoom();
-    for (const source of this.manifest.sources || []) {
-      if (source.role !== "raster" || !source.layerId || !this.control.layerEnabled(source.layerId, state)) continue;
+    const rasters = [...(this.manifest.sources || []).filter((s) => s.role === "raster"),
+                     ...(this.manifest.liveRasters || [])];  // (live ones: from their own server)
+    for (const source of rasters) {
+      if (!source.layerId || !this.control.layerEnabled(source.layerId, state)) continue;
       const [w, s, e, n] = source.bounds || [-180, -90, 180, 90];
       const overlaps = !(e < bounds.getWest() || w > bounds.getEast() || n < bounds.getSouth() || s > bounds.getNorth());
       const layer = this.control.layers.get(source.layerId);

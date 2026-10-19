@@ -631,10 +631,10 @@ def _live_rasters(project, configs, extent_3857, progress) -> Tuple[List[dict], 
                 progress.info(f'Raster layer "{layer.name()}" is rendered into the release: {why}.')
             rendered.append(config)
             continue
-        if bounds and live_raster.cors_allowed(source, ((bounds[0] + bounds[2]) / 2,
-                                                        (bounds[1] + bounds[3]) / 2)) is False:
-            progress.info(f'Raster layer "{layer.name()}" is rendered into the release: its server does '
-                          "not let other sites' pages use its images (CORS).")
+        usable, why = live_raster.probe(source, ((bounds[0] + bounds[2]) / 2,
+                                                 (bounds[1] + bounds[3]) / 2)) if bounds else (None, "")
+        if usable is False:
+            progress.info(f'Raster layer "{layer.name()}" is rendered into the release: {why}.')
             rendered.append(config)
             continue
         lid = layer_logical_id(layer.id())

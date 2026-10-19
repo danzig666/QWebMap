@@ -9,7 +9,11 @@ const shards = new Map(); // shard id -> Promise<entries>
 
 async function loadShard(shard) {
   const id = shardId(shard);
-  if (!shards.has(id)) shards.set(id, fetchShard(base, shard).then((data) => data.entries));
+  if (!shards.has(id)) {
+    const loading = fetchShard(base, shard).then((data) => data.entries);
+    shards.set(id, loading);
+    loading.catch(() => shards.delete(id));  // tried again next time
+  }
   return shards.get(id);
 }
 

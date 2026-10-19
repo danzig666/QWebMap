@@ -431,6 +431,8 @@ export async function mount({ map, manifest, manifestUrl, pageUrl, assetsUrl, ma
   const parts = { state, control, permalink, lookup, identify, panel, basemap };
   if (panel.panes.layers) {
     parts.layers = new LayerControls({ map, manifest, state, control, container: panel.panes.layers, releaseBase });
+  } else if (state.value.labels === false) {
+    state.set({ labels: true });  // no Layers tab, no labels switch to undo a remembered or linked "off"
   }
   if (panel.panes.parcel) {
     const report = new ParcelReport({ map, manifest, manifestUrl, releaseBase, maplibregl,

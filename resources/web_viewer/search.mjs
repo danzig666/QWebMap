@@ -104,9 +104,10 @@ export class Search {
     try {
       await this.start();
     } catch {
-      this.show([], 0, t("search.unavailable"));
+      if (id === this.seq) this.show([], 0, t("search.unavailable"));
       return;
     }
+    if (id !== this.seq) return;  // closed or a newer query while the index loaded
     this.show([], 0, t("search.loading"));
     const msg = await new Promise((resolve) => {
       this.pending.set(id, resolve);
@@ -116,10 +117,12 @@ export class Search {
     if (msg.type === "error") { this.show([], 0, t("search.unavailable")); return; }
     if (msg.needMore) { this.show([], 0, t("search.typeMore")); return; }
     this.show(msg.results, msg.total);
+    this.itemsFor = text;
   }
 
   show(results, total, note) {
     this.items = results;
+    this.itemsFor = null;
     this.active = -1;
     this.list.replaceChildren();
     results.forEach((result, index) => {
@@ -146,6 +149,8 @@ export class Search {
 
   close() {
     this.seq += 1;  // a query still running must not reopen the list
+    this.items = [];  // (Enter must not pick a closed list's result)
+    this.itemsFor = null;
     this.list.hidden = true;
     this.input.setAttribute("aria-expanded", "false");
     this.input.removeAttribute("aria-activedescendant");
@@ -155,6 +160,16 @@ export class Search {
     if (event.key === "Escape") {
       if (this.list.hidden && this.setSearchOpen) { this.setSearchOpen(false); this.input.blur(); }
       this.close();
+      return;
+    }
+    if (event.key === "Enter" && this.itemsFor !== this.input.value) {
+      // Typed faster than the search: search now, then take the first result.
+      event.preventDefault();
+      clearTimeout(this.timer);
+      const text = this.input.value;
+      this.query(text).then(() => {
+        if (this.items.length && this.itemsFor === text && this.input.value === text) this.choose(0);
+      });
       return;
     }
     if (!this.items.length) return;

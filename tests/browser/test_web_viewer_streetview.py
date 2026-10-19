@@ -105,7 +105,7 @@ def test_page_and_manifest_allow_google(site):
     assert interaction["streetView"] is True and interaction["googleApiKey"] == "TESTKEY"
     with open(os.path.join(site["rel"], "index.html"), encoding="utf-8") as handle:
         page = handle.read()
-    assert "script-src 'self' https://*.googleapis.com" in page and "frame-src https://*.google.com" in page
+    assert "script-src 'self' https://*.googleapis.com" in page and "frame-src 'self' blob: https://*.google.com" in page
     assert '<meta name="referrer" content="strict-origin-when-cross-origin">' in page
 
 

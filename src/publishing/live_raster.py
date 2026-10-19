@@ -88,7 +88,8 @@ def describe(uri: Dict[str, object], formats: Optional[List[str]] = None) -> Tup
         image = "jpg" if ".jpg" in url.lower() or ".jpeg" in url.lower() else "png"
         return {"kind": "xyz", "tiles": tiles, "scheme": scheme,
                 "minzoom": max(0, low) if low is not None else 0,
-                "maxzoom": min(22, high) if high is not None else 22, "format": image}, ""
+                # (no zmax: QGIS's own default, 18; deeper tiles rarely exist)
+                "maxzoom": min(22, high) if high is not None else 18, "format": image}, ""
     if uri.get("tileMatrixSet"):
         return None, "WMTS services are rendered"
     layers = _joined(uri.get("layers"))
@@ -191,11 +192,12 @@ def sample_tile_url(source: dict, lonlat) -> str:
     return url.replace("{z}", str(zoom)).replace("{x}", str(x)).replace("{y}", str(y))
 
 
-def cors_allowed(source: dict, lonlat, origin: str = "https://example.org",
-                 timeout_ms: int = 8000) -> Optional[bool]:
-    """Whether the server lets another site's page use its images (CORS:
-    WebGL draws only those): True / False, None when it could not be asked
-    (no network)."""
+def probe(source: dict, lonlat, origin: str = "https://example.org",
+          timeout_ms: int = 8000) -> Tuple[Optional[bool], str]:
+    """(usable, why not) of the server's sample tile: an image another
+    site's page may use (CORS: WebGL draws only those). None when the server
+    could not be asked (no network). A WMS that cannot draw in Web Mercator
+    answers with an error (an exception document), not an image."""
     from qgis.core import QgsBlockingNetworkRequest  # pylint: disable=import-outside-toplevel
     from qgis.PyQt.QtCore import QUrl  # pylint: disable=import-outside-toplevel
     from qgis.PyQt.QtNetwork import QNetworkRequest  # pylint: disable=import-outside-toplevel
@@ -206,8 +208,17 @@ def cors_allowed(source: dict, lonlat, origin: str = "https://example.org",
     except AttributeError:
         pass
     blocking = QgsBlockingNetworkRequest()
-    if blocking.get(request, forceRefresh=True) != QgsBlockingNetworkRequest.NoError:
-        return None
+    error = blocking.get(request, forceRefresh=True)
     reply = blocking.reply()
+    status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+    if error != QgsBlockingNetworkRequest.NoError:
+        if status is not None and 400 <= int(status) < 600 and source.get("kind") == "wms":
+            return False, f"its server answered a test image with HTTP {int(status)}"
+        return None, ""  # no answer (offline): kept live
+    kind = bytes(reply.rawHeader(b"Content-Type")).decode("latin-1").strip().lower()
+    if source.get("kind") == "wms" and kind and not kind.startswith("image/"):
+        return False, "its server answered a test image in Web Mercator (EPSG:3857) with an error"
     allowed = bytes(reply.rawHeader(b"Access-Control-Allow-Origin")).decode("latin-1").strip()
-    return allowed in ("*", origin)
+    if allowed not in ("*", origin):
+        return False, "its server does not let other sites' pages use its images (CORS)"
+    return True, ""

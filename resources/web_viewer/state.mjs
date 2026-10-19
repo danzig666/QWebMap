@@ -72,7 +72,10 @@ export class ViewerState {
     const groups = { ...value.groups };
     for (const id of this.locked.layers) if (id in layers) layers[id] = true;
     for (const id of this.locked.groups) if (id in groups) groups[id] = true;
-    return { ...value, layers, groups };
+    // Nor hidden by opacity 0 (its slider stops at 10 %).
+    const opacity = { ...(value.opacity || {}) };
+    for (const id of this.locked.layers) if (id in opacity && !(opacity[id] >= 0.1)) opacity[id] = 0.1;
+    return { ...value, layers, groups, opacity };
   }
 
   applyTheme(id) {
