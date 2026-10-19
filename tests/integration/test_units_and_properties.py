@@ -524,3 +524,20 @@ def test_thin_hairlines_option(mc, thin, dashed):
     else:
         assert paint["line-width"] == 1.0
         assert "q2vt:hairline" not in metadata
+
+
+def test_data_defined_multiline_alignment_uses_maplibre_names(mc):
+    """QGIS names (Left, Center, Right, Follow, Justify) become text-justify
+    values; a field's value is matched case-insensitively."""
+    from qgis.core import QgsPalLayerSettings, QgsProperty
+    settings = QgsPalLayerSettings()
+    props = settings.dataDefinedProperties()
+    props.setProperty(QgsPalLayerSettings.Property.MultiLineAlignment, QgsProperty.fromValue("Right"))
+    settings.setDataDefinedProperties(props)
+    assert mc.TextPropertyExtractor.get_text_justify(settings) == "right"
+    props.setProperty(QgsPalLayerSettings.Property.MultiLineAlignment, QgsProperty.fromField("q2vt_ddp_align"))  # (a fetched value)
+    settings.setDataDefinedProperties(props)
+    value = mc.TextPropertyExtractor.get_text_justify(settings)
+    assert value[0] == "match" and value[1][0] == "downcase"
+    pairs = dict(zip(value[2:-1:2], value[3:-1:2]))
+    assert pairs["follow"] == "auto" and pairs["justify"] == "left" and pairs["right"] == "right"
