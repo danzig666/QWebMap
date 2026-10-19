@@ -598,7 +598,11 @@ class RulesExporter:
             cached_outputs = self._reuse_cached(sources, rule_groups)
             pending = [grp for grp in rule_groups if grp.output_dataset not in cached_outputs]
             needed = {grp.layer_id for grp in pending}
-            self._part_layers = {grp.layer_id for grp in pending if grp.visible_polygons}
+            # Parts are numbered for visible-polygon labels and for QGIS 4
+            # blank segments (listed per part).
+            self._part_layers = {grp.layer_id for grp in pending if grp.visible_polygons or (
+                grp.recipe is not None and grp.recipe.kind == "marker_points"
+                and grp.recipe.param("blank"))}
 
             # Phase 1 — serial source materialisation (caller thread).
             if self._is_cancelled():
@@ -1124,8 +1128,9 @@ class RulesExporter:
             recipe = getattr(rule, "recipe", None)
             if recipe is None:
                 continue
-            if recipe.kind == "arrow_polygons" or (recipe.kind == "marker_points" and any(
-                    p in mat.VERTEX_PLACEMENTS or p == "SegmentCenter" for p in recipe.placements)):
+            if recipe.kind == "arrow_polygons" or (recipe.kind == "marker_points" and (any(
+                    p in mat.VERTEX_PLACEMENTS or p == "SegmentCenter" for p in recipe.placements)
+                    or recipe.param("trim") or recipe.param("blank"))):
                 keep.add(rule.layer.id())
         return keep
 
@@ -3071,7 +3076,15 @@ class RulesExporter:
 
     def _materialize_marker_points(self, source: str, recipe: Recipe, source_geometry: int) -> str:
         """Worker: exact marker-line positions as points with ``ANGLE_FIELD``."""
+        if "ExtraItems" in recipe.placements:
+            return self._extra_item_points(source, recipe, source_geometry)
         lines = source
+        if recipe.param("trim") or recipe.param("blank"):
+            # QGIS 4: trimmed parts / rings with their blank segments, then
+            # offset and placed as lines (an offset polygon outline has
+            # neither, see SymbolMaterializer._trimmed_or_blanked).
+            lines = self._templated_lines(source, recipe, source_geometry)
+            source_geometry = 1
         if source_geometry == 2 and (recipe.param("offset") or recipe.param("ring_filter")):
             # QGIS buffers each ring (positive = inwards), see polygon_offset_expression.
             lines = self._run_alg_safe(
@@ -3100,7 +3113,8 @@ class RulesExporter:
         if vertex_placements:
             outputs.append(self._vertex_points(lines, vertex_placements, recipe.param("along") or 0.0,
                                                recipe))
-        if "Interval" in recipe.placements and self._memory_active:
+        if "Interval" in recipe.placements and (self._memory_active or recipe.param("blank")):
+            # (Blank segments are skipped in Python only.)
             outputs.append(self._interval_points_direct(lines, recipe))
         elif "Interval" in recipe.placements:
             multipoints = self._run_alg_safe(
@@ -3115,6 +3129,9 @@ class RulesExporter:
         for placement in ("CentralPoint", "SegmentCenter"):
             if placement not in recipe.placements:
                 continue
+            if recipe.param("blank"):
+                outputs.append(self._centre_points(lines, placement, recipe))
+                continue
             base = lines
             if placement == "SegmentCenter":
                 base = self._run_alg_safe("explodelines", "native", INPUT=lines)
@@ -3125,9 +3142,13 @@ class RulesExporter:
             outputs.append(self._run_alg_safe(
                 "geometrybyexpression", "native", INPUT=angled, OUTPUT_GEOMETRY=2,
                 EXPRESSION="line_interpolate_point(@geometry, length(@geometry) / 2)"))
-        if len(outputs) == 1:
-            return outputs[0]
-        return self._run_alg_safe("mergevectorlayers", "native", LAYERS=outputs)
+        merged = outputs[0] if len(outputs) == 1 else \
+            self._run_alg_safe("mergevectorlayers", "native", LAYERS=outputs)
+        if recipe.param("blank") and \
+                self._open(merged, "fields").fields().indexFromName(mat.BLANK_FIELD) >= 0:
+            merged = self._run_alg_safe("deletecolumn", "native", INPUT=merged,
+                                        COLUMN=[mat.BLANK_FIELD])
+        return merged
 
     # QVariant type of an expression field -> fieldcalculator FIELD_TYPE
     # (0 decimal, 1 integer, 2 text).
@@ -3724,6 +3745,24 @@ class RulesExporter:
             drawn = marker_points.along_vertex_marker(xs, ys, placement, along * ratio)
             return point.x(), point.y(), drawn[2] if drawn is not None else moved[2]
 
+        # QGIS 4 blank segments (_templated_lines): measured along the line
+        # in the recipe CRS, as QGIS measures them on screen.
+        blank_index = source.fields().indexFromName(mat.BLANK_FIELD)
+        blank_to = self._recipe_transforms(source, recipe)[0] if blank_index >= 0 else None
+
+        def blanked_walkers(xs, ys, blanks):
+            """(x, y of the line in the recipe CRS, its vertex distances); None
+            without blank segments."""
+            if not blanks:
+                return None
+            if blank_to is not None:
+                try:
+                    moved = [blank_to.transform(x, y) for x, y in zip(xs, ys)]
+                    xs, ys = [p.x() for p in moved], [p.y() for p in moved]
+                except QgsCsException:
+                    return None
+            return xs, ys, marker_points.cumulative_lengths(xs, ys)
+
         for feature in source.getFeatures():
             self._check_cancel()
             geometry = feature.geometry()
@@ -3732,15 +3771,32 @@ class RulesExporter:
             attributes = [feature[field.name()] for field in fields
                           if field.name() != mat.ANGLE_FIELD and field.name() not in
                           {name for name, _ in vertex_fields}]
+            blanks = marker_points.blank_pairs(feature.attribute(blank_index)) \
+                if blank_index >= 0 else []
             for part in geometry.constParts():
                 line = part.curveToLine() if part.hasCurvedSegments() else part
                 xs = [line.xAt(i) for i in range(line.numPoints())]
                 ys = [line.yAt(i) for i in range(line.numPoints())]
+                measured = blanked_walkers(xs, ys, blanks)
                 drawn = set()
                 for placement in placements:
+                    # One walker per placement pass, as renderPolylineVertex.
+                    walker = marker_points.BlankWalker(blanks) if measured else None
                     if along and placement in ("FirstVertex", "LastVertex"):
                         # Moved along the line; none where the line is shorter.
                         moved = moved_along(xs, ys, placement)
+                        if moved is not None and walker is not None and along < 0:
+                            # Not moved: QGIS places it on its vertex.
+                            if walker.inside(measured[2][0 if placement == "FirstVertex" else -1]):
+                                moved = None
+                        elif moved is not None and walker is not None:
+                            mxs, mys, cumulative = measured
+                            there = marker_points.along_vertex_marker(mxs, mys, placement, along)
+                            index = marker_points.along_vertex_index(mxs, mys, placement, along)
+                            if there is not None and index is not None and walker.inside(
+                                    marker_points.walker_distance(mxs, mys, cumulative, index,
+                                                                  there[0], there[1])):
+                                moved = None
                         if moved is not None:
                             number = 1 if placement == "FirstVertex" else len(xs)
                             values, x, y = per_vertex(feature, number, len(xs), moved[0], moved[1],
@@ -3751,6 +3807,8 @@ class RulesExporter:
                             writer.addFeature(point)
                         continue
                     for index, angle in marker_points.vertex_markers(xs, ys, placement):
+                        if walker is not None and walker.inside(measured[2][index]):
+                            continue  # in a blank segment
                         if (index, angle) in drawn:
                             continue  # the same marker of two placements
                         drawn.add((index, angle))
@@ -3760,6 +3818,302 @@ class RulesExporter:
                         point.setAttributes(attributes + values + [angle])
                         point.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
                         writer.addFeature(point)
+        del writer
+        return out
+
+    @staticmethod
+    def _recipe_transforms(source, recipe: Recipe):
+        """(to, back): transforms between ``source``'s CRS and the recipe CRS
+        (the project's, where QGIS measures lengths); (None, None) when they
+        are the same."""
+        crs = recipe.param("crs") or ""
+        if not crs or crs == source.crs().authid():
+            return None, None
+        target = QgsCoordinateReferenceSystem(crs)
+        if not target.isValid():
+            return None, None
+        return (QgsCoordinateTransform(source.crs(), target, QgsProject.instance()),
+                QgsCoordinateTransform(target, source.crs(), QgsProject.instance()))
+
+    def _point_writer(self, prefix: str, fields, wkb_type, crs):
+        """(path, writer) of a worker's FlatGeobuf output (in feature order)."""
+        out = self._temp_path(prefix)[:-len(_TEMP_RULE_FORMAT)] + "fgb"
+        with self._temp_files_lock:
+            self._temp_files.add(out)
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = "FlatGeobuf"
+        options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
+        return out, QgsVectorFileWriter.create(out, fields, wkb_type, crs,
+                                               QgsProject.instance().transformContext(), options)
+
+    @staticmethod
+    def _part_numbers(layer) -> Dict[int, int]:
+        """{feature id: @geometry_part_num} of a base layer's single parts
+        (PART_FIELD counts on within a feature; 1 without it)."""
+        part = layer.fields().indexFromName(PART_FIELD)
+        orig = layer.fields().indexFromName(f"{_FIELD_PREFIX}_orig_id")
+        if part < 0 or orig < 0:
+            return {}
+        values = {}
+        first: Dict[Any, int] = {}
+        request = QgsFeatureRequest().setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        for feature in layer.getFeatures(request):
+            try:
+                number = int(feature.attribute(part))
+            except (TypeError, ValueError):
+                continue
+            key = feature.attribute(orig)
+            values[feature.id()] = (key, number)
+            first[key] = min(first.get(key, number), number)
+        return {fid: number - first[key] + 1 for fid, (key, number) in values.items()}
+
+    @staticmethod
+    def _value_text(value) -> str:
+        """QVariant::toString of an expression result ("" for NULL)."""
+        if value is None or (isinstance(value, QVariant) and value.isNull()):
+            return ""
+        return str(value)
+
+    @staticmethod
+    def _part_rings(part, polygon: bool, ring_filter: int):
+        """[(@geometry_ring_num, ring)] QGIS draws a templated line on:
+        renderPolygonStroke's exterior ring (unless "interior rings only")
+        and interior rings (unless "exterior ring only")."""
+        if not polygon:
+            return [(0, part)]
+        rings = [] if ring_filter == 2 else [(0, part.exteriorRing())]
+        if ring_filter != 1:
+            rings += [(i + 1, part.interiorRing(i)) for i in range(part.numInteriorRings())]
+        return [(number, ring) for number, ring in rings if ring is not None]
+
+    def _templated_lines(self, source: str, recipe: Recipe, source_geometry: int) -> str:
+        """Worker: the line parts (a polygon's rings, by the recipe's ring
+        filter) a QGIS 4 marker / hash line places its items on, each trimmed
+        as QGIS trims it before anything else (marker_points.trim_points, in
+        the recipe CRS: the "trim" lengths, or per cent of the part) and
+        with its blank segments (``mat.BLANK_FIELD``: the evaluated
+        string's list for this part and ring, in the recipe CRS's units).
+        Data-defined values are evaluated for every part and ring as QGIS
+        evaluates them (@geometry_part_num, @geometry_ring_num set). A part
+        trimmed away is left out."""
+        from qgis.core import QgsPointXY  # pylint: disable=import-outside-toplevel
+        self._check_cancel()
+        layer = self._open(source, "templated")
+        trims = recipe.param("trim") or (None, None)
+        blank = recipe.param("blank")
+        fields = QgsFields()
+        for field in layer.fields():
+            if field.name().lower() not in ("fid", "ogc_fid") and field.name() != mat.BLANK_FIELD:
+                fields.append(field)
+        if blank:
+            fields.append(QgsField(mat.BLANK_FIELD, QVariant.String))
+        context = self._worker_expression_context()
+        context.setFields(layer.fields())
+        scope = QgsExpressionContextScope()
+        context.appendScope(scope)
+        expressions = {}
+        for key, text in (("start", trims[0][3] if trims[0] else ""),
+                          ("end", trims[1][3] if trims[1] else ""),
+                          ("blank", blank[0] if blank else "")):
+            if text:
+                expressions[key] = QgsExpression(text)
+                expressions[key].prepare(context)
+        to_crs, back = self._recipe_transforms(layer, recipe)
+        parts = self._part_numbers(layer) if blank else {}
+        polygon = source_geometry == 2
+        ring_filter = int(recipe.param("ring_filter", 0) or 0)
+
+        def length(index):
+            """(trim length, per cent) at one end, for the current context."""
+            trim = trims[index]
+            if trim is None:
+                return 0.0, False
+            value, factor, pct, _ = trim
+            expression = expressions.get("start" if index == 0 else "end")
+            if expression is not None:
+                # valueAsDouble: the static value when NULL or not a number.
+                result = expression.evaluate(context)
+                try:
+                    value = float(self._value_text(result)) if not expression.hasEvalError() \
+                        else value
+                except ValueError:
+                    pass
+            return (value, True) if pct else (value * factor, False)
+
+        out, writer = self._point_writer("templated", fields, QgsWkbTypes.LineString, layer.crs())
+        for feature in layer.getFeatures():
+            self._check_cancel()
+            geometry = feature.geometry()
+            if geometry.isNull() or geometry.isEmpty():
+                continue
+            context.setFeature(feature)
+            attributes = [feature[field.name()] for field in fields if field.name() != mat.BLANK_FIELD]
+            part_number = parts.get(feature.id(), 1)
+            for offset, part in enumerate(geometry.constParts()):
+                for ring_number, ring in self._part_rings(part, polygon, ring_filter):
+                    line = ring.curveToLine() if ring.hasCurvedSegments() else ring
+                    xs = [line.xAt(i) for i in range(line.numPoints())]
+                    ys = [line.yAt(i) for i in range(line.numPoints())]
+                    try:
+                        if to_crs is not None:
+                            moved = [to_crs.transform(x, y) for x, y in zip(xs, ys)]
+                            xs, ys = [p.x() for p in moved], [p.y() for p in moved]
+                    except QgsCsException:
+                        continue
+                    scope.setVariable("geometry_part_num", part_number + offset)
+                    scope.setVariable("geometry_ring_num", ring_number)
+                    (start, start_pct), (end, end_pct) = length(0), length(1)
+                    trimmed = marker_points.trim_points(xs, ys, start, end, start_pct, end_pct)
+                    if trimmed is None:
+                        continue  # nothing left to place on
+                    xs, ys = trimmed
+                    values = list(attributes)
+                    if blank:
+                        pairs = []
+                        parsed = marker_points.parse_blank_segments(
+                            self._value_text(expressions["blank"].evaluate(context)))
+                        index = part_number + offset - 1
+                        if parsed and index < len(parsed) and ring_number < len(parsed[index]):
+                            pairs = [[start_ * blank[1], end_ * blank[1]]
+                                     for start_, end_ in parsed[index][ring_number]]
+                        values.append(json.dumps(pairs) if pairs else None)
+                    try:
+                        if back is not None:
+                            moved = [back.transform(x, y) for x, y in zip(xs, ys)]
+                            xs, ys = [p.x() for p in moved], [p.y() for p in moved]
+                    except QgsCsException:
+                        continue
+                    piece = QgsFeature(fields)
+                    piece.setAttributes(values)
+                    piece.setGeometry(QgsGeometry.fromPolylineXY(
+                        [QgsPointXY(x, y) for x, y in zip(xs, ys)]))
+                    writer.addFeature(piece)
+        del writer
+        return out
+
+    def _centre_points(self, lines: str, placement: str, recipe: Recipe) -> str:
+        """Worker: "CentralPoint" / "SegmentCenter" markers of lines with
+        QGIS 4 blank segments, placed as the processing chain places them
+        (half way along the line or segment, its azimuth) and left out
+        where renderPolylineCentral / renderPolylineVertex's walker blanks
+        them: the centre at half the line's length; a segment's centre, as
+        QGIS measures it from the segment's end vertex, at that vertex's
+        distance plus half the segment."""
+        from qgis.core import QgsPointXY  # pylint: disable=import-outside-toplevel
+        self._check_cancel()
+        layer = self._open(lines, "centres")
+        fields = QgsFields()
+        for field in layer.fields():
+            if field.name().lower() not in ("fid", "ogc_fid") and field.name() != mat.ANGLE_FIELD:
+                fields.append(field)
+        fields.append(QgsField(mat.ANGLE_FIELD, QVariant.Double))
+        blank_index = layer.fields().indexFromName(mat.BLANK_FIELD)
+        to_crs, _ = self._recipe_transforms(layer, recipe)
+        out, writer = self._point_writer("centres", fields, QgsWkbTypes.Point, layer.crs())
+
+        def add(attributes, x, y, angle):
+            point = QgsFeature(fields)
+            point.setAttributes(attributes + [angle])
+            point.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
+            writer.addFeature(point)
+        for feature in layer.getFeatures():
+            self._check_cancel()
+            geometry = feature.geometry()
+            if geometry.isNull() or geometry.isEmpty():
+                continue
+            attributes = [feature[field.name()] for field in fields if field.name() != mat.ANGLE_FIELD]
+            blanks = marker_points.blank_pairs(feature.attribute(blank_index)) \
+                if blank_index >= 0 else []
+            for part in geometry.constParts():
+                line = part.curveToLine() if part.hasCurvedSegments() else part
+                xs = [line.xAt(i) for i in range(line.numPoints())]
+                ys = [line.yAt(i) for i in range(line.numPoints())]
+                if len(xs) < 2:
+                    continue
+                mxs, mys = xs, ys
+                if to_crs is not None:
+                    try:
+                        moved = [to_crs.transform(x, y) for x, y in zip(xs, ys)]
+                    except QgsCsException:
+                        continue
+                    mxs, mys = [p.x() for p in moved], [p.y() for p in moved]
+                cumulative = marker_points.cumulative_lengths(mxs, mys)
+                walker = marker_points.BlankWalker(blanks)
+                if placement == "CentralPoint":
+                    if cumulative[-1] <= 0 or walker.inside(cumulative[-1] / 2):
+                        continue
+                    drawn = marker_points.Line(xs, ys)
+                    point = drawn.point(drawn.length / 2)
+                    if point is not None:
+                        add(attributes, point[0], point[1], drawn.angle(drawn.length / 2))
+                    continue
+                for i in range(1, len(xs)):
+                    mid = (0.5 * (mxs[i] + mxs[i - 1]), 0.5 * (mys[i] + mys[i - 1]))
+                    if walker.inside(marker_points.walker_distance(mxs, mys, cumulative, i, *mid)):
+                        continue
+                    segment = marker_points.Line(xs[i - 1:i + 1], ys[i - 1:i + 1])
+                    add(attributes, 0.5 * (xs[i] + xs[i - 1]), 0.5 * (ys[i] + ys[i - 1]),
+                        segment.angle(segment.length / 2))
+        del writer
+        return out
+
+    def _extra_item_points(self, source: str, recipe: Recipe, source_geometry: int) -> str:
+        """Worker: the extra items of a QGIS 4.2 marker / hash line, points
+        with the source fields and ``ANGLE_FIELD``: the "extra" string
+        evaluated for every part (QGIS draws them in renderPolyline, once a
+        line part or polygon part: not for a polygon whose only rings
+        "interior rings only" leaves out), "x y angle" as map coordinates
+        of the recipe CRS and a clockwise angle from the line direction
+        east, turned with the grid into the export CRS."""
+        from qgis.core import QgsPointXY  # pylint: disable=import-outside-toplevel
+        self._check_cancel()
+        layer = self._open(source, "extra_items")
+        fields = QgsFields()
+        for field in layer.fields():
+            if field.name().lower() not in ("fid", "ogc_fid") and field.name() != mat.ANGLE_FIELD:
+                fields.append(field)
+        fields.append(QgsField(mat.ANGLE_FIELD, QVariant.Double))
+        context = self._worker_expression_context()
+        context.setFields(layer.fields())
+        scope = QgsExpressionContextScope()
+        context.appendScope(scope)
+        expression = QgsExpression(recipe.param("extra"))
+        expression.prepare(context)
+        _, back = self._recipe_transforms(layer, recipe)
+        parts = self._part_numbers(layer)
+        ring_filter = int(recipe.param("ring_filter", 0) or 0)
+        out, writer = self._point_writer("extra_items", fields, QgsWkbTypes.Point, layer.crs())
+        for feature in layer.getFeatures():
+            self._check_cancel()
+            geometry = feature.geometry()
+            if geometry.isNull() or geometry.isEmpty():
+                continue
+            attributes = [feature[field.name()] for field in fields if field.name() != mat.ANGLE_FIELD]
+            context.setFeature(feature)
+            for offset, part in enumerate(geometry.constParts()):
+                if source_geometry == 2 and ring_filter == 2 and not part.numInteriorRings():
+                    continue
+                scope.setVariable("geometry_part_num", parts.get(feature.id(), 1) + offset)
+                items = marker_points.parse_extra_items(
+                    self._value_text(expression.evaluate(context)))
+                for x, y, angle in items:
+                    # A line angle of 0 points east: azimuth 90.
+                    azimuth = (angle + 90.0) % 360.0
+                    if back is not None:
+                        step = 1e-3
+                        ahead = (x + step * math.sin(math.radians(azimuth)),
+                                 y + step * math.cos(math.radians(azimuth)))
+                        try:
+                            point = back.transform(x, y)
+                            far = back.transform(*ahead)
+                        except QgsCsException:
+                            continue
+                        x, y = point.x(), point.y()
+                        azimuth = math.degrees(math.atan2(far.x() - x, far.y() - y)) % 360.0
+                    item = QgsFeature(fields)
+                    item.setAttributes(attributes + [azimuth])
+                    item.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
+                    writer.addFeature(item)
         del writer
         return out
 

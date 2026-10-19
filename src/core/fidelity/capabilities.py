@@ -22,7 +22,10 @@ DDP_EMITTERS: Dict[str, frozenset] = {
     "line": frozenset({"StrokeColor", "StrokeWidth", "Opacity", "Offset", "Color"}),
     "fill": frozenset({"FillColor", "Opacity", "StrokeColor", "Color"}),
     "marker": frozenset({"Size", "Angle", "Opacity", "any other (sprite variants)"}),
-    "marker_line": frozenset({"Opacity", "Interval"}),
+    # (QGIS 4 templated lines: trims, blank segments and extra items are
+    # placed by the exporter.)
+    "marker_line": frozenset({"Opacity", "Interval", "TrimStart", "TrimEnd", "BlankSegments",
+                              "ExtraItems"}),
     "font_marker": frozenset({"Character", "Size", "Angle", "Opacity", "FillColor", "Color"}),
     "pattern": frozenset(),
 }
@@ -117,18 +120,33 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
                "line azimuth; polygon outline offsets buffer every ring like QGIS. Vertex "
                "markers' values computed per vertex (@geometry_point_num, "
                "@geometry_point_count: a course's control numbers) are evaluated on every "
-               "vertex; such a data-defined offset in map units moves the point.",
+               "vertex; such a data-defined offset in map units moves the point. QGIS 4: "
+               "trim distance at start / end (data-defined too) trims every part or ring "
+               "before anything is placed on it, blank segments (data defined, per part and "
+               "ring) leave out the markers QGIS leaves out, measured as QGIS measures them "
+               "for every placement, and extra items (data-defined \"x y angle\" list) are "
+               "markers of their own at those map positions; map units and percentages "
+               "exactly, screen units per quarter of a zoom.",
                ("Data-defined intervals, and screen-unit intervals with Fast marker lines on, "
                 "are a native repeated symbol: start position differs and spacing is within "
                 "about ±41 % between integer zooms (reported).",
                 "Map-unit intervals denser than 8 px on screen use the native symbol at "
-                "those zooms."),
+                "those zooms.",
+                "Where markers are placed by the browser (native symbol), and on an offset "
+                "polygon outline, they are drawn untrimmed and without blank segments "
+                "(reported).",
+                "QGIS trims, blanks and spaces markers along each line clipped to the view "
+                "(10 % around it): a line reaching far outside the view moves its markers "
+                "while panning there; the web map places them on the whole line."),
                ("tests/integration/test_materialize.py",
+                "tests/integration/test_marker_line_extras.py",
                 "tests/browser/test_browser_parity.py")),
-    Capability("HashLine", "line", Strategy.MATERIALIZED,
-               "Hash marks are exported as rotated line markers at the QGIS positions.",
+    Capability("HashLine", "marker_line", Strategy.MATERIALIZED,
+               "Hash marks are exported as rotated line markers at the QGIS positions; QGIS 4 "
+               "trims, blank segments and extra items as for marker lines.",
                ("Hash angle relative to a data-defined value is frozen.",),
-               ("tests/integration/test_materialize.py",)),
+               ("tests/integration/test_materialize.py",
+                "tests/integration/test_marker_line_extras.py")),
     Capability("ArrowLine", "line", Strategy.MATERIALIZED,
                "The polygons QGIS fills (its straight and curved arrow construction, every "
                "head and arrow type, the vertex pairing of repeated and curved arrows), filled "

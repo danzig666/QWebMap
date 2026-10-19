@@ -17,6 +17,7 @@ Only plain lines are computed here: a feature this module cannot vouch for
 left to the expression (``None``).
 """
 
+import json
 import math
 import struct
 import sys
@@ -157,11 +158,14 @@ def _azimuth(x1: float, y1: float, x2: float, y2: float) -> float:
     return math.atan(abs(y1 - y2) / abs(x1 - x2)) + (math.pi + _HALF_PI)
 
 
-def interval_positions(line: Line, interval: float, along: float,
-                       average: float) -> Optional[List[Tuple[float, float, float]]]:
+def interval_positions(line: Line, interval: float, along: float, average: float,
+                       with_distance: bool = False) -> Optional[List[Tuple[float, ...]]]:
     """(x, y, angle in degrees) of the interval markers on ``line``, as the
     expression gives them; None when the expression would give no points (an
-    offset outside the line) or this module cannot vouch for the numbers."""
+    offset outside the line) or this module cannot vouch for the numbers.
+    ``with_distance``: each with the blank-segment walker's distance too
+    (the straight distance from the vertex before it: before the start of
+    an open line, how far before it)."""
     length = line.length
     if not (length > 0 and math.isfinite(length)) or not interval > 0:
         return None
@@ -195,7 +199,8 @@ def interval_positions(line: Line, interval: float, along: float,
             angle = _averaged_angle(line, distance, half, head)
         else:
             angle = _local_angle(line, distance, head)
-        out.append((point[0], point[1], angle))
+        out.append((point[0], point[1], angle, abs(distance)) if with_distance
+                   else (point[0], point[1], angle))
     return out
 
 
@@ -257,7 +262,7 @@ def interval_points(source, recipe, export_crs: str, expression_context, express
                            QgsCoordinateTransformContext, QgsCsException, QgsExpression,
                            QgsExpressionContext, QgsFeature, QgsField, QgsFields, QgsGeometry,
                            QgsPoint, QgsProcessingException, QgsWkbTypes)
-    from .fidelity.materialize import ANGLE_FIELD
+    from .fidelity.materialize import ANGLE_FIELD, BLANK_FIELD
 
     interval = float(recipe.param("interval"))
     along = float(recipe.param("along", 0.0))
@@ -277,9 +282,22 @@ def interval_points(source, recipe, export_crs: str, expression_context, express
                                           QgsCoordinateReferenceSystem.fromOgcWmsCrs(export_crs), context)
     linestring = QgsWkbTypes.LineString
 
+    blank_index = source.fields().indexFromName(BLANK_FIELD)
+
     def markers(feature):
         """[(x, y, angle)] or None (the expression decides)."""
         geometry = feature.geometry()
+        blanks = blank_pairs(feature.attribute(blank_index)) if blank_index >= 0 else []
+        if blanks and not geometry.isNull() and \
+                geometry.wkbType() == QgsWkbTypes.MultiLineString:
+            # An offset line in pieces: QGIS places every piece with the
+            # part's blank segments.
+            found = []
+            for part in geometry.asGeometryCollection():
+                one = QgsFeature(feature)
+                one.setGeometry(part)
+                found.extend(markers(one) or [])
+            return found
         if geometry.isNull() or geometry.wkbType() != linestring:
             return None
         if forward is not None:
@@ -291,7 +309,10 @@ def interval_points(source, recipe, export_crs: str, expression_context, express
         coords = linestring_coords(bytes(geometry.asWkb()))
         if coords is None or not all(math.isfinite(v) for v in coords[0] + coords[1]):
             return None
-        positions = interval_positions(Line(*coords), interval, along, average)
+        positions = interval_positions(Line(*coords), interval, along, average, bool(blanks))
+        if positions is not None and blanks:
+            walker = BlankWalker(blanks)  # distances in the recipe CRS, as QGIS measures
+            positions = [p[:3] for p in positions if not walker.inside(p[3])]
         if positions is None or backward is None:
             return positions
         moved = []
@@ -453,3 +474,290 @@ def along_vertex_marker(xs: Sequence[float], ys: Sequence[float], placement: str
             px, py = x, y
         i += step
     return None
+
+
+# -- QGIS 4 templated-line extras: trim, blank segments, extra items ---------
+
+def polyline_length(xs: Sequence[float], ys: Sequence[float]) -> float:
+    """QgsSymbolLayerUtils::polylineLength"""
+    total = 0.0
+    for i in range(1, len(xs)):
+        total += math.sqrt((xs[i - 1] - xs[i]) ** 2 + (ys[i - 1] - ys[i]) ** 2)
+    return total
+
+
+def polyline_substring(xs: Sequence[float], ys: Sequence[float], start: float,
+                       end: float) -> Optional[Tuple[List[float], List[float]]]:
+    """QgsSymbolLayerUtils::polylineSubstring (``end`` <= 0: measured from
+    the line's end), None for its empty result. Repeated points are dropped
+    as it drops them."""
+    count = len(xs)
+    if count < 2:
+        return None
+    lengths = [math.sqrt((xs[i - 1] - xs[i]) ** 2 + (ys[i - 1] - ys[i]) ** 2)
+               for i in range(1, count)]
+    total = 0.0
+    for length in lengths:
+        total += length
+    if start >= 0 and total <= start:
+        return None
+    if end < 0 and total <= -end:
+        return None
+    start_distance = total + start if start < 0 else start
+    end_distance = total + end if end <= 0 else end
+    out_x: List[float] = []
+    out_y: List[float] = []
+
+    def on_segment(i, distance):  # QgsGeometryUtilsBase::pointOnLineWithDistance
+        x1, y1, x2, y2 = xs[i - 1], ys[i - 1], xs[i], ys[i]
+        dx, dy = x2 - x1, y2 - y1
+        length = math.sqrt(dx * dx + dy * dy)
+        if _near(length, 0.0):
+            return x1, y1
+        factor = distance / length
+        return x1 + dx * factor, y1 + dy * factor
+
+    found = False
+    if _near(start_distance, 0.0) or start_distance < 0:
+        out_x.append(xs[0])
+        out_y.append(ys[0])
+        found = True
+    traversed = 0.0
+    for i in range(1, count):
+        segment = lengths[i - 1]
+        if traversed < start_distance < traversed + segment:
+            x, y = on_segment(i, start_distance - traversed)
+            out_x.append(x)
+            out_y.append(y)
+            found = True
+        if found and traversed + segment > end_distance:
+            x, y = on_segment(i, end_distance - traversed)
+            if (out_x[-1], out_y[-1]) != (x, y):
+                out_x.append(x)
+                out_y.append(y)
+        elif found and (out_x[-1], out_y[-1]) != (xs[i], ys[i]):
+            out_x.append(xs[i])
+            out_y.append(ys[i])
+        traversed += segment
+        if traversed > end_distance:
+            break
+    if len(out_x) < 2 or (len(out_x) == 2 and (out_x[0], out_y[0]) == (out_x[1], out_y[1])):
+        return None
+    return out_x, out_y
+
+
+def trim_points(xs: Sequence[float], ys: Sequence[float], start: float, end: float,
+                start_pct: bool = False, end_pct: bool = False):
+    """The line part QGIS places marker-line and hash-line items on (the
+    file-local ``trimPoints`` of qgslinesymbollayer.cpp): shortened by
+    ``start`` / ``end`` (lengths, or per cent of the part's length).
+    (xs, ys), or None when nothing of it is left."""
+    if start_pct or end_pct:
+        total = polyline_length(xs, ys)
+        if start_pct:
+            start = start * 0.01 * total
+        if end_pct:
+            end = end * 0.01 * total
+    if _near(start, 0.0) and _near(end, 0.0):
+        return list(xs), list(ys)
+    return polyline_substring(xs, ys, start, -end)
+
+
+class _BadFormat(Exception):
+    pass
+
+
+def parse_blank_segments(text: str) -> Optional[List[List[List[Tuple[float, float]]]]]:
+    """QgsSymbolLayerUtils::parseBlankSegments before its unit conversion:
+    ``(((s e, s e), (ring 1...)), ((part 2...)))``, per part, per ring of
+    it, the (start, end) pairs; None for a badly formatted string (QGIS
+    then blanks nothing). Pairs are kept as QGIS keeps them (an unfinished
+    one holds -1: never inside)."""
+    parts: List[List[List[List[float]]]] = []
+    number = ""
+    level = -1
+
+    def append_level(depth):
+        if depth == 0:
+            parts.append([])
+        elif depth == 1 and parts:
+            parts[-1].append([])
+        elif depth == 2 and parts and parts[-1]:
+            parts[-1][-1].append([-1.0, -1.0])
+        else:
+            raise _BadFormat()
+
+    def add_number(char):
+        nonlocal number
+        if not parts or not parts[-1] or not parts[-1][-1]:
+            raise _BadFormat()
+        segments = parts[-1][-1]
+        pair = segments[-1]
+        if char in ")," and pair[0] == -1:
+            raise _BadFormat()  # missing number
+        if pair[1] != -1:
+            raise _BadFormat()  # too many numbers
+        try:
+            value = float(number)
+        except ValueError:
+            raise _BadFormat() from None
+        if pair[0] == -1:
+            if len(segments) > 1 and segments[-2][1] > value:
+                raise _BadFormat()  # starts before the previous end
+            pair[0] = value
+        elif pair[0] > value:
+            raise _BadFormat()  # ends before its start
+        else:
+            pair[1] = value
+        number = ""
+
+    try:
+        for char in text or "":
+            if number and (char.isspace() or char in "),"):
+                if level < 2:
+                    raise _BadFormat()
+                add_number(char)
+            if char == "(":
+                if level >= 2:
+                    raise _BadFormat()
+                level += 1
+                append_level(level)
+            elif char == ")":
+                if level < 0:
+                    raise _BadFormat()
+                if level == 2 and parts and parts[-1] and len(parts[-1][-1]) == 1 \
+                        and parts[-1][-1][-1] == [-1.0, -1.0]:
+                    parts[-1][-1].pop()
+                level -= 1
+            elif char == ",":
+                if (level == 0 and not parts) or (level == 1 and parts and not parts[-1]) or \
+                        (level == 2 and parts and parts[-1] and not parts[-1][-1]):
+                    raise _BadFormat()
+                append_level(level)
+            elif char.isdigit() or char == ".":
+                number += char
+            elif not char.isspace():
+                raise _BadFormat()
+        if level != -1:
+            raise _BadFormat()
+    except _BadFormat:
+        return None
+    return [[[(pair[0], pair[1]) for pair in ring] for ring in part] for part in parts]
+
+
+class BlankWalker:
+    """QGIS's BlankSegmentsWalker (qgslinesymbollayer.cpp), one per placement
+    pass over a part or ring, asked in drawing order. Its cursor only moves
+    forward: an item is blanked when the first segment not ending before it
+    (``distance > end``) starts at or before it (both bounds inclusive)."""
+
+    def __init__(self, segments: Sequence[Tuple[float, float]]):
+        self.segments = list(segments)
+        self.index = 0
+
+    def inside(self, distance: Optional[float]) -> bool:
+        if distance is None:
+            return False
+        while self.index < len(self.segments) and distance > self.segments[self.index][1]:
+            self.index += 1
+        return self.index < len(self.segments) and distance >= self.segments[self.index][0]
+
+
+def blank_pairs(value) -> List[Tuple[float, float]]:
+    """The blank segments of one line part as the exporter writes them
+    (``BLANK_FIELD``: JSON ``[[start, end], ...]`` in the recipe CRS's units)."""
+    if not value or not isinstance(value, str):
+        return []
+    try:
+        return [(float(start), float(end)) for start, end in json.loads(value)]
+    except (TypeError, ValueError):
+        return []
+
+
+def cumulative_lengths(xs: Sequence[float], ys: Sequence[float]) -> List[float]:
+    """The walker's vertex distances (segment lengths added up in order)."""
+    out = [0.0]
+    for i in range(1, len(xs)):
+        out.append(math.sqrt((xs[i] - xs[i - 1]) ** 2 + (ys[i] - ys[i - 1]) ** 2) + out[-1])
+    return out
+
+
+def walker_distance(xs: Sequence[float], ys: Sequence[float], cumulative: Sequence[float],
+                    index: int, x: float, y: float) -> Optional[float]:
+    """BlankSegmentsWalker::insideBlankSegment( point, pointIndex )'s distance:
+    vertex ``index``'s distance plus the straight distance from it to the
+    item; None for an index QGIS never blanks (outside the line)."""
+    if index < 0 or index >= len(xs):
+        return None
+    return cumulative[index] + math.sqrt((xs[index] - x) ** 2 + (ys[index] - y) ** 2)
+
+
+def along_vertex_index(xs: Sequence[float], ys: Sequence[float], placement: str,
+                       along: float) -> Optional[int]:
+    """The vertex a first / last vertex marker moved ``along`` the line is
+    measured from by the walker (renderOffsetVertexAlongLine passes ``i -
+    1`` of the segment it lands on: walking back from the last vertex, the
+    vertex before that segment, -1 on the first one). None: drawn nowhere."""
+    count = len(xs)
+    forward = placement == "FirstVertex"
+    vertex = 0 if forward else count - 1
+    step = 1 if forward else -1
+    left = float(along)
+    px, py = xs[vertex], ys[vertex]
+    i = vertex + step
+    while 0 <= i < count:
+        x, y = xs[i], ys[i]
+        if (x, y) != (px, py):
+            length = math.hypot(x - px, y - py)
+            if left < length:
+                return i - 1
+            left -= length
+            px, py = x, y
+        i += step
+    return None
+
+
+def parse_extra_items(text: str) -> List[Tuple[float, float, float]]:
+    """QgsSymbolLayerUtils::parseExtraItems: ``x y angle, x y angle...`` (map
+    coordinates, clockwise degrees 0-360); [] for a badly formatted string
+    (QGIS then draws none)."""
+    items: List[List[float]] = []
+    number = ""
+    numbers = 0
+
+    def add_number(char) -> bool:
+        nonlocal number, numbers
+        if (char == "," and numbers == 0) or numbers >= 3:
+            return False
+        try:
+            value = float(number)
+        except ValueError:
+            return False
+        if numbers == 0:
+            items.append([value, 0.0, 0.0])
+        elif numbers == 1:
+            items[-1][1] = value
+        elif 0 <= value <= 360:
+            items[-1][2] = value
+        else:
+            return False
+        numbers += 1
+        number = ""
+        return True
+
+    for char in text or "":
+        if number and (char.isspace() or char == ",") and not add_number(char):
+            return []
+        if char == ",":
+            if not items:
+                return []
+            numbers = 0
+        elif char.isdigit() or char in ".-":
+            number += char
+        elif not char.isspace():
+            return []
+    if number and not add_number(" "):
+        return []
+    if numbers not in (0, 3):
+        return []
+    return [(x, y, angle) for x, y, angle in items]
