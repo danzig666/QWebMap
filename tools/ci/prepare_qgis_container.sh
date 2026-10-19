@@ -3,6 +3,15 @@
 # pytest, an OpenSSH server for the SSH/SFTP publishing tests, and the
 # checkout linked into the QGIS profile as the plugin (docs/fidelity/TESTING.md).
 set -euo pipefail
+# Tools some images lack (the QGIS 4 / Qt6 image: no git, no pip).
+missing=()
+command -v git >/dev/null || missing+=(git)
+command -v pip3 >/dev/null || missing+=(python3-pip)
+command -v curl >/dev/null || missing+=(curl)
+if [ "${#missing[@]}" -gt 0 ]; then
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}" >/dev/null
+fi
 git config --global --add safe.directory "*"
 python3 -c "import qgis.core, osgeo.gdal" # fail early: without QGIS the tests are skipped silently
 pip3 install --quiet --break-system-packages "pytest==7.4.4"  # the version used locally (Ubuntu 24.04)
