@@ -218,7 +218,9 @@ class PublishDialog(QDialog):
     def _on_project_cleared(self):
         self._project_gone = True
         if self.task is None and self.feedback is None:
-            self.close()
+            # done(), not close(): a hidden window (drawing the extent) must
+            # also emit finished, so the plugin lets go of it.
+            self.done(QDialog.DialogCode.Rejected)
 
     # ------------------------------------------------------------------ profile
     def _default_profile(self) -> PublicationProfile:
@@ -240,6 +242,9 @@ class PublishDialog(QDialog):
 
     def _load_profile(self) -> PublicationProfile:
         found = store.active_profile(self.project)
+        # The address follows the title only for new settings (never saved,
+        # so never exported or published): later it is the map's address.
+        self._slug_follows = not found
         if not found:
             return self._default_profile()
         profile, saved_from = found
@@ -357,6 +362,13 @@ class PublishDialog(QDialog):
             button.setEnabled(False)
         self.public_url = ""
 
+    def _title_edited(self, text):
+        # Only while the address is still the one made from the title (not typed in).
+        if getattr(self, "_slug_follows", False) and \
+                self.e_slug.text() == slugify(getattr(self, "_slug_title", self.profile.title)):
+            self.e_slug.setText(slugify(text))
+        self._slug_title = text
+
     def _map_tab(self):
         widget = QWidget()
         layout = QHBoxLayout(widget)
@@ -364,7 +376,7 @@ class PublishDialog(QDialog):
         form = QFormLayout(form_box)
         self.e_title = QLineEdit()
         self.e_slug = QLineEdit()
-        self.e_title.textEdited.connect(lambda text: self.e_slug.setText(slugify(text)))
+        self.e_title.textEdited.connect(self._title_edited)
         self.e_description = QPlainTextEdit()
         self.e_description.setMaximumHeight(70)
         self.e_locale = QComboBox()
@@ -558,7 +570,7 @@ class PublishDialog(QDialog):
         """Selected layer rows; a selected group stands for every layer in it."""
         items, seen = [], set()
         for item in self.tree.selectedItems():
-            for target in [item] + (list(self._descendants(item)) if item.data(0, GROUP_ROLE) else []):
+            for target in [item] + (list(self._shown_descendants(item)) if item.data(0, GROUP_ROLE) else []):
                 if target.data(0, LAYER_ROLE) and id(target) not in seen:
                     seen.add(id(target))
                     items.append(target)
@@ -581,16 +593,22 @@ class PublishDialog(QDialog):
             self.status.setText(tr("Select layers (or groups) in the list first."))
             return False
         if values is None:
-            low, high, labels_low = self._item_scales(items[0])
+            # Several rows: each limit shown only when all of them share it;
+            # a limit left as shown keeps each row's own.
+            rows = [self._item_scales(item) for item in items]
+            shown = [rows[0][k] if all(row[k] == rows[0][k] for row in rows) else 0.0 for k in range(3)]
             layer = self.project.mapLayer(items[0].data(0, LAYER_ROLE))
             own = range_text(layer.minimumScale(), layer.maximumScale()) \
                 if layer is not None and layer.hasScaleBasedVisibility() else ""
-            dialog = ScaleRangeDialog(self, low, high, len(items), own if len(items) == 1 else "",
+            dialog = ScaleRangeDialog(self, shown[0], shown[1], len(items), own if len(items) == 1 else "",
                                       self.iface.mapCanvas() if self.iface is not None else None,
-                                      labels_low)
+                                      shown[2])
             if not dialog.exec():
                 return False
-            values = dialog.values()
+            chosen = [float(v or 0) for v in dialog.values()]
+            for item, row in zip(items, rows):
+                self._set_item_scales(item, *[row[k] if chosen[k] == shown[k] else chosen[k] for k in range(3)])
+            return True
         for item in items:
             self._set_item_scales(item, *values)
         return True
@@ -689,6 +707,15 @@ class PublishDialog(QDialog):
             yield child
             yield from self._descendants(child)
 
+    def _shown_descendants(self, item):
+        """The descendants the layer filter shows (bulk changes act on what is seen)."""
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child.isHidden():
+                continue
+            yield child
+            yield from self._shown_descendants(child)
+
     def apply_to_selection(self, column: int, value: bool):
         """Set a column for the selected rows; a selected group also applies
         to every layer (and group) inside it."""
@@ -696,7 +723,7 @@ class PublishDialog(QDialog):
         for item in self.tree.selectedItems():
             targets.append(item)
             if item.data(0, GROUP_ROLE):
-                targets.extend(self._descendants(item))
+                targets.extend(self._shown_descendants(item))
         seen = set()
         for item in targets:
             if id(item) in seen:
@@ -1149,7 +1176,7 @@ class PublishDialog(QDialog):
         self.tree.blockSignals(True)
         try:
             if item.data(0, GROUP_ROLE) and column == COL_PUBLISH and item.checkState(column) != PARTIAL:
-                for child in self._descendants(item):
+                for child in self._shown_descendants(item):
                     if child.data(0, LAYER_ROLE):
                         child.setCheckState(COL_PUBLISH, item.checkState(column))
                         if item.checkState(column) == UNCHECKED:
@@ -2417,6 +2444,7 @@ class PublishDialog(QDialog):
     def _populate(self, profile: PublicationProfile):
         self.e_title.setText(profile.title)
         self.e_slug.setText(profile.slug)
+        self._slug_title = profile.title
         self.e_description.setPlainText(profile.description)
         self.e_locale.setCurrentIndex(max(0, self.e_locale.findData(profile.locale)))
         self.e_attribution.setText(profile.attribution)
@@ -2707,6 +2735,7 @@ class PublishDialog(QDialog):
         config.deep_links = self.i_links.isChecked()
         config.height_field = self.i_height.currentData() or ""
         popups, search, keys, filters = [], [], [], []
+        titles = {f.field: f.alias for f in config.filter_fields}  # (no widget: kept)
         for row in range(self.i_fields.rowCount()):
             name = self.i_fields.item(row, 0).text()
             if self.i_fields.item(row, 1).checkState() == CHECKED:
@@ -2718,7 +2747,7 @@ class PublishDialog(QDialog):
                 keys.append(name)
             kind = self.i_fields.cellWidget(row, 6).currentData()
             if kind:
-                filters.append(FilterField(name, kind))
+                filters.append(FilterField(name, kind, titles.get(name, "")))
         config.popup_fields, config.search_fields = popups, search
         config.key_fields, config.filter_fields = keys, filters
 
@@ -2758,12 +2787,14 @@ class PublishDialog(QDialog):
             layers.append(config)
         profile.layers = layers
         groups = []
+        folded = {tuple(g.path) for g in profile.groups if not g.expanded}  # (no widget: kept)
         for item in self._group_items():
             toggleable = item.checkState(COL_TOGGLE) == CHECKED
             visible = item.checkState(COL_VISIBLE) == CHECKED or not toggleable
-            if not toggleable or not visible:  # only groups that differ from the defaults
+            expanded = tuple(item.data(0, GROUP_ROLE)) not in folded
+            if not toggleable or not visible or not expanded:  # only groups that differ from the defaults
                 groups.append(GroupConfig(list(item.data(0, GROUP_ROLE)), toggleable=toggleable,
-                                          initially_visible=visible))
+                                          initially_visible=visible, expanded=expanded))
         profile.groups = groups
         names = [self.themes_list.item(i).text() for i in range(self.themes_list.count())
                  if self.themes_list.item(i).checkState() == CHECKED]
@@ -2873,6 +2904,7 @@ class PublishDialog(QDialog):
             return False
         store.save_profile(self.project, profile)
         self._saved_json = store.dumps_profile(profile)
+        self._slug_follows = False
         self.status.setText(tr("Settings saved in the project (save the project file to keep them)."))
         return True
 
@@ -2952,6 +2984,7 @@ class PublishDialog(QDialog):
         if keys is not None:
             profile.destination.credential_ref = ""  # an id of the other computer's QGIS
         self.profile = profile
+        self._slug_follows = False  # the file's address
         self._populate(profile)
         for note in notes:
             self.log(note)
@@ -2998,6 +3031,21 @@ class PublishDialog(QDialog):
         self.btn_settings_file.setEnabled(not busy)
         self.btn_cancel.setEnabled(busy)
 
+    def _block_qgis(self, block: bool):
+        """The local export runs here, on the main thread, and keeps QGIS
+        drawing meanwhile: the rest of QGIS takes no input until it ends
+        (a layer removed or another project opened under the export would
+        crash it). Only this window (Cancel) does."""
+        modality = Qt.WindowModality.ApplicationModal if block else Qt.WindowModality.NonModal
+        if self.windowModality() == modality:
+            return
+        visible = self.isVisible()
+        if visible:
+            self.hide()  # (a shown window's modality only changes when shown again)
+        self.setWindowModality(modality)
+        if visible:
+            self.show()
+
     def cancel(self):
         if self.feedback is not None:
             self.feedback.cancel()
@@ -3018,6 +3066,7 @@ class PublishDialog(QDialog):
         from ..publishing.controller import export_local  # pylint: disable=import-outside-toplevel
         self.feedback = DialogFeedback(self)
         self._busy(True)
+        self._block_qgis(True)
         self.progress.setValue(0)
         self.logbox.clear()
         try:
@@ -3030,6 +3079,7 @@ class PublishDialog(QDialog):
             self._fail("ERROR", tr("Export failed."), traceback.format_exc())
             return False
         finally:
+            self._block_qgis(False)
             self._busy(False)
             self.feedback = None
         self.local_result = result
@@ -3052,6 +3102,10 @@ class PublishDialog(QDialog):
         if not self.local_result:
             return
         from ..publishing.preview_server import PreviewServer  # pylint: disable=import-outside-toplevel
+        folder = os.path.realpath(self.local_result.publication_dir)
+        if self.preview_server is not None and self.preview_server.root != folder:
+            self.preview_server.stop()  # exported elsewhere since (another name or folder)
+            self.preview_server = None
         if self.preview_server is None:
             # The publication folder only: not the work files, the cache or
             # other maps next to it.
@@ -3424,6 +3478,9 @@ class PublishDialog(QDialog):
                     for x in profile.basemap.xyz]
         if profile.interaction.street_view and profile.interaction.google_api_key.strip():
             external.append(tr("Google Street View (Google's script and your API key)"))
+        for name, url in self._live_layers(profile):
+            external.append(tr("live layer „{}” loaded from {} (its address is in the published "
+                               "files)").format(name, urlparse(url).hostname or "?"))
         lines += ["", tr("External resources for visitors: ") + ("; ".join(external) if external else tr(
                       "none (no CDN, no third-party tiles, no telemetry).")),
                   tr("Cost: storage of the archive and retained releases plus requests; R2 has no "
@@ -3432,12 +3489,32 @@ class PublishDialog(QDialog):
         if self.local_result:
             lines.append(tr("Last local export: {} files, {:.1f} MB.").format(
                 len(self.local_result.release.files), self.local_result.release.total_bytes / 1e6))
-        review = needs_review(profile)
+        review = needs_review(profile, self._live_review_extra(profile))
         lines += ["", tr("Approval needed (first publication or what becomes public changed).")
                   if review else tr("Approved earlier for this exact data scope.")]
         self.review.setPlainText("\n".join(lines))
         self.approve.setChecked(not review)
-        self._review_fp = disclosure_fingerprint(profile)
+        self._review_fp = disclosure_fingerprint(profile, self._live_review_extra(profile))
+
+    def _live_layers(self, profile):
+        """[(layer name, tile or WMS address)] of the included raster layers
+        the visitors' browsers load live from their own server."""
+        from ..publishing import live_raster  # pylint: disable=import-outside-toplevel
+        out = []
+        for config in profile.layers:
+            layer = self.project.mapLayer(config.layer_id) if config.included and config.raster_live else None
+            if layer is None or not hasattr(layer, "providerType") or layer.providerType() != "wms":
+                continue
+            source, _ = live_raster.live_source(layer)
+            if source is not None:
+                out.append((layer.name(), source["tiles"][0]))
+        return out
+
+    def _live_review_extra(self, profile):
+        """The live layers' addresses in the disclosure fingerprint (None
+        without any: the fingerprint of earlier approvals stays)."""
+        urls = sorted(url for _, url in self._live_layers(profile))
+        return {"live": urls} if urls else None
 
     @staticmethod
     def _target_url(profile):
@@ -3458,15 +3535,16 @@ class PublishDialog(QDialog):
             return
         # Approved only for what the Review tab showed: a field made public
         # since then needs the review again.
-        if needs_review(profile) and (not self.approve.isChecked()
-                                      or self._review_fp != disclosure_fingerprint(profile)):
+        extra = self._live_review_extra(profile)
+        if needs_review(profile, extra) and (not self.approve.isChecked()
+                                             or self._review_fp != disclosure_fingerprint(profile, extra)):
             self.tabs.setCurrentIndex(self.tabs.count() - 1)
             self.refresh_review()
             QMessageBox.information(self, tr("Review"), tr("Review what becomes public and tick the "
                                                            "approval before publishing."))
             return
-        if needs_review(profile):
-            profile.approval.fingerprint = disclosure_fingerprint(profile)
+        if needs_review(profile, extra):
+            profile.approval.fingerprint = disclosure_fingerprint(profile, extra)
             profile.approval.approved_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
         # Reuse a valid local export of identical settings (retry/new destination).
         if self.local_result is None or self.local_profile_json != store.dumps_profile(profile):
@@ -3522,6 +3600,8 @@ class PublishDialog(QDialog):
                 self.log(f"⚠ {warning}")
         else:
             self._fail(result.code or result.state.value, result.message or result.state.value)
+        if not self.isVisible():  # closed while uploading: the plugin lets go of it now
+            self.done(QDialog.DialogCode.Rejected)
 
     # Size and position of the window, kept between QGIS sessions (QGIS settings).
     GEOMETRY_KEY = "QGIS2VectorTilesFork/publishDialog/geometry"  # pre-rename key, kept
@@ -3572,6 +3652,8 @@ class PublishDialog(QDialog):
                     self.save_settings(quiet=True)
             except Exception:  # noqa: BLE001 - closing must not fail
                 pass
+        if self.task is not None:
+            return  # still told when another project opens: the upload must not save into it
         try:
             self.project.cleared.disconnect(self._on_project_cleared)
         except (TypeError, RuntimeError):

@@ -122,11 +122,12 @@ class QGIS2VectorTiles:
         self.dialog.activateWindow()
 
     def _dialog_closed(self):
+        # Kept while an upload still reports to it (opened again, it shows
+        # the upload; it closes itself again when the upload ends).
+        if self.dialog is None or getattr(self.dialog, "task", None) is not None:
+            return
         dialog, self.dialog = self.dialog, None
-        # Deleted with its widgets (their links to the project end), unless
-        # an upload still reports to it.
-        if dialog is not None and getattr(dialog, "task", None) is None:
-            dialog.deleteLater()
+        dialog.deleteLater()  # with its widgets: their links to the project end
 
     def unload(self):
         """Unload plugin: remove the provider, the action and stop previews."""

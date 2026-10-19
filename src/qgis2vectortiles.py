@@ -293,7 +293,9 @@ class QGIS2VectorTiles:
         temp_dir = None
         background = False
         try:
-            self._clear_project()
+            # The project's own layers (also those not in the legend: lookup
+            # tables of joins, value relations) are never removed.
+            self._project_layer_ids = set(QgsProject.instance().mapLayers())
             fingerprint_before = self._project_style_fingerprint()
             temp_dir = self._create_temp_directory()
             self.export_folder = temp_dir
@@ -566,7 +568,10 @@ class QGIS2VectorTiles:
 
     # --- pipeline stages --------------------------------------------------
     def _clear_project(self):
-        """Remove all map layers not visible in the project legend."""
+        """Remove the map layers this run added outside the project legend."""
+        own = getattr(self, "_project_layer_ids", None)
+        if own is None:  # (the run has not started)
+            return
         # A legend entry whose layer QGIS could not create (a virtual layer
         # over a missing source) has no layer.
         legend_ids = {
@@ -574,7 +579,7 @@ class QGIS2VectorTiles:
             for node in QgsProject.instance().layerTreeRoot().findLayers()
         }
         for layer_id in list(QgsProject.instance().mapLayers()):
-            if layer_id not in legend_ids:
+            if layer_id not in legend_ids and layer_id not in own:
                 QgsProject.instance().removeMapLayer(layer_id)
 
     def _get_utils_dir(self) -> str:
