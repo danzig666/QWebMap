@@ -1,0 +1,83 @@
+# The full test suite under Qt6: the official QGIS 4 image (QGIS 4 is built
+# with Qt6 / PyQt6). Run by hand ("Run workflow" in the Actions tab) to check
+# the plugin before declaring Qt6 support (supportsQt6 in metadata.txt); the
+# nightly tests (tests.yml) stay on the 3.34 LTR the plugin is developed
+# against. Each step continues after failures so one run shows everything.
+name: Tests (Qt6, QGIS 4)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qgis-tests:
+    name: Unit + QGIS integration tests (Qt6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    container:
+      image: qgis/qgis:4.2.3
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare
+        run: tools/ci/prepare_qgis_container.sh
+      - name: Qt and plugin load
+        if: success() || failure()
+        run: |
+          python3 - <<'PY'
+          from qgis.PyQt.QtCore import PYQT_VERSION_STR, QT_VERSION_STR
+          from qgis.core import Qgis
+          print(f"QGIS {Qgis.QGIS_VERSION}, Qt {QT_VERSION_STR}, PyQt {PYQT_VERSION_STR}")
+          assert QT_VERSION_STR.startswith("6"), "not a Qt6 build"
+          PY
+      - name: Unit tests
+        if: success() || failure()
+        run: tools/ci/run_test_files.sh "Unit tests (Qt6)" $(ls tests/unit/test_*.py | sort)
+      - name: QGIS integration tests
+        if: success() || failure()
+        run: tools/ci/run_test_files.sh "QGIS integration tests (Qt6)" $(ls tests/integration/test_*.py | sort)
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: reports-qt6-qgis
+          path: test-reports/
+          if-no-files-found: ignore
+
+  browser-tests:
+    name: Browser tests (Qt6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    container:
+      image: qgis/qgis:4.2.3
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare
+        run: tools/ci/prepare_qgis_container.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Node packages and Chromium
+        working-directory: tests/browser
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright-core install --with-deps chromium
+          chromium="$(node --input-type=module -e "import { chromium } from 'playwright-core'; console.log(chromium.executablePath())")"
+          test -x "${chromium}"
+          echo "Q2VT_CHROMIUM=${chromium}" >> "${GITHUB_ENV}"
+      - name: Browser tests
+        run: tools/ci/run_test_files.sh "Browser tests (Qt6)" $(ls tests/browser/test_*.py | sort)
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: reports-qt6-browser
+          path: |
+            test-reports/
+            tests/browser/artifacts/
+          if-no-files-found: ignore
