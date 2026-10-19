@@ -1,7 +1,8 @@
 # Runs the full test suite in the official QGIS image of the LTR the plugin
 # is developed against (3.34, Ubuntu 24.04 like the development machine):
 # unit + PyQGIS integration tests in one job, browser tests (QGIS export +
-# Chromium) in another. (The image of exactly 3.34.4, qgis/qgis:final-3_34_4,
+# Chromium) in another; and the same under Qt6 in the QGIS 4 image (qt6.yml,
+# called as the "qt6" job). (The image of exactly 3.34.4, qgis/qgis:final-3_34_4,
 # is Ubuntu 22.04 with sip 6.5, whose bindings crash on plain PyQGIS such as
 # QgsLineSymbol([QgsSimpleLineSymbolLayer()]); it cannot run the tests.)
 #
@@ -173,3 +174,9 @@ jobs:
             test-reports/
             tests/browser/artifacts/
           if-no-files-found: ignore
+
+  qt6:
+    name: Qt6 (QGIS 4)
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    uses: ./.github/workflows/qt6.yml

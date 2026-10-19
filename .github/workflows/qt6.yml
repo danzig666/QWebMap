@@ -1,12 +1,13 @@
 # The full test suite under Qt6: the official QGIS 4 image (QGIS 4 is built
-# with Qt6 / PyQt6). Run by hand ("Run workflow" in the Actions tab) to check
-# the plugin before declaring Qt6 support (supportsQt6 in metadata.txt); the
-# nightly tests (tests.yml) stay on the 3.34 LTR the plugin is developed
-# against. Each step continues after failures so one run shows everything.
+# with Qt6 / PyQt6; the plugin declares supportsQt6 in metadata.txt). Part of
+# the nightly tests (tests.yml calls it after its plan job, so it runs and
+# skips with the 3.34 jobs); "Run workflow" in the Actions tab runs it alone.
+# Each step continues after failures so one run shows everything.
 name: Tests (Qt6, QGIS 4)
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -48,7 +49,7 @@ jobs:
       - uses: actions/upload-artifact@v5
         if: always()
         with:
-          name: reports-qt6-qgis
+          name: reports-qt6-qgis-${{ github.ref_name }}
           path: test-reports/
           if-no-files-found: ignore
 
@@ -85,7 +86,7 @@ jobs:
       - uses: actions/upload-artifact@v5
         if: always()
         with:
-          name: reports-qt6-browser
+          name: reports-qt6-browser-${{ github.ref_name }}
           path: |
             test-reports/
             tests/browser/artifacts/

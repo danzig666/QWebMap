@@ -39,7 +39,8 @@ a full web viewer · no map server, database or Docker
 
 ## Install
 
-QWebMap needs QGIS 3.44 or newer. Download `QWebMap-<version>.zip` from the
+QWebMap needs QGIS 3.44 or newer, and runs on **QGIS 4 (Qt6)** too: the whole test suite runs
+nightly on both QGIS 3 (Qt5) and QGIS 4 (Qt6). Download `QWebMap-<version>.zip` from the
 [latest release](https://github.com/danzig666/QWebMap/releases/latest) (not the `-hu` file: that is a
 special Hungarian zoning-plan edition, not for general use), then *Plugins → Manage and Install
 Plugins → Install from ZIP*. Install a newer ZIP the same way to upgrade.
