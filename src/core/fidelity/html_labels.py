@@ -78,6 +78,12 @@ def html_sections(text) -> List[Tuple[str, float]]:
     return sections
 
 
+def plain_text(text) -> str:
+    """The text of an HTML label without its markup (its sections' text;
+    a line break as a new line)."""
+    return "".join(chunk for chunk, _ in html_sections(text))
+
+
 def section_text(text, index: int) -> str:
     sections = html_sections(text)
     return sections[index][0] if index < len(sections) else ""

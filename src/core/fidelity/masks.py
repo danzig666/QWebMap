@@ -147,7 +147,15 @@ def add_masked_symbol_layers(settings, refs) -> bool:
     return True
 
 
-def layer_masks(renderer, set_masks: SourceSetMasks, layer_id: str) -> bool:
+def _masks_exported(layer, exported) -> bool:
+    """Whether a mask marker's own list names a layer that is drawn (all
+    layers when ``exported`` is None): with nothing drawn to cut, QGIS shows
+    nothing of it."""
+    refs = layer.masks()
+    return bool(refs) and (exported is None or any(ref.layerId() in exported for ref in refs))
+
+
+def layer_masks(renderer, set_masks: SourceSetMasks, layer_id: str, exported=None) -> bool:
     """Whether the layer's mask markers draw a mask in QGIS 4: the layer
     masks anything, through a symbol layer's own list or a set naming the
     layer (QgsMapRendererJob::prepareSecondPassJobs gives the
@@ -161,7 +169,7 @@ def layer_masks(renderer, set_masks: SourceSetMasks, layer_id: str) -> bool:
     class _Lists(_SetMembers):
         def _symbol(self, symbol) -> None:
             for layer in symbol.symbolLayers():
-                if layer.masks():
+                if _masks_exported(layer, exported):
                     self.members.append(layer)
                 if layer.subSymbol() is not None:
                     self._symbol(layer.subSymbol())
@@ -187,11 +195,15 @@ def _recolour(symbol, colour: QColor) -> None:
             _recolour(layer.subSymbol(), colour)
 
 
-def knock_out_mask_markers(symbol, colour: QColor, layer_masks: bool = False) -> int:
-    """Replaces every mask marker in ``symbol`` (its sub-symbols too) that
-    masks anything by its shape in ``colour``; returns how many. One masks
-    with its own list, or when ``layer_masks`` (its layer masks anything,
-    see layer_masks())."""
+def knock_out_mask_markers(symbol, colour: QColor, layer_masks: bool = False,
+                           exported=None) -> int:
+    """Replaces every enabled mask marker in ``symbol`` (its sub-symbols
+    too) that masks anything by its shape in ``colour``; returns how many.
+    One masks with its own list naming a drawn layer (``exported``: layer
+    ids, None = all), or when ``layer_masks`` (its layer masks anything, see
+    layer_masks()). One switched off draws nothing (it is dropped with the
+    other disabled symbol layers); QgsMaskMarkerSymbolLayer.enabled() hides
+    that flag (it means "masks anything"), so the base method reads it."""
     if symbol is None:
         return 0
     count = 0
@@ -202,7 +214,8 @@ def knock_out_mask_markers(symbol, colour: QColor, layer_masks: bool = False) ->
             # QGIS 3: one that masks nothing is not enabled() and draws
             # nothing; QGIS 4 draws it in its layer's mask, if any.
             shape = layer.subSymbol()
-            if (layer.masks() or layer_masks) and shape is not None and shape.symbolLayerCount():
+            if QgsSymbolLayer.enabled(layer) and (_masks_exported(layer, exported) or layer_masks) \
+                    and shape is not None and shape.symbolLayerCount():
                 shape = shape.clone()
                 _recolour(shape, colour)
                 for offset, part in enumerate(shape.symbolLayers()):
@@ -212,6 +225,6 @@ def knock_out_mask_markers(symbol, colour: QColor, layer_masks: bool = False) ->
                 count += 1
                 continue
         else:
-            count += knock_out_mask_markers(layer.subSymbol(), colour, layer_masks)
+            count += knock_out_mask_markers(layer.subSymbol(), colour, layer_masks, exported)
         index += 1
     return count

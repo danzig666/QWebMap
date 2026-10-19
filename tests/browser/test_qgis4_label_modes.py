@@ -146,3 +146,55 @@ def test_stretched_curved_labels_fill_their_line(tmp_path, mode, text):
     (qleft, _, qright, _), (bleft, _, bright, _) = (_black_box(tmp_path, n) for n in ("qgis", "browser"))
     assert qright - qleft > 200  # QGIS stretches it over the ~300 px line
     assert abs(bleft - qleft) <= 12 and abs(bright - qright) <= 12, ((qleft, qright), (bleft, bright))
+
+
+@pytest.mark.parametrize("size", [1400, 2000])
+def test_long_stretched_labels_are_drawn_whole(tmp_path, monkeypatch, size):
+    """A stretched label longer than MapLibre lays out on one tile (its line
+    clipped to the tile and the source's buffer: about a thousand pixels)
+    is laid out by the viewer character by character: drawn whole, from one
+    end of its visible line to the other, where QGIS draws it."""
+    import test_browser_parity as tbp  # pylint: disable=import-outside-toplevel
+    monkeypatch.setattr(tbp, "SIZE", size)
+    half = size * 0.4
+    points = [(-half, -10), (0, 10), (half, -10)]
+    layer = _label(_layer(tmp_path, "LineString", [(_line(points), "Mill Road")], fill="255,255,255"),
+                   Qgis.LabelPlacement.Curved, size=14, curved="StretchCharacterSpacingToFitLine")
+    _compare(tmp_path, layer, metric="shape")
+    (qleft, _, qright, _), browser = (_black_box(tmp_path, n) for n in ("qgis", "browser"))
+    assert qright - qleft > size * 0.8
+    assert browser, "no label drawn"
+    bleft, _, bright, _ = browser
+    assert abs(bleft - qleft) <= 12 and abs(bright - qright) <= 12, ((qleft, qright), (bleft, bright))
+    ink_qgis, ink_browser = _compare_ink(tmp_path)
+    assert ink_browser == pytest.approx(ink_qgis, rel=0.3), (ink_qgis, ink_browser)
+
+
+def test_one_word_in_word_stretch_mode_is_a_plain_curved_label(tmp_path):
+    """Word spacing cannot stretch one word: QGIS places it as a plain
+    curved label (FeaturePart::createDefaultCurvedCandidatesAlongLine),
+    here laid out character by character like the stretched ones."""
+    points = [(-130, -10), (-40, 10), (40, -10), (130, 10)]
+    layer = _label(_layer(tmp_path, "LineString", [(_line(points), "Millroad")], fill="255,255,255"),
+                   Qgis.LabelPlacement.Curved, size=14, curved="StretchWordSpacingToFitLine")
+    near = _compare(tmp_path, layer)
+    ink_qgis, ink_browser = _compare_ink(tmp_path)
+    assert ink_qgis > 50 and ink_browser == pytest.approx(ink_qgis, rel=0.3), (ink_qgis, ink_browser)
+    assert near > 0.8, near
+    (qleft, _, qright, _), (bleft, _, bright, _) = (_black_box(tmp_path, n) for n in ("qgis", "browser"))
+    assert qright - qleft < 120  # not stretched
+    assert abs(bleft - qleft) <= 8 and abs(bright - qright) <= 8, ((qleft, qright), (bleft, bright))
+
+
+def test_stretched_label_follows_a_winding_line(tmp_path):
+    """Each character of a stretched label sits on its own chord of a
+    winding line, turned to it (QgsTextRendererUtils::
+    generateCurvedTextPlacement), not on the label's box turned at its
+    middle."""
+    points = [(-140, -40), (-90, 40), (-40, -40), (10, 40), (60, -40), (110, 40), (140, 0)]
+    layer = _label(_layer(tmp_path, "LineString", [(_line(points), "Winding Lane")], fill="255,255,255"),
+                   Qgis.LabelPlacement.Curved, size=14, curved="StretchCharacterSpacingToFitLine")
+    near = _compare(tmp_path, layer)
+    ink_qgis, ink_browser = _compare_ink(tmp_path)
+    assert ink_qgis > 100 and ink_browser == pytest.approx(ink_qgis, rel=0.3), (ink_qgis, ink_browser)
+    assert near > 0.8, near

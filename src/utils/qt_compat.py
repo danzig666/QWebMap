@@ -67,14 +67,26 @@ def _label_property(settings, name):
     return True, prop.staticValue()
 
 
+def _static_label_property(settings, name):
+    """(active and static, value) of the data-defined label property
+    ``name``; the value may be NULL."""
+    from qgis.core import QgsPalLayerSettings, QgsProperty  # pylint: disable=import-outside-toplevel
+    key = getattr(QgsPalLayerSettings.Property, name, None)
+    prop = settings.dataDefinedProperties().property(key) if key is not None else None
+    if prop is None or not prop.isActive() or \
+            enum_int(prop.propertyType()) != enum_int(QgsProperty.StaticProperty):
+        return False, None
+    return True, prop.staticValue()
+
+
 def label_mode_data_defined(settings, name: str) -> bool:
     """True when the data-defined label property ``name`` (LabelAllParts,
     CurvedLabelMode, WhitespaceCollisionHandling) reads a field or an
     expression: the mode then changes per feature, the export keeps one."""
     if settings is None:
         return False
-    active, value = _label_property(settings, name)
-    return active and value is None
+    active, _ = _label_property(settings, name)
+    return active and not _static_label_property(settings, name)[0]
 
 
 def label_multipart_mode(settings) -> str:
@@ -87,9 +99,12 @@ def label_multipart_mode(settings) -> str:
     ``QgsLabelPlacementSettings::multiPartBehavior()``
     (Qgis::MultiPartLabelingBehavior); ``labelPerPart`` stays for Python as
     a lossy shim that reads SplitLabelTextLinesOverParts as False. A static
-    data-defined "LabelAllParts" overrides it as
-    QgsLabelPlacementSettings::updateDataDefinedProperties reads it: a
-    behaviour name (QGIS 4), else a boolean."""
+    data-defined "LabelAllParts" overrides it as QGIS reads it: on QGIS 4
+    (QgsLabelPlacementSettings::updateDataDefinedProperties) a behaviour
+    name first (trimmed, any case), else - as on QGIS 3
+    (QgsPalLayerSettings::registerFeature) - QgsProperty::valueAsBool: the
+    value's QVariant::toBool (variant_bool), a NULL value keeping "every
+    part" (QGIS 4: split becomes "largest part only")."""
     if settings is None:
         return MULTIPART_LARGEST
     placement = settings.placementSettings() if hasattr(settings, "placementSettings") else None
@@ -100,25 +115,44 @@ def label_multipart_mode(settings) -> str:
         mode = MULTIPART_EVERY if settings.labelPerPart else MULTIPART_LARGEST
     else:
         mode = {1: MULTIPART_EVERY, 2: MULTIPART_SPLIT}.get(behaviour, MULTIPART_LARGEST)
-    _, value = _label_property(settings, "LabelAllParts")
-    if value is None:
+    static, value = _static_label_property(settings, "LabelAllParts")
+    if not static:
         return mode
-    text = str(value).strip().lower()
-    if behaviour is not None:  # QGIS 4: a behaviour name first
+    if behaviour is not None and not _is_null(value):  # QGIS 4: a behaviour name first
         named = {"largestpartonly": MULTIPART_LARGEST, "labeleverypart": MULTIPART_EVERY,
-                 "splitlabeltextlinesoverparts": MULTIPART_SPLIT}.get(text)
+                 "splitlabeltextlinesoverparts": MULTIPART_SPLIT}.get(_variant_text(value).strip().lower())
         if named:
             return named
+    every = variant_bool(value, mode == MULTIPART_EVERY)
+    return MULTIPART_EVERY if every else MULTIPART_LARGEST
+
+
+def _is_null(value) -> bool:
+    """A NULL QVariant (None, or a null QVariant on QGIS 3)."""
+    return value is None or (hasattr(value, "isNull") and not isinstance(value, str) and value.isNull())
+
+
+def _variant_text(value) -> str:
+    """QVariant::toString of a property value ("true" / "false" for a bool)."""
     if isinstance(value, bool):
-        return MULTIPART_EVERY if value else MULTIPART_LARGEST
-    if text in ("true", "yes", "y", "t"):
-        return MULTIPART_EVERY
-    if text in ("false", "no", "n", "f"):
-        return MULTIPART_LARGEST
-    try:  # QVariant::toBool: a non-zero number is true
-        return MULTIPART_EVERY if float(text) != 0 else MULTIPART_LARGEST
-    except ValueError:
-        return mode
+        return "true" if value else "false"
+    return str(value)
+
+
+def variant_bool(value, default: bool) -> bool:
+    """QgsProperty::valueAsBool of a static value: ``default`` for NULL,
+    else QVariant::toBool - a string is false only when it is empty, "0"
+    or "false" (any case, not trimmed: " false" is true), a number when it
+    is 0."""
+    if _is_null(value):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.lower() not in ("", "0", "false")
+    return bool(value)
 
 
 def curved_label_mode(settings) -> str:

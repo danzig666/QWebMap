@@ -5684,14 +5684,16 @@ class QgisMapLibreStyleExporter:
                 "Q2VT_LABEL_APPROXIMATE",
                 "Curved label \"Place characters at vertices\": each character is drawn at its "
                 "vertex whatever it overlaps (QGIS drops the whole label where it collides), "
-                "never repeated along the line.")
+                "never repeated along the line."
+                + (f" Not followed: {', '.join(modes['vertex_ignored'])}." if modes.get("vertex_ignored") else ""))
         elif curved in (CURVED_STRETCH_CHARS, CURVED_STRETCH_WORDS):
             what = "word" if curved == CURVED_STRETCH_WORDS else "character"
             message = (f"Curved label \"Stretch {what} spacing to fit line\": the web viewer "
                        "stretches it over the visible line; other clients, and repeated labels "
                        "MapLibre places itself, draw it unstretched.")
-            if curved == CURVED_STRETCH_WORDS:
-                message += " Word spacing grows in whole spaces (MapLibre has no word spacing)."
+            if modes.get("stretch_entire_line"):
+                message += (" \"Use entire line\" anchor clipping: stretched over the visible "
+                            "line only (QGIS: the whole line).")
             self.context.report("Q2VT_LABEL_APPROXIMATE", message)
         if modes.get("whitespace"):
             self.context.report(

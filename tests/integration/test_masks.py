@@ -106,8 +106,10 @@ def test_mask_marker_exports_as_a_knockout(export, tmp_path):  # noqa: F811
     layer = to_geopackage(layer, str(tmp_path / "signs.gpkg"))
     mask = QgsMaskMarkerSymbolLayer()
     mask.setSubSymbol(QgsMarkerSymbol.createSimple({"name": "circle", "color": "255,0,0", "size": "6"}))
-    mask.setMasks([QgsSymbolLayerReference("roads", "line-1")])
     symbol = QgsMarkerSymbol.createSimple({"name": "square", "color": "0,0,255", "size": "3"})
+    # Masking a drawn layer (one masking only layers that are not exported
+    # has nothing to cut: test_mask_marker_masking_only_a_hidden_layer_draws_nothing).
+    mask.setMasks([QgsSymbolLayerReference(layer.id(), symbol.symbolLayer(0).id())])
     symbol.insertSymbolLayer(0, mask)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     exporter, result = _run(export, layer)
@@ -373,3 +375,36 @@ def test_qgis_masks_through_a_set_as_through_the_list(plugin):
     from q2vt_plugin.src.core.fidelity import masks  # pylint: disable=import-error,import-outside-toplevel
     assert masks.layer_masks(signs.renderer(), masks.SourceSetMasks(), signs.id())
     assert masks.knock_out_mask_markers(signs.renderer().symbol().clone(), BACKGROUND, True) == 2
+
+
+@pytest.mark.parametrize("listed", [True, False])
+def test_switched_off_mask_marker_is_not_knocked_out(export, tmp_path, listed):  # noqa: F811
+    """A mask marker switched off (its enabled box unticked) draws nothing
+    in QGIS, with its own list or through a set (QGIS 4); the export left
+    its shape in the background colour."""
+    zones = _fixed_fill(zoning_layer(path=str(tmp_path / "zones.gpkg")))
+    target = (zones.id(), zones.renderer().symbol().symbolLayer(0).id())
+    signs = _signs(str(tmp_path / "signs.gpkg"), target if listed else None)
+    project = reset_project(signs, zones)
+    project.setBackgroundColor(BACKGROUND)
+    marker = signs.renderer().symbol().symbolLayer(0)
+    if not listed:
+        if not hasattr(QgsSymbolLayer, "selectiveMaskingSourceSetId"):
+            pytest.skip("masking sets are QGIS 4")
+        set_id = _source_set(project, (signs.id(), "SymbolLayer", marker.id()))
+        zones.renderer().symbol().symbolLayer(0).setSelectiveMaskingSourceSetId(set_id)
+    marker.setEnabled(False)
+    exporter, _ = export(signs, keep_project=True)
+    assert not _approximate(exporter)
+
+
+def test_mask_marker_masking_only_a_hidden_layer_draws_nothing(export, tmp_path):  # noqa: F811
+    """A mask marker whose list names only a layer that is not exported has
+    nothing to cut: QGIS shows nothing of it, no knock-out."""
+    zones = _fixed_fill(zoning_layer(path=str(tmp_path / "zones.gpkg")))
+    target = (zones.id(), zones.renderer().symbol().symbolLayer(0).id())
+    signs = _signs(str(tmp_path / "signs.gpkg"), target)
+    project = reset_project(signs, zones)
+    project.layerTreeRoot().findLayer(zones.id()).setItemVisibilityChecked(False)
+    exporter, _ = export(signs, keep_project=True)
+    assert not _approximate(exporter)

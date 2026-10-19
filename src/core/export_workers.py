@@ -340,6 +340,13 @@ def _parses(grp) -> bool:
     expressions = [grp.filter_expression, grp.geometry_expression, grp.pre_generator]
     for fields in (grp.expression_fields, grp.part_fields, grp.generated_fields):
         expressions += [expression for _, expression, _ in fields]
+    if grp.recipe is not None and grp.recipe.kind == "marker_points":
+        # Evaluated by the worker too: QGIS 4 trims, blank segments and extra
+        # items, and vertex markers' values.
+        from .fidelity import materialize as mat  # pylint: disable=import-outside-toplevel
+        expressions += mat.templated_expressions(grp.recipe)
+        expressions += [text for _, text in grp.recipe.param("vertex_fields", ()) or ()]
+        expressions.append((grp.recipe.param("vertex_offset") or ("",))[0])
     return all(not QgsExpression(e).hasParserError() for e in expressions if e)
 
 

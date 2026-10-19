@@ -26,6 +26,11 @@ DDP_EMITTERS: Dict[str, frozenset] = {
     # placed by the exporter.)
     "marker_line": frozenset({"Opacity", "Interval", "TrimStart", "TrimEnd", "BlankSegments",
                               "ExtraItems"}),
+    # A hash line is exported as a marker line of line markers: its hash
+    # angle and length become their angle and size (sprite variants). Its
+    # offset, colour and width keys are a marker line's (reported there).
+    "hash_line": frozenset({"Opacity", "Interval", "TrimStart", "TrimEnd", "BlankSegments",
+                            "ExtraItems", "LineAngle", "LineDistance"}),
     "font_marker": frozenset({"Character", "Size", "Angle", "Opacity", "FillColor", "Color"}),
     "pattern": frozenset(),
 }
@@ -43,7 +48,7 @@ DDP_EXPORT_TIME = frozenset({"LayerEnabled", "GeometryGenerator"})
 @dataclass(frozen=True)
 class Capability:
     qgis_type: str                 # QgsSymbolLayer.layerType()
-    family: str                    # line | fill | marker | marker_line | pattern | other
+    family: str                    # line | fill | marker | marker_line | hash_line | ...
     strategy: Strategy
     summary: str
     constraints: Tuple[str, ...] = field(default_factory=tuple)
@@ -141,7 +146,7 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
                ("tests/integration/test_materialize.py",
                 "tests/integration/test_marker_line_extras.py",
                 "tests/browser/test_browser_parity.py")),
-    Capability("HashLine", "marker_line", Strategy.MATERIALIZED,
+    Capability("HashLine", "hash_line", Strategy.MATERIALIZED,
                "Hash marks are exported as rotated line markers at the QGIS positions; QGIS 4 "
                "trims, blank segments and extra items as for marker lines.",
                ("Hash angle relative to a data-defined value is frozen.",),

@@ -2069,9 +2069,33 @@ skip without the API and compare against QGIS 4 renders.
 - Labels (`qt_compat.label_multipart_mode`, `curved_label_mode`): `multiPartBehavior()` replaces
   the lossy `labelPerPart` shim; split mode (`_label_lines_over_parts`: line i on part i, auto
   wrap via `wordwrap()`); characters at vertices exported as rotated points (exact placement,
-  collisions approximate); stretch modes in the viewer (`placeStretchedOnLine`, data-driven
-  `text-letter-spacing`; word spacing in whole spaces). Whitespace collision handling and
+  collisions approximate); stretch modes in the viewer (`placeStretchedOnLine`; 4.51.0 used a
+  data-driven `text-letter-spacing` and whole spaces). Whitespace collision handling and
   data-defined modes reported (`Q2VT_LABEL_APPROXIMATE`).
+  Fixed after review: stretched labels are laid out by the viewer character by character (one
+  point label per grapheme on its chord of the line, offset curve above / below it): MapLibre
+  cut or dropped line labels longer than ~1000 px; per-character collision boxes. Characters at
+  vertices: graphemes (`QgsPalLabeling.splitToGraphemes`), HTML labels as plain text, polygon
+  rings as stored (longest ring of the whole feature, or every ring with holes; no dissolve).
+  Split lines go by the part number of the base layer (`PART_FIELD`, absolute) and over the
+  parts of a label geometry generator; data-defined wrap character / wrap length followed.
+  A static data-defined "LabelAllParts" reads as `QgsProperty::valueAsBool`.
 - Selective masking source sets (`masks.resolve_source_sets`): resolved as
   `QgsVectorLayerUtils::collectObjectsMasked*FromLayer` does, fed to the existing halo /
   knock-out approximation; a mask marker with an empty list masks when its layer masks.
+
+## 4.51.1 — bug check of the QGIS 4 code
+
+Four audits (marker lines, labels, masking + a Qt6 sweep of src/ and the Publish dialog driven
+on QGIS 4, cross-cutting cache/workers/performance). Fixed: trims and blanks measured in
+EPSG:3857 for non-interval placements (recipes now carry the project CRS); trim/blank/extra
+expressions rewritten to the layer CRS with layer variables, the whole multipart feature as
+`$geometry`, `@map_scale` per zoom, checked by workers; parts numbered absolutely in the base
+layer (`_number_parts`) for split labels, blanks, trims and extra items; stretched curved labels
+laid out per grapheme as point labels (MapLibre dropped line labels longer than a tile);
+characters at vertices from the stored rings (no dissolve), plain text for HTML labels, by
+grapheme; split lines over generated parts; static LabelAllParts read as
+`QgsProperty::valueAsBool`; data-defined wrap character / auto-wrap length applied; disabled
+mask markers and ones masking only unexported layers no longer knocked out; hash-line DDP
+emitter family. No Qt6 incompatibilities found; projects without the new options export
+identically to 4.50.2, and export time is unchanged.

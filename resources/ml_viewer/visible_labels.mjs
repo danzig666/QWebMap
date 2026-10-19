@@ -48,7 +48,11 @@
 // part of the longest visible stretch, as QGIS chops the line clipped to
 // the map extent. A curved label QGIS 4 stretches to fit its line
 // (metadata["q2vt:curved-stretch"]: its letter or word spacing) spans the
-// longest visible stretch of the line, or each repeat part of it.
+// longest visible stretch of the line, or each repeat part of it; it is
+// laid out here character by character (one point label per character,
+// turned to its chord of the line): MapLibre lays a line label out per tile
+// on the line clipped to the tile and its buffer, and cut or dropped one
+// longer than about a thousand pixels.
 // While the map moves
 // (drag, zoom animation) placed labels do not move at all - only polygons
 // without a label get one - and the rule above is applied once the map
@@ -169,13 +173,9 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
     // QGIS Curved placement: bent along the line, glyph by glyph.
     if (layer.metadata["q2vt:line-curved"]) groups.get(polygons).curved = true;
     // QGIS 4 "Stretch character / word spacing to fit line": spread over
-    // the visible line; the extra letter spacing is each label's own.
+    // the visible line, character by character (placeStretchedOnLine).
     const stretch = layer.metadata["q2vt:curved-stretch"];
-    if (stretch) {
-      groups.get(polygons).stretch = stretch;
-      const spacing = stretchedSpacing(layer.layout?.["text-letter-spacing"] ?? 0);
-      if (stretch === "characters" && spacing) layer.layout = { ...layer.layout, "text-letter-spacing": spacing };
-    }
+    if (stretch) groups.get(polygons).stretch = stretch;
     // A repeated line label: one label per repeat part of the visible line.
     if (layer.metadata["q2vt:repeat"]) groups.get(polygons).repeat = layer.metadata["q2vt:repeat"];
     // "Merge connected lines": lines of one text meeting end to end are one line.
@@ -204,7 +204,9 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   // own tiles and index in the browser. A group's layers take its points
   // only (GROUP_FIELD); the ids are made unique across the groups.
   [...groups.values()].forEach((group, index) => {
-    group.source = SOURCE_PREFIX + (group.curved ? "curved" : "points");
+    // A stretched curved label: a point label per character (GLYPH_TEXT).
+    group.glyphs = Boolean(group.stretch && group.curved && !group.level);
+    group.source = SOURCE_PREFIX + (group.curved && !group.glyphs ? "curved" : "points");
     group.index = index;
   });
   const added = new Set();
@@ -229,7 +231,7 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
       // (cut at the tile edge, each piece got a label of its own). Not
       // overzoomed: MapLibre fits the label on its line in tile pixels, so
       // the piece is longer by the tile's scale (curvedScale).
-      ...(group.curved ? { buffer: 512, maxzoom: curvedMaxzoom(map.getMaxZoom()) }
+      ...(group.curved && !group.glyphs ? { buffer: 512, maxzoom: curvedMaxzoom(map.getMaxZoom()) }
         : { maxzoom: pointMaxzoom(map.getMaxZoom()) }),
     });
     for (const { def } of group.layers) map.removeLayer(def.id);
@@ -248,7 +250,21 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
       const anchor = moved.layout["text-anchor"];
       moved.layout = { ...moved.layout, "text-anchor": group.kind === "line"
         && (anchor === "top" || anchor === "bottom") ? anchor : "center" };
-      if (group.curved && !group.level) {
+      if (group.glyphs) {
+        // One point label per character of a stretched label, at the
+        // middle of its chord of the line (offset above / below it there),
+        // turned to it (placeStretchedOnLine).
+        moved.layout["symbol-placement"] = "point";
+        moved.layout["text-anchor"] = "center";
+        delete moved.layout["text-offset"];
+        moved.layout["text-field"] = ["to-string", ["get", GLYPH_TEXT]];
+        moved.layout["text-rotate"] = ["to-number", ["get", GLYPH_ROTATION], 0];
+        moved.layout["text-rotation-alignment"] = "map";
+        moved.layout["text-keep-upright"] = false;
+        for (const key of ["symbol-spacing", "text-max-angle", "text-letter-spacing", "text-max-width"]) {
+          delete moved.layout[key];
+        }
+      } else if (group.curved && !group.level) {
         // The label is laid out along its piece of line (written below):
         // MapLibre bends it with the line and keeps it upright.
         moved.layout["symbol-placement"] = "line-center";
@@ -354,8 +370,7 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
         curved: group.curved && !group.level ? curvedOption(map, activeLayer(group, zoom).layout || {}, zoom, perPx)
           : null,
         repeat: repeatOption(group.repeat, zoom, perPx),
-        stretch: group.stretch && group.curved && !group.level
-          ? { mode: group.stretch, field: (activeLayer(group, zoom).layout || {})["text-field"] } : null,
+        stretch: group.glyphs ? { mode: group.stretch, glyphs: glyphMetrics(group, zoom, perPx, fonts) } : null,
         mergeText: group.merge ? textKey((activeLayer(group, zoom).layout || {})["text-field"]) : null,
         textAnchor: (activeLayer(group, zoom).layout || {})["text-anchor"],
         rotationField: group.orient === "free" ? FREE_ROTATION : rotationField(group, zoom),
@@ -648,7 +663,14 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     if (old && options.freeze) {
       const kept = old.properties || properties;
       points.set(key, { point: old.point, properties: kept, orig, unit: old.unit, prec: old.prec,
-                        line: old.line });
+                        line: old.line, glyphs: old.glyphs, boxes: old.boxes });
+      if (old.glyphs) {  // a label laid out character by character: their boxes
+        for (const box of old.boxes || []) {
+          boxes.push(box);
+          keepClear(box);
+        }
+        continue;
+      }
       // Its box at this zoom (shrunk and turned as drawn), for the others.
       const label = options.labelBox ? options.labelBox(kept) : null;
       if (label) {
@@ -668,11 +690,13 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         continue;
       }
       const stretched = options.stretch ? placeStretchedOnLine(loaded, properties, view, avoid, lineOptions) : null;
-      (stretched || placeRepeatedOnLine(loaded, properties, view, avoid, lineOptions)).forEach((placed, k) => {
+      (stretched || placeRepeatedOnLine(loaded, properties, view, avoid, lineOptions)
+        .map((placed) => asGlyphs(placed, properties, lineOptions))).forEach((placed, k) => {
+        if (!placed) return;
         points.set(key + PART_SEPARATOR + k, { ...placed, orig });
-        if (placed.box) {
-          boxes.push(placed.box);
-          keepClear(placed.box);
+        for (const box of placed.boxes || (placed.box ? [placed.box] : [])) {
+          boxes.push(box);
+          keepClear(box);
         }
       });
       continue;
@@ -680,12 +704,12 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     if (options.kind === "line") {
       const stretched = options.stretch ? placeStretchedOnLine(loaded, properties, view, avoid, lineOptions) : null;
       const placed = stretched ? stretched[0]
-        : placeOnLine(loaded, properties, old, view, guarded, avoid, lineOptions);
+        : asGlyphs(placeOnLine(loaded, properties, old, view, guarded, avoid, lineOptions), properties, lineOptions);
       if (placed) {
         points.set(key, { ...placed, orig });
-        if (placed.box) {
-          boxes.push(placed.box);
-          keepClear(placed.box);
+        for (const box of placed.boxes || (placed.box ? [placed.box] : [])) {
+          boxes.push(box);
+          keepClear(box);
         }
       }
       continue;
@@ -930,7 +954,17 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     const lngLat = new maplibregl.MercatorCoordinate(x, y, 0).toLngLat();
     return [lngLat.lng, lngLat.lat];
   };
-  for (const [key, { point, properties, line }] of points) {
+  for (const [key, { point, properties, line, glyphs }] of points) {
+    if (glyphs) {  // a label laid out character by character: a point each
+      glyphs.forEach(({ point: at, text, rotation }, i) => {
+        const id = key + GLYPH_SEPARATOR + i;
+        if (!state.ids.has(id)) state.ids.set(id, state.nextId++);
+        out.push({ type: "Feature", id: state.ids.get(id),
+                   properties: { ...properties, [GLYPH_TEXT]: text, [GLYPH_ROTATION]: rotation },
+                   geometry: { type: "Point", coordinates: lngLatOf(at) } });
+      });
+      continue;
+    }
     if (!state.ids.has(key)) state.ids.set(key, state.nextId++);
     // A curved label: its piece of line (MapLibre lays the glyphs along it),
     // for the label size and tile scale of this zoom.
@@ -944,7 +978,11 @@ export function labelPoints(features, view, maplibregl, options = {}) {
   // ever labelled: browsing a city grew the map without end). A label that
   // comes back gets a new id, which the source takes as added.
   if (state.ids.size > points.size) {
-    for (const key of state.ids.keys()) if (!points.has(key)) state.ids.delete(key);
+    for (const key of state.ids.keys()) {
+      if (!points.has(key.includes(GLYPH_SEPARATOR) ? key.slice(0, key.indexOf(GLYPH_SEPARATOR)) : key)) {
+        state.ids.delete(key);
+      }
+    }
   }
   return { type: "FeatureCollection", features: out, boxes };
 }
@@ -2066,75 +2104,253 @@ function placeRepeatedOnLine(loaded, properties, view, avoid, options) {
 // the start to the end of the line clipped to the map extent (its longest
 // visible stretch, or each one with "label every part"; each repeat part of
 // it), no curvature check: the spacing grows (or shrinks) by the line's
-// length less the text's width, 99.5 % of it (100.5 % when shrinking),
-// shared by the gaps between the characters - as extra letter spacing of
-// the label (STRETCH_SPACING) - or by its spaces. MapLibre has no word
-// spacing: each space grows by whole spaces, as many as come nearest. A
-// label without spaces is placed as usual in word mode (null), as in QGIS.
-// The label is centred on the stretch, drawn whatever its box overlaps at
-// the screen edge; it keeps clear of the labels placed before it unless
-// QGIS allows overlaps. Returns the placements.
-const STRETCH_SPACING = "q2vt_stretch_spacing";
+// length less the text's width (the sum of its characters' advances,
+// letter spacing included: QgsTextLabelFeature::calculateTextMetrics),
+// 99.5 % of it (100.5 % when shrinking), shared by the gaps between the
+// characters or by the characters after a space. A label without spaces is
+// placed as usual in word mode (null), as in QGIS.
+// The label is laid out character by character (layGlyphs), each its own
+// point label: MapLibre lays a line label out per tile, on the line clipped
+// to the tile and its buffer, and cut or dropped a stretched label longer
+// than about a thousand pixels. Each character's box keeps the others
+// clear and is kept clear of the labels placed before it unless QGIS allows
+// overlaps; drawn whatever it overlaps at the screen edge. Returns the
+// placements.
+const GLYPH_TEXT = "q2vt_glyph";
+const GLYPH_ROTATION = "q2vt_glyph_rotation";
+const GLYPH_SEPARATOR = "\u0003";
 function placeStretchedOnLine(loaded, properties, view, avoid, options) {
-  const { mode, field } = options.stretch;
-  const box = options.labelBox ? options.labelBox(properties) : null;
-  const name = Array.isArray(field) && field[0] === "get" && typeof field[1] === "string" ? field[1] : null;
-  const text = name ? String(properties[name] ?? "") : "";
-  const chars = [...text];
-  if (!box || !box.text || !box.size || chars.length < 2) return null;
-  const spaces = chars.filter((c) => c === " ").length;
-  if (mode === "words" && !spaces) return null;
-  const width = 2 * box.text[0];
-  const perEm = box.size * (options.precision || 0);  // world units per em
-  const stretchTo = (length) => {
-    let extra = length - width;
-    extra *= extra > 0 ? 0.995 : 1.005;
-    if (mode !== "words") {
-      return perEm > 0 ? { ...properties, [STRETCH_SPACING]: extra / (chars.length - 1) / perEm } : properties;
-    }
-    // One more space in each gap: its width; then as many as fit best.
-    const wider = options.labelBox({ ...properties, [name]: text.replaceAll(" ", "  ") });
-    const space = wider && wider.text ? (2 * wider.text[0] - width) / spaces : 0;
-    const more = space > 0 ? Math.max(0, Math.round(extra / spaces / space)) : 0;
-    return more ? { ...properties, [name]: text.replaceAll(" ", " ".repeat(1 + more)) } : properties;
-  };
+  const { mode, glyphs } = options.stretch;
+  const metrics = glyphs ? glyphs(properties) : null;
+  if (!metrics || metrics.chars.length < 2) return null;
+  if (mode === "words" && !metrics.chars.some(isBlank)) return null;
+  const width = metrics.advances.reduce((sum, w) => sum + w, 0);
   const chains = stitch(loaded.flatMap((piece) => clipLine(piece, view)), joinTolerance(options))
     .map((chain) => ({ chain, length: chainLength(chain) })).sort((a, b) => b.length - a.length);
   const out = [];
   for (const { chain, length } of options.perPart ? chains : chains.slice(0, 1)) {
     for (const [a, b] of repeatParts(length, width, options.repeat || 0)) {
       if (!(b > a)) continue;
-      const stretched = stretchTo(b - a);
-      const s = (a + b) / 2;
-      const at = along(chain, s);
-      if (!at) continue;
-      const half = options.labelBox(stretched) || box;
-      const [ex, ey] = envelope(half, at.rotation * Math.PI / 180);
-      const spot = [at.point[0] - ex, at.point[1] - ey, at.point[0] + ex, at.point[1] + ey];
-      if (!options.overlap && avoid.some((other) => intersect(other, spot))) continue;
-      const placed = { point: at.point, properties: options.rotationField
-        ? { ...stretched, [options.rotationField]: at.rotation } : stretched, box: spot, line: { chain, s } };
+      const placed = layGlyphs(chain, a, b, metrics, mode, properties);
+      if (!placed) continue;
+      if (!options.overlap && placed.boxes.some((box) => avoid.some((other) => intersect(other, box)))) continue;
       out.push(placed);
-      avoid = avoid.concat([spot]);
+      avoid = avoid.concat(placed.boxes);
     }
   }
   return out;
 }
 
-// The letter spacing of a stretched curved label: the style's own plus the
-// label's STRETCH_SPACING (in each stop of a zoom curve); null when the
-// style's cannot take it.
-export function stretchedSpacing(base) {
-  const plus = (value) => ["+", value, ["coalesce", ["get", STRETCH_SPACING], 0]];
-  if (typeof base === "number") return plus(base);
-  if (!Array.isArray(base)) return null;
-  if (base[0] === "interpolate") {
-    return [...base.slice(0, 3), ...base.slice(3).map((value, i) => (i % 2 ? plus(value) : value))];
+// A blank grapheme (QGIS: QChar::isSpace of its first character).
+const isBlank = (c) => /^\s/u.test(c);
+
+// A curved placement (placeOnLine, placeRepeatedOnLine: its line and the
+// distance ``s`` along it of its middle) of a stretched label that is not
+// stretched (one word in word mode) laid out character by character,
+// centred on ``s``: its layer draws characters (GLYPH_TEXT). Other
+// placements as they are.
+function asGlyphs(placed, properties, options) {
+  if (!placed || !options.stretch || !placed.line) return placed;
+  const metrics = options.stretch.glyphs ? options.stretch.glyphs(placed.properties || properties) : null;
+  if (!metrics || !metrics.chars.length) return null;
+  const width = metrics.advances.reduce((sum, w) => sum + w, 0);
+  const { chain, s } = placed.line;
+  return layGlyphs(chain, s - width / 2, s + width / 2, metrics, null, placed.properties || properties);
+}
+
+// The characters of a curved label laid out along ``chain`` over [a, b],
+// as QGIS does (pal FeaturePart::createDefaultCurvedCandidatesAlongLine,
+// QgsTextRendererUtils::generateCurvedTextPlacement, nextCharPosition):
+// each character spans the chord from its start on the line to the point of
+// the line its advance away (in a straight line; past the line's end,
+// straight on along its last segment), turned to it; the next one starts
+// on the line where it ends. Stretched (``mode`` "characters" / "words"):
+// from ``a``, the length of [a, b] less the text's width, 99.5 % of it
+// (100.5 % when shrinking), shared by the gaps between the characters or
+// added after each blank; else centred on [a, b]. More than half the
+// characters upside down: laid out the other way along the line (QGIS's
+// second attempt, UprightCharactersOnly). A label above or below its line
+// (metrics.offset: to the left of the text, world units) is laid out
+// along the line offset by it (pal mapShapeOffsetPositive / Negative), its
+// [a, b] in proportion. Returns {point (the middle), properties, glyphs:
+// [{point (the character's middle), text, rotation (degrees clockwise)}]
+// (blanks left out), boxes (each character's, with LABEL_MARGIN_PX), box
+// (their envelope)}, null for a chain without length.
+function layGlyphs(chain, a, b, { chars, advances, height, margin, offset = 0 }, mode, properties) {
+  const total = chainLength(chain);
+  if (!(total > 0)) return null;
+  const width = advances.reduce((sum, w) => sum + w, 0);
+  const blanks = chars.filter(isBlank).length;
+  const lay = (line, from, to) => {
+    const length = chainLength(line);
+    let gap = 0, word = 0, s = (from + to) / 2 - width / 2;
+    if (mode && chars.length > 1) {
+      let extra = to - from - width;
+      extra *= extra > 0 ? 0.995 : 1.005;
+      if (mode === "words" && blanks) word = extra / blanks;
+      else gap = extra / (chars.length - 1);
+      s = from;
+    }
+    const glyphs = [];
+    let upsideDown = 0;
+    for (let i = 0; i < chars.length; i++) {
+      if (i) s += gap + (word && isBlank(chars[i - 1]) ? word : 0);
+      const start = s < 0 || s > length ? extendedPoint(line, s, length) : along(line, s).point;
+      const end = chordEnd(line, s, start, advances[i], length);
+      const dx = end.point[0] - start[0], dy = end.point[1] - start[1];
+      const d = Math.hypot(dx, dy) || 1;
+      const rotation = Math.atan2(dy, dx) * 180 / Math.PI;
+      if (Math.abs(rotation) > 90) upsideDown++;
+      glyphs.push({ point: [start[0] + dx / d * advances[i] / 2, start[1] + dy / d * advances[i] / 2],
+                    text: chars[i], rotation, width: advances[i] });
+      s = end.s;
+    }
+    return { glyphs, upsideDown };
+  };
+  let [line, from, to] = [chain, a, b];
+  let laid = lay(line, from, to);
+  if (laid.upsideDown >= chars.length / 2) {
+    [line, from, to] = [chain.slice().reverse(), total - b, total - a];
+    laid = lay(line, from, to);
   }
-  if (base[0] === "step") {
-    return [...base.slice(0, 2), plus(base[2]), ...base.slice(3).map((value, i) => (i % 2 ? plus(value) : value))];
+  const shifted = offset ? offsetLine(line, offset) : null;
+  const k = shifted ? chainLength(shifted) / total : 0;
+  if (k > 0) laid = lay(shifted, from * k, to * k);
+  const boxes = [];
+  const glyphs = [];
+  for (const { point, text, rotation, width: w } of laid.glyphs) {
+    const [ex, ey] = envelope([w / 2 + margin, height / 2 + margin], rotation * Math.PI / 180);
+    boxes.push([point[0] - ex, point[1] - ey, point[0] + ex, point[1] + ey]);
+    if (!isBlank(text)) glyphs.push({ point, text, rotation: Math.round(rotation * 100) / 100 });
   }
-  return null;
+  const middle = along(chain, Math.max(0, Math.min(total, (a + b) / 2)));
+  return { point: middle ? middle.point : laid.glyphs[0].point, properties, glyphs, boxes,
+           box: boxes.reduce((all, box) => union(all, box), null) };
+}
+
+// A line offset by ``d`` (world units) to its left (y down: (dy, -dx)), as
+// pal offsets its map shape (PointSet::offsetCurveByDistance: GEOS offset
+// curve, mitre joins limited to twice the distance - cut square beyond
+// it); null for a line without length.
+const MITRE_LIMIT = 2;
+function offsetLine(chain, d) {
+  const points = chain.filter((p, i) => !i || p[0] !== chain[i - 1][0] || p[1] !== chain[i - 1][1]);
+  if (points.length < 2) return null;
+  const units = [];
+  for (let i = 0; i + 1 < points.length; i++) {
+    const dx = points[i + 1][0] - points[i][0], dy = points[i + 1][1] - points[i][1];
+    const length = Math.hypot(dx, dy);
+    units.push([dx / length, dy / length]);
+  }
+  const normal = ([ux, uy]) => [uy, -ux];
+  const out = [];
+  points.forEach((p, i) => {
+    const u0 = units[Math.max(0, i - 1)], u1 = units[Math.min(units.length - 1, i)];
+    const n0 = normal(u0), n1 = normal(u1);
+    const cos = 1 + n0[0] * n1[0] + n0[1] * n1[1];  // 2 cos²(turn / 2)
+    const outer = (u0[0] * u1[1] - u0[1] * u1[0]) * d > 0;
+    if (cos >= 2 / MITRE_LIMIT ** 2 || !outer) {  // the mitre (inside a turn: where the sides meet)
+      const scale = d / Math.max(cos, 1e-6);
+      out.push([p[0] + (n0[0] + n1[0]) * scale, p[1] + (n0[1] + n1[1]) * scale]);
+      return;
+    }
+    // Beyond the limit: the mitre cut square at MITRE_LIMIT * |d| from the vertex.
+    const bl = Math.hypot(n0[0] + n1[0], n0[1] + n1[1]);
+    const b = bl > 1e-9 ? [(n0[0] + n1[0]) / bl, (n0[1] + n1[1]) / bl] : [-u0[0], -u0[1]];
+    const reach = MITRE_LIMIT * d;  // signed, as the offset
+    for (const [n, u] of [[n0, u0], [n1, u1]]) {
+      // On the side's offset line p + n d + t u, at ``reach`` along b.
+      const along0 = (n[0] * b[0] + n[1] * b[1]) * d, rate = u[0] * b[0] + u[1] * b[1];
+      const t = Math.abs(rate) > 1e-9 ? (reach - along0) / rate : 0;
+      out.push([p[0] + n[0] * d + u[0] * t, p[1] + n[1] * d + u[1] * t]);
+    }
+  });
+  return out;
+}
+
+// The point at distance ``s`` along a chain of length ``total``, run on
+// straight past its ends.
+function extendedPoint(chain, s, total) {
+  const [p, q] = s < 0 ? [chain[0], chain[1]] : [chain[chain.length - 1], chain[chain.length - 2]];
+  const d = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1;
+  const by = s < 0 ? -s : s - total;
+  return [p[0] + (p[0] - q[0]) / d * by, p[1] + (p[1] - q[1]) / d * by];
+}
+
+// Where a character of advance ``w`` starting at ``start`` (distance ``s``
+// along the chain) ends: the first point of the line ``w`` away from its
+// start in a straight line, and its distance along the line; past the end
+// of the line, straight on along its last segment (QGIS
+// ExtendLineToFitText).
+function chordEnd(chain, s, start, w, total) {
+  let walked = 0;
+  for (let i = 0; i + 1 < chain.length; i++) {
+    const [ax, ay] = chain[i], [bx, by] = chain[i + 1];
+    const step = Math.hypot(bx - ax, by - ay);
+    const from = walked;
+    walked += step;
+    if (walked < s || !step || Math.hypot(bx - start[0], by - start[1]) < w) continue;
+    // On this segment: |a + t (b - a) - start| = w, the larger root (the
+    // start lies before it on the line).
+    const dx = bx - ax, dy = by - ay, fx = ax - start[0], fy = ay - start[1];
+    const qa = dx * dx + dy * dy, qb = 2 * (fx * dx + fy * dy), qc = fx * fx + fy * fy - w * w;
+    const t = Math.max(0, Math.min(1, (-qb + Math.sqrt(Math.max(0, qb * qb - 4 * qa * qc))) / (2 * qa)));
+    if (from + t * step < s) continue;
+    return { point: [ax + dx * t, ay + dy * t], s: from + t * step };
+  }
+  // Off the end of the line: on its last segment run on straight, ``w``
+  // from the start.
+  if (s >= total) return { point: extendedPoint(chain, s + w, total), s: s + w };
+  const p = chain[chain.length - 1], q = chain[chain.length - 2];
+  const d = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1;
+  const ux = (p[0] - q[0]) / d, uy = (p[1] - q[1]) / d;
+  const fx = start[0] - p[0], fy = start[1] - p[1];
+  const proj = fx * ux + fy * uy;  // |p + u k - start| = w
+  const k = Math.max(0, proj + Math.sqrt(Math.max(0, proj * proj - (fx * fx + fy * fy - w * w))));
+  return { point: [p[0] + ux * k, p[1] + uy * k], s: total + k };
+}
+
+// The graphemes of a text (what QGIS lays out one by one:
+// QgsPalLabeling::splitToGraphemes), code points where the browser cannot
+// split them.
+export function graphemes(text) {
+  if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
+    return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map((g) => g.segment);
+  }
+  return [...text];
+}
+
+// properties -> {chars, advances, height, margin} of a stretched curved
+// label at ``zoom``: its text's graphemes (one line), each one's advance
+// (world units: the font's measured advance, else its mean one, plus the
+// letter spacing, as QGIS measures characters), the text's height and
+// LABEL_MARGIN_PX (world units); null without text.
+function glyphMetrics(group, zoom, perPx, fonts) {
+  const layer = activeLayer(group, zoom);
+  const layout = layer.layout || {};
+  const charWidth = Number(layer.metadata?.["q2vt:char-width"]) || 0.6;
+  const metrics = fonts?.get(layer.metadata?.["q2vt:font"]) || null;
+  return (properties) => {
+    const text = textSections(layout["text-field"], zoom, properties).map(({ text: t }) => t).join("")
+      .replace(/\n/g, " ");
+    if (!text.trim()) return null;
+    let size = Number(evaluate(layout["text-size"] ?? 16, zoom, properties));
+    if (!Number.isFinite(size) || size <= 0) size = 16;
+    const spacing = Number(evaluate(layout["text-letter-spacing"] ?? 0, zoom, properties)) || 0;
+    const transform = evaluate(layout["text-transform"], zoom, properties);
+    const shown = (c) => (transform === "uppercase" ? c.toUpperCase() : transform === "lowercase" ? c.toLowerCase() : c);
+    const chars = graphemes(text);
+    const advance = (c) => (metrics ? metrics.advance.get(shown(c)) ?? charWidth : charWidth);
+    const height = (metrics ? metrics.height : 1.2) * size * perPx;
+    // Above / below the line (text-anchor "bottom" / "top", the label
+    // distance a text-offset): the characters' middle that far from it
+    // (pal: distLabel + characterHeight / 2).
+    const side = { bottom: 1, top: -1 }[layout["text-anchor"]] || 0;
+    const shift = evaluate(layout["text-offset"], zoom, properties);
+    const distance = Array.isArray(shift) ? Math.abs(Number(shift[1]) || 0) * size * perPx : 0;
+    return { chars, advances: chars.map((c) => (advance(c) + spacing) * size * perPx), height,
+             margin: LABEL_MARGIN_PX * perPx, offset: side * (distance + height / 2) };
+  };
 }
 
 // (start, end) along a line of the parts pal labels one by one
