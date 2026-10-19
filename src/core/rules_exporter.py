@@ -604,10 +604,11 @@ class RulesExporter:
             pending = [grp for grp in rule_groups if grp.output_dataset not in cached_outputs]
             needed = {grp.layer_id for grp in pending}
             # Parts are numbered for visible-polygon labels and for QGIS 4
-            # blank segments (listed per part).
+            # trims, blank segments (listed per part) and extra items
+            # (@geometry_part_num, the parts of a feature collected again).
             self._part_layers = {grp.layer_id for grp in pending if grp.visible_polygons or (
                 grp.recipe is not None and grp.recipe.kind == "marker_points"
-                and grp.recipe.param("blank"))}
+                and mat.templated_expressions(grp.recipe))}
 
             # Phase 1 — serial source materialisation (caller thread).
             if self._is_cancelled():
@@ -783,6 +784,7 @@ class RulesExporter:
             expr_fields, part_fields, generated_fields = (
                 [(ftype, bind(expr), name) for ftype, expr, name in fields]
                 for fields in (expr_fields, part_fields, generated_fields))
+            recipe = self._templated_recipe(primary, layer_crs, bind)
 
             rule_groups.append(_RuleGroupSnapshot(
                 output_dataset=primary.output_dataset,
@@ -794,7 +796,7 @@ class RulesExporter:
                 expression_fields=expr_fields,
                 description=primary.get_description(),
                 include_required_fields_only=self.include_required_fields_only,
-                recipe=primary.recipe,
+                recipe=recipe,
                 source_geometry=primary.get_attr("g"),
                 part_fields=part_fields,
                 flat_rules=flat_rules,
@@ -817,6 +819,24 @@ class RulesExporter:
 
         self._flush_view_reports()
         return sources, rule_groups
+
+    def _templated_recipe(self, primary: FlattenedRule, layer_crs: str, bind) -> Optional[Recipe]:
+        """The rule's recipe, with the QGIS 4 marker / hash line trim, blank
+        segment and extra item expressions evaluated by the worker as the
+        rule's other expressions are: on layer-CRS geometry, with the layer's
+        variables, and on the whole feature ("feature_geometry": its parts
+        collected again, as QGIS evaluates them on the feature it draws)
+        unless the symbol is drawn on generated or merged geometry."""
+        recipe = primary.recipe
+        if recipe is None or recipe.kind != "marker_points" or \
+                not mat.templated_expressions(recipe):
+            return recipe
+        self._report_view_variables(primary, mat.templated_expressions(recipe))
+        recipe = mat.with_templated_expressions(recipe, lambda text: bind(
+            in_layer_crs(text, f"EPSG:{_EPSG_CRS}", layer_crs, self._planar)))
+        if primary.pre_generator or primary.merge:
+            return recipe
+        return Recipe(recipe.kind, recipe.placements, recipe.params + (("feature_geometry", True),))
 
     _GEOMETRY_REFERENCE = re.compile(
         r"\$(geometry|length|area|perimeter|x|y)\b|@geometry\b|@geometry_part_(num|count)\b",
@@ -3953,6 +3973,79 @@ class RulesExporter:
             rings += [(i + 1, part.interiorRing(i)) for i in range(part.numInteriorRings())]
         return [(number, ring) for number, ring in rings if ring is not None]
 
+    def _templated_context(self, layer, recipe: Recipe, texts):
+        """(context, its variable scope, prepared expressions, {feature id:
+        geometry evaluated on}) of a QGIS 4 marker / hash line's trim, blank
+        segment or extra item expressions (``texts``, rewritten by
+        _templated_recipe), evaluated on the worker as Processing evaluates
+        the rule's other expressions (the base layer's CRS for ellipsoidal
+        measures; not its layer scope, whose static @layer_name a prepared
+        expression reads before the with_variable binding the project
+        layer's). With the recipe's "feature_geometry", one that reads the
+        geometry sees its whole feature: the base layer's single parts
+        (``_FIELD_PREFIX``_orig_id) collected again in order."""
+        context = self._worker_expression_context()
+        context.setFields(layer.fields())
+        scope = QgsExpressionContextScope()
+        scope.setVariable("_layer_crs", layer.crs())
+        context.appendScope(scope)
+        expressions = [QgsExpression(text) if text else None for text in texts]
+        for expression in expressions:
+            if expression is not None:
+                expression.prepare(context)
+        whole: Dict[int, QgsGeometry] = {}
+        orig = layer.fields().indexFromName(f"{_FIELD_PREFIX}_orig_id")
+        if recipe.param("feature_geometry") and orig >= 0 and any(
+                e is not None and e.needsGeometry() for e in expressions):
+            numbers = self._part_numbers(layer)
+            pieces: Dict[Any, List[Tuple[int, int, QgsGeometry]]] = {}
+            for index, feature in enumerate(layer.getFeatures()):
+                pieces.setdefault(feature.attribute(orig), []).append(
+                    (numbers.get(feature.id(), index), feature.id(), feature.geometry()))
+            for parts in pieces.values():
+                if len(parts) > 1:
+                    parts.sort(key=lambda piece: piece[0])
+                    collected = QgsGeometry.collectGeometry([piece[2] for piece in parts])
+                    whole.update((piece[1], collected) for piece in parts)
+        return context, scope, expressions, whole
+
+    @staticmethod
+    def _evaluated_feature(feature, whole):
+        """``feature`` with its whole feature's geometry (_templated_context)."""
+        geometry = whole.get(feature.id())
+        if geometry is None:
+            return feature
+        copy = QgsFeature(feature)
+        copy.setGeometry(geometry)
+        return copy
+
+    @staticmethod
+    def _trimmed_part(xs, ys, to_crs, back, lengths):
+        """marker_points.trim_points of a line part measured in the recipe CRS
+        (``to_crs`` / ``back``, _recipe_transforms; the whole part
+        transformed): the vertices it keeps unchanged, its new ends taken
+        back. None when nothing is left; raises QgsCsException."""
+        from qgis.core import QgsPointXY  # pylint: disable=import-outside-toplevel
+        if to_crs is None:
+            return marker_points.trim_points(xs, ys, *lengths)
+        geometry = QgsGeometry.fromPolylineXY([QgsPointXY(x, y) for x, y in zip(xs, ys)])
+        geometry.transform(to_crs)
+        line = geometry.constGet()
+        mxs = [line.xAt(i) for i in range(line.numPoints())]
+        mys = [line.yAt(i) for i in range(line.numPoints())]
+        trimmed = marker_points.trim_points(mxs, mys, *lengths)
+        if trimmed is None:
+            return None
+        original = dict(zip(zip(mxs, mys), zip(xs, ys)))
+        kept = []
+        for x, y in zip(*trimmed):
+            point = original.get((x, y))
+            if point is None:
+                moved = back.transform(x, y)
+                point = (moved.x(), moved.y())
+            kept.append(point)
+        return [x for x, _ in kept], [y for _, y in kept]
+
     def _templated_lines(self, source: str, recipe: Recipe, source_geometry: int) -> str:
         """Worker: the line parts (a polygon's rings, by the recipe's ring
         filter) a QGIS 4 marker / hash line places its items on, each trimmed
@@ -3961,8 +4054,9 @@ class RulesExporter:
         with its blank segments (``mat.BLANK_FIELD``: the evaluated
         string's list for this part and ring, in the recipe CRS's units).
         Data-defined values are evaluated for every part and ring as QGIS
-        evaluates them (@geometry_part_num, @geometry_ring_num set). A part
-        trimmed away is left out."""
+        evaluates them (@geometry_part_num, and @geometry_ring_num of a
+        polygon, set; see _templated_context). A part trimmed away is left
+        out."""
         from qgis.core import QgsPointXY  # pylint: disable=import-outside-toplevel
         self._check_cancel()
         layer = self._open(source, "templated")
@@ -3974,19 +4068,12 @@ class RulesExporter:
                 fields.append(field)
         if blank:
             fields.append(QgsField(mat.BLANK_FIELD, QVariant.String))
-        context = self._worker_expression_context()
-        context.setFields(layer.fields())
-        scope = QgsExpressionContextScope()
-        context.appendScope(scope)
-        expressions = {}
-        for key, text in (("start", trims[0][3] if trims[0] else ""),
-                          ("end", trims[1][3] if trims[1] else ""),
-                          ("blank", blank[0] if blank else "")):
-            if text:
-                expressions[key] = QgsExpression(text)
-                expressions[key].prepare(context)
-        to_crs, back = self._recipe_transforms(layer, recipe)
-        parts = self._part_numbers(layer) if blank else {}
+        context, scope, (start_expression, end_expression, blank_expression), whole = \
+            self._templated_context(layer, recipe, (trims[0][3] if trims[0] else "",
+                                                    trims[1][3] if trims[1] else "",
+                                                    blank[0] if blank else ""))
+        to_crs, back = self._recipe_transforms(layer, recipe) if any(trims) else (None, None)
+        parts = self._part_numbers(layer)
         polygon = source_geometry == 2
         ring_filter = int(recipe.param("ring_filter", 0) or 0)
 
@@ -3996,7 +4083,7 @@ class RulesExporter:
             if trim is None:
                 return 0.0, False
             value, factor, pct, _ = trim
-            expression = expressions.get("start" if index == 0 else "end")
+            expression = start_expression if index == 0 else end_expression
             if expression is not None:
                 # valueAsDouble: the static value when NULL or not a number.
                 result = expression.evaluate(context)
@@ -4013,7 +4100,7 @@ class RulesExporter:
             geometry = feature.geometry()
             if geometry.isNull() or geometry.isEmpty():
                 continue
-            context.setFeature(feature)
+            context.setFeature(self._evaluated_feature(feature, whole))
             attributes = [feature[field.name()] for field in fields if field.name() != mat.BLANK_FIELD]
             part_number = parts.get(feature.id(), 1)
             for offset, part in enumerate(geometry.constParts()):
@@ -4021,35 +4108,29 @@ class RulesExporter:
                     line = ring.curveToLine() if ring.hasCurvedSegments() else ring
                     xs = [line.xAt(i) for i in range(line.numPoints())]
                     ys = [line.yAt(i) for i in range(line.numPoints())]
-                    try:
-                        if to_crs is not None:
-                            moved = [to_crs.transform(x, y) for x, y in zip(xs, ys)]
-                            xs, ys = [p.x() for p in moved], [p.y() for p in moved]
-                    except QgsCsException:
-                        continue
                     scope.setVariable("geometry_part_num", part_number + offset)
-                    scope.setVariable("geometry_ring_num", ring_number)
-                    (start, start_pct), (end, end_pct) = length(0), length(1)
-                    trimmed = marker_points.trim_points(xs, ys, start, end, start_pct, end_pct)
-                    if trimmed is None:
-                        continue  # nothing left to place on
-                    xs, ys = trimmed
+                    if polygon:  # (renderPolygonStroke; not set on a line)
+                        scope.setVariable("geometry_ring_num", ring_number)
+                    if any(trims):
+                        (start, start_pct), (end, end_pct) = length(0), length(1)
+                        try:
+                            trimmed = self._trimmed_part(xs, ys, to_crs, back,
+                                                         (start, end, start_pct, end_pct))
+                        except QgsCsException:
+                            continue
+                        if trimmed is None:
+                            continue  # nothing left to place on
+                        xs, ys = trimmed
                     values = list(attributes)
                     if blank:
                         pairs = []
                         parsed = marker_points.parse_blank_segments(
-                            self._value_text(expressions["blank"].evaluate(context)))
+                            self._value_text(blank_expression.evaluate(context)))
                         index = part_number + offset - 1
                         if parsed and index < len(parsed) and ring_number < len(parsed[index]):
                             pairs = [[start_ * blank[1], end_ * blank[1]]
                                      for start_, end_ in parsed[index][ring_number]]
                         values.append(json.dumps(pairs) if pairs else None)
-                    try:
-                        if back is not None:
-                            moved = [back.transform(x, y) for x, y in zip(xs, ys)]
-                            xs, ys = [p.x() for p in moved], [p.y() for p in moved]
-                    except QgsCsException:
-                        continue
                     piece = QgsFeature(fields)
                     piece.setAttributes(values)
                     piece.setGeometry(QgsGeometry.fromPolylineXY(
@@ -4140,12 +4221,8 @@ class RulesExporter:
             if field.name().lower() not in ("fid", "ogc_fid") and field.name() != mat.ANGLE_FIELD:
                 fields.append(field)
         fields.append(QgsField(mat.ANGLE_FIELD, QVariant.Double))
-        context = self._worker_expression_context()
-        context.setFields(layer.fields())
-        scope = QgsExpressionContextScope()
-        context.appendScope(scope)
-        expression = QgsExpression(recipe.param("extra"))
-        expression.prepare(context)
+        context, scope, (expression,), whole = self._templated_context(
+            layer, recipe, (recipe.param("extra"),))
         _, back = self._recipe_transforms(layer, recipe)
         parts = self._part_numbers(layer)
         ring_filter = int(recipe.param("ring_filter", 0) or 0)
@@ -4156,11 +4233,15 @@ class RulesExporter:
             if geometry.isNull() or geometry.isEmpty():
                 continue
             attributes = [feature[field.name()] for field in fields if field.name() != mat.ANGLE_FIELD]
-            context.setFeature(feature)
+            context.setFeature(self._evaluated_feature(feature, whole))
             for offset, part in enumerate(geometry.constParts()):
                 if source_geometry == 2 and ring_filter == 2 and not part.numInteriorRings():
                     continue
                 scope.setVariable("geometry_part_num", parts.get(feature.id(), 1) + offset)
+                if source_geometry == 2:
+                    # Drawn with the first ring drawn (renderPolygonStroke):
+                    # the exterior, or the first interior one.
+                    scope.setVariable("geometry_ring_num", 1 if ring_filter == 2 else 0)
                 items = marker_points.parse_extra_items(
                     self._value_text(expression.evaluate(context)))
                 for x, y, angle in items:

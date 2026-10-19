@@ -3040,7 +3040,8 @@ class SymbolMaterializer:
         mm = _to_mm(1.0, unit)
         return (None, False, mm) if mm is not None else None
 
-    def _templated_extras(self, flat_rule: FlattenedRule, layer) -> Optional[List[FlattenedRule]]:
+    def _templated_extras(self, flat_rule: FlattenedRule, layer,
+                          scale: Optional[float] = None) -> Optional[List[FlattenedRule]]:
         """QGIS 4 marker and hash lines: trim distance at start / end (4.2),
         data-defined blank segments (4.0) and extra items (4.2). QGIS trims
         every line part / ring (trimPoints) before offsetting it and placing
@@ -3051,12 +3052,17 @@ class SymbolMaterializer:
         materialized without them, its placed markers' recipes then carry
         the trim and blank segments (applied by the exporter's
         _templated_lines and placement steps); extra items are a point rule
-        of their own. None when the layer has none of them."""
+        of their own. None when the layer has none of them. Expressions
+        that read the map scale are evaluated at ``scale``: the rule is split
+        per zoom for them first (they leave the symbol, the flattener's
+        split by scale no longer sees them)."""
+        from .fidelity.qgis_expr import with_map_scale  # pylint: disable=import-outside-toplevel
         props = layer.dataDefinedProperties()
 
         def expression(key) -> str:
-            return props.property(key).asExpression() \
+            text = props.property(key).asExpression() \
                 if key is not None and props.isActive(key) else ""
+            return with_map_scale(text, scale) if scale is not None else text
         ends = []
         if hasattr(layer, "trimDistanceStart"):
             for value, unit, key in (
@@ -3068,6 +3074,9 @@ class SymbolMaterializer:
         extra = expression(self._EXTRA_ITEMS_KEY)
         if not any(ends) and not blank and not extra:
             return None
+        if scale is None and (any(uses_map_scale(end[2]) for end in ends if end is not None)
+                              or uses_map_scale(blank) or uses_map_scale(extra)):
+            return self._templated_per_zoom(flat_rule, layer)
         crs = self.project_crs or flat_rule.layer.crs().authid()
         clone = layer.clone()
         if any(ends):
@@ -3081,20 +3090,37 @@ class SymbolMaterializer:
         base = flat_rule.derive()
         replace_symbol_layer(base.rule.symbol(), clone)
         if any(ends) or blank:
-            rules = self._trimmed_or_blanked(base, layer, ends, blank)
+            rules = self._trimmed_or_blanked(base, layer, ends, blank, crs)
         else:
             placed = self.materialize(base, base.rule.symbol().symbolLayer(0))
             rules = placed if placed is not None else [base]
         items = self._extra_items_rule(flat_rule, layer, extra, crs) if extra else None
         return rules + ([items] if items is not None else [])
 
-    def _trimmed_or_blanked(self, base: FlattenedRule, layer, ends, blank: str) -> List[FlattenedRule]:
+    def _templated_per_zoom(self, flat_rule: FlattenedRule, layer) -> List[FlattenedRule]:
+        """_templated_extras of a layer whose trim, blank segment or extra
+        item expressions read the map scale: one rule per zoom (beyond the
+        last tile zoom too, within the overzoom budget, as
+        _split_scale_dependent), each evaluated at its zoom's scale."""
+        groups = [(rule, rule.rule.symbol().symbolLayer(0), ())
+                  for rule in self._per_zoom(flat_rule, overzoom=True)]
+        rules = []
+        for rule, clone, _ in self._scale_groups_in_budget(flat_rule, groups):
+            scale = fidelity_zoom.zoom_to_scale(rule.evaluation_zoom())
+            rules.extend(self._templated_extras(rule, clone, scale) or [rule])
+        self.distinguish(rules)
+        return rules
+
+    def _trimmed_or_blanked(self, base: FlattenedRule, layer, ends, blank: str,
+                            crs: str) -> List[FlattenedRule]:
         """``base`` (the layer without trim and blank segments) materialized,
         its placed markers' recipes given them as "trim" ((value, map units
         per unit, per cent, expression) at start and end) and "blank"
-        (expression, map units per unit). Screen-unit lengths are converted
-        per quarter of a zoom, as a simple line's trim (at the last zoom's
-        value beyond the last tiles)."""
+        (expression, map units per unit), measured in ``crs`` (the project's:
+        QGIS measures them in map units, the "crs" of a recipe that has
+        none). Screen-unit lengths are converted per quarter of a zoom, as a
+        simple line's trim (at the last zoom's value beyond the last
+        tiles)."""
         trims, screen = [], False
         for end in ends:
             resolved = self._templated_length_unit(end[1]) if end is not None else None
@@ -3145,8 +3171,9 @@ class SymbolMaterializer:
             placed = self.materialize(band, band.rule.symbol().symbolLayer(0))
             for rule in placed if placed is not None else [band]:
                 if rule.recipe is not None and rule.recipe.kind == "marker_points":
+                    measured = () if rule.recipe.param("crs") else (("crs", crs),)
                     rule.recipe = mat.Recipe(rule.recipe.kind, rule.recipe.placements,
-                                             rule.recipe.params + tuple(params))
+                                             rule.recipe.params + tuple(params) + measured)
                 else:
                     native = True
                 rules.append(rule)

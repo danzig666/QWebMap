@@ -47,6 +47,12 @@ def test_classify_reports_unsupported_ddp_and_unknown_types():
     for kind in ("MarkerLine", "HashLine"):
         assert classify(kind, ["TrimStart", "TrimEnd", "BlankSegments", "ExtraItems"]
                         ).unsupported_properties == ()
+    # A hash line is a marker line of line markers: its hash angle and length
+    # are emitted, a data-defined offset or stroke is reported (it is, on
+    # the marker line it becomes).
+    assert classify("HashLine", ["LineAngle", "LineDistance"]).unsupported_properties == ()
+    assert classify("HashLine", ["Offset", "StrokeWidth"]).unsupported_properties == \
+        ("Offset", "StrokeWidth")
 
 
 def test_capability_doc_mentions_every_type():

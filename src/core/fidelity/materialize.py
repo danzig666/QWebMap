@@ -83,6 +83,34 @@ def marker_points(placements, offset: float = 0.0, crs: str = "", along: float =
     return Recipe("marker_points", tuple(sorted(set(placements) & POINT_PLACEMENTS)), params)
 
 
+def templated_expressions(recipe: Recipe) -> Tuple[str, ...]:
+    """The data-defined expressions of a QGIS 4 marker / hash line recipe
+    evaluated per feature: trims ("trim": (value, factor, per cent,
+    expression) at start and end), blank segments ("blank": (expression,
+    factor)) and extra items ("extra")."""
+    trims = recipe.param("trim") or ()
+    blank = recipe.param("blank")
+    return tuple(text for text in (*(trim[3] for trim in trims if trim is not None),
+                                   blank[0] if blank else "", recipe.param("extra") or "")
+                 if text)
+
+
+def with_templated_expressions(recipe: Recipe, rewrite) -> Recipe:
+    """``recipe`` with ``rewrite(text)`` for each of its templated_expressions."""
+    params = []
+    for name, value in recipe.params:
+        if name == "trim" and value:
+            value = tuple(None if trim is None else
+                          trim[:3] + (rewrite(trim[3]) if trim[3] else trim[3],)
+                          for trim in value)
+        elif name == "blank" and value:
+            value = (rewrite(value[0]),) + tuple(value[1:])
+        elif name == "extra" and value:
+            value = rewrite(value)
+        params.append((name, value))
+    return Recipe(recipe.kind, recipe.placements, tuple(params))
+
+
 def interval_points(interval: float, along: float = 0.0, offset: float = 0.0,
                     crs: str = "") -> Recipe:
     """Interval marker positions (map units): ``along + k * interval`` from the
