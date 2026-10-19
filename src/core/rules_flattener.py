@@ -187,9 +187,10 @@ class RulesFlattener:
     def flatten_all_rules(self) -> List[FlattenedRule]:
         """Extract and flatten all rules from visible vector layers."""
         from .fidelity import masks  # pylint: disable=import-outside-toplevel
-        self._set_masks = masks.resolve_source_sets(
-            [node.layer() for node in self.layer_tree_root.findLayers()
-             if self._is_valid_layer(node.layer())])
+        exported = [node.layer() for node in self.layer_tree_root.findLayers()
+                    if self._is_valid_layer(node.layer())]
+        self._exported_ids = {layer.id() for layer in exported}
+        self._set_masks = masks.resolve_source_sets(exported)
         for layer_idx, node in enumerate(self.layer_tree_root.findLayers()):
             if self._is_valid_layer(node.layer()):
                 self._process_layer_rules(node.layer(), layer_idx)
@@ -327,8 +328,9 @@ class RulesFlattener:
         (fidelity.masks), on the cloned rule system."""
         from .fidelity import masks  # pylint: disable=import-outside-toplevel
         colour = masks.background_colour()
-        layer_masks = masks.layer_masks(layer.renderer(), self._set_masks, layer.id())
-        count = sum(masks.knock_out_mask_markers(rule.symbol(), colour, layer_masks)
+        exported = getattr(self, "_exported_ids", None)
+        layer_masks = masks.layer_masks(layer.renderer(), self._set_masks, layer.id(), exported)
+        count = sum(masks.knock_out_mask_markers(rule.symbol(), colour, layer_masks, exported)
                     for rule in rule_system.rootRule().descendants())
         if count:
             self.diagnostics.add(
