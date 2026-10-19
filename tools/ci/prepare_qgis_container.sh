@@ -15,7 +15,11 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 git config --global --add safe.directory "*"
 python3 -c "import qgis.core, osgeo.gdal" # fail early: without QGIS the tests are skipped silently
-pip3 install --quiet --break-system-packages "pytest==7.4.4"  # the version used locally (Ubuntu 24.04)
+# The version used locally (Ubuntu 24.04); where pip cannot install (the
+# QGIS 4 image), the distribution's pytest.
+pip3 install --quiet --break-system-packages "pytest==7.4.4" \
+  || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pytest >/dev/null; }
+python3 -m pytest --version
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server >/dev/null
 profile="$(python3 -c "from qgis.core import QgsApplication; app = QgsApplication([], False); app.initQgis(); print(app.qgisSettingsDirPath())" 2>/dev/null | tail -1)"
