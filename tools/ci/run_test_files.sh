@@ -67,4 +67,27 @@ if [ ${#failed[@]} -gt 0 ]; then
   message="${message//$'\n'/'%0A'}"
   echo "::error title=${title}: ${#failed[@]} of $# test files failed::${message}"
 fi
+# Annotations are cut at a few KB: the distinct errors (with a count and the
+# first test that hit each) in several short ones, readable through the API.
+if [ -n "${report}" ]; then
+  REPORT="${report}" python3 - <<'PY' | while IFS= read -r chunk; do echo "::error title=${title} errors::${chunk}"; done
+import os
+groups = {}
+for line in os.environ["REPORT"].splitlines():
+    test, _, error = line.partition(": ")
+    groups.setdefault(error[:200], []).append(test)
+lines = [f"{len(tests)}x {error} [{tests[0]}]" for error, tests in
+         sorted(groups.items(), key=lambda item: -len(item[1]))]
+chunks, current = [], ""
+for line in lines:
+    if len(current) + len(line) > 3000:
+        chunks.append(current)
+        current = ""
+    current += line + "\n"
+if current:
+    chunks.append(current)
+for chunk in chunks[:8]:
+    print(chunk.replace("%", "%25").replace("\n", "%0A"))
+PY
+fi
 [ ${#failed[@]} -eq 0 ]

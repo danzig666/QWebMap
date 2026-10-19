@@ -3,7 +3,7 @@
 import os
 import shutil
 
-from q2vt_support import QGIS_AVAILABLE, register_plugin_package
+from q2vt_support import QGIS_AVAILABLE, exit_without_teardown, register_plugin_package
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHROMIUM = os.environ.get("Q2VT_CHROMIUM", "/opt/pw-browsers/chromium")
@@ -18,3 +18,11 @@ if not READY:
     collect_ignore_glob = ["test_*.py"]  # pylint: disable=invalid-name
 else:
     register_plugin_package()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    session.config._q2vt_exitstatus = int(exitstatus)  # pylint: disable=protected-access
+
+
+def pytest_unconfigure(config):
+    exit_without_teardown(config)
