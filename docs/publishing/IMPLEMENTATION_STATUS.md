@@ -2031,3 +2031,12 @@ at 2 (`MAX_PIXEL_RATIO`); the shared label source and the id leak fix stay.
   opacity scaling; measuring/profile races; print restores the 3D pitch; overview skips the
   Street View coverage; `t()` keeps `$&` literal.
 
+## 4.50.2 — free labels placed in advance carry their angle
+
+`labelPoints` places labels of polygons just off the screen in advance (within `reach`). For
+Free orientation that point had no rotation: scrolled into view while the tiles still loaded
+(`freeze`), it was kept as placed and drawn level until the final placement turned it (0.5-3 s on
+the Debrecen map). The advance placement now writes `freeAngle(loaded, bare box)`. Measured
+while panning the published map: 59 level-then-turned labels in 12 pans before, about 0.2 per
+pan after (the rest: an in-view choice that differs from the advance one).
+

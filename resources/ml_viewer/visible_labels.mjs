@@ -686,7 +686,15 @@ export function labelPoints(features, view, maplibregl, options = {}) {
       if (outside) continue;  // beside the polygon: placed once it is in view
       const point = pole ? roomiestPoint(loaded, options.precision).point : labelPoint(loaded);
       if (point && !within(guarded, point)) {
-        points.set(key, { point, properties, orig, unit: dataUnit, prec: pole ? options.precision : 0 });
+        // Free (angled): turned already. Scrolled into view while the tiles
+        // still load (a heavy map), it is kept as placed here: without its
+        // angle it showed level until they had loaded.
+        const box = options.orient === "free" && options.rotationField && options.labelBox
+          ? options.labelBox(properties) : null;
+        const bare = box && box.map((h) => Math.max(h - LABEL_MARGIN_PX * (options.precision || 0), h / 2));
+        const turned = bare ? { ...properties, [options.rotationField]: freeAngle(loaded, bare) * 180 / Math.PI }
+          : properties;
+        points.set(key, { point, properties: turned, orig, unit: dataUnit, prec: pole ? options.precision : 0 });
       }
       continue;
     }
