@@ -405,11 +405,15 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   const onMove = throttled(MOVE_INTERVAL_MS);
   // Each polygon tile as it arrives (not only once the whole source loaded).
   const onSourceData = (e) => { if (e.sourceId === sourceId && (e.tile || e.isSourceLoaded)) onTile(); };
-  const onMoveEnd = () => { if (pending) { clearTimeout(pending); pending = null; } schedule(); };
+  // Once more at the first idle after a move: the update at moveend runs
+  // before the map switched to the new view's tiles (the old ones count as
+  // loaded), and a tile taken from MapLibre's cache sends no tile event.
+  let settling = false;
+  const onMoveEnd = () => { if (pending) { clearTimeout(pending); pending = null; } settling = true; schedule(); };
   map.on("move", onMove);
   map.on("moveend", onMoveEnd);
   map.on("sourcedata", onSourceData);
-  const onIdle = () => { if (dirty) schedule(); };
+  const onIdle = () => { if (dirty || settling) { settling = false; schedule(); } };
   map.on("idle", onIdle);
   update();
   return {
