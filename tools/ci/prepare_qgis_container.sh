@@ -3,6 +3,7 @@
 # pytest, an OpenSSH server for the SSH/SFTP publishing tests, and the
 # checkout linked into the QGIS profile as the plugin (docs/fidelity/TESTING.md).
 set -euo pipefail
+trap 'echo "::error title=prepare::line ${LINENO}: ${BASH_COMMAND} (exit $?)"' ERR
 # Tools some images lack (the QGIS 4 / Qt6 image: no git, no pip).
 missing=()
 command -v git >/dev/null || missing+=(git)
