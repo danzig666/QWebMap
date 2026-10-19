@@ -513,7 +513,11 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.51.0**. Newest first:
+This README describes QWebMap **4.51.1**. Newest first:
+
+**4.51.1** — fixes to the QGIS 4 symbology of 4.51.0
+- Marker/hash line trims and blank segments are measured in the project's units for every placement; their data-defined expressions see the layer's coordinates, variables and whole feature.
+- Long stretched curved labels are drawn whole, character by character along the line; characters at vertices and split label lines land on the right vertices and parts; switched-off mask markers draw nothing.
 
 **4.51.0** — new QGIS 4 symbology
 - Marker and hash lines: *trim distance* at start/end, *blank segments* and *extra items* (QGIS 4.0–4.2) are drawn as in QGIS.

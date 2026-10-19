@@ -2083,3 +2083,19 @@ skip without the API and compare against QGIS 4 renders.
 - Selective masking source sets (`masks.resolve_source_sets`): resolved as
   `QgsVectorLayerUtils::collectObjectsMasked*FromLayer` does, fed to the existing halo /
   knock-out approximation; a mask marker with an empty list masks when its layer masks.
+
+## 4.51.1 — bug check of the QGIS 4 code
+
+Four audits (marker lines, labels, masking + a Qt6 sweep of src/ and the Publish dialog driven
+on QGIS 4, cross-cutting cache/workers/performance). Fixed: trims and blanks measured in
+EPSG:3857 for non-interval placements (recipes now carry the project CRS); trim/blank/extra
+expressions rewritten to the layer CRS with layer variables, the whole multipart feature as
+`$geometry`, `@map_scale` per zoom, checked by workers; parts numbered absolutely in the base
+layer (`_number_parts`) for split labels, blanks, trims and extra items; stretched curved labels
+laid out per grapheme as point labels (MapLibre dropped line labels longer than a tile);
+characters at vertices from the stored rings (no dissolve), plain text for HTML labels, by
+grapheme; split lines over generated parts; static LabelAllParts read as
+`QgsProperty::valueAsBool`; data-defined wrap character / auto-wrap length applied; disabled
+mask markers and ones masking only unexported layers no longer knocked out; hash-line DDP
+emitter family. No Qt6 incompatibilities found; projects without the new options export
+identically to 4.50.2, and export time is unchanged.
