@@ -19,7 +19,7 @@ from qgis.core import (Qgis, QgsCategorizedSymbolRenderer, QgsCoordinateReferenc
                        QgsSimpleLineSymbolLayer, QgsSimpleMarkerSymbolLayer,
                        QgsSingleSymbolRenderer, QgsVectorLayer, QgsFillSymbol,
                        QgsLineSymbol)
-from qgis.PyQt.QtCore import QVariant
+from qgis.PyQt.QtCore import QVariant, Qt
 from qgis.PyQt.QtGui import QColor
 
 import sys
@@ -132,7 +132,7 @@ def _outline_symbol(kind, offset):
         return QgsFillSymbol([line])
     marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, 2)
     marker.setColor(QColor("red"))
-    marker.setStrokeStyle(0)
+    marker.setStrokeStyle(Qt.PenStyle.NoPen)
     markers = QgsMarkerLineSymbolLayer(True, 4)
     markers.setIntervalUnit(Qgis.RenderUnit.Millimeters)
     markers.setSubSymbol(QgsMarkerSymbol([marker]))
@@ -738,9 +738,10 @@ def test_millimetre_label_frame_wraps_the_text_like_qgis(tmp_path):
     from qgis.core import (QgsPalLayerSettings, QgsTextBackgroundSettings, QgsTextFormat,
                            QgsVectorLayerSimpleLabeling)
     from qgis.PyQt.QtCore import QSizeF
-    from qgis.PyQt.QtGui import QFont, QFontDatabase
+    from qgis.PyQt.QtGui import QFont
+    from q2vt_support import font_database  # pylint: disable=import-outside-toplevel
     from q2vt_fixtures import to_geopackage as save
-    if "Open Sans" not in QFontDatabase().families():
+    if "Open Sans" not in font_database().families():
         pytest.skip("Open Sans is not installed")
     memory = QgsVectorLayer("Point?crs=EPSG:3857&field=t:string", "p", "memory")
     feature = QgsFeature(memory.fields())
@@ -826,7 +827,7 @@ def test_pattern_textures_keep_the_qgis_spacing_between_zooms(tmp_path, monkeypa
     marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, 2 if unit == "map" else 0.6)
     marker.setSizeUnit(Qgis.RenderUnit.MapUnits if unit == "map" else Qgis.RenderUnit.Millimeters)
     marker.setColor(QColor("black"))
-    marker.setStrokeStyle(0)
+    marker.setStrokeStyle(Qt.PenStyle.NoPen)
     pattern = QgsPointPatternFillSymbolLayer()
     pattern.setSubSymbol(QgsMarkerSymbol([marker]))
     spacing = 5.0 if unit == "map" else 1.6
@@ -852,7 +853,7 @@ def test_map_unit_patterns_keep_growing_on_overzoomed_tiles(tmp_path, monkeypatc
     marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, 0.4 * spacing)
     marker.setSizeUnit(Qgis.RenderUnit.MapUnits)
     marker.setColor(QColor("black"))
-    marker.setStrokeStyle(0)
+    marker.setStrokeStyle(Qt.PenStyle.NoPen)
     pattern = QgsPointPatternFillSymbolLayer()
     pattern.setSubSymbol(QgsMarkerSymbol([marker]))
     for name in ("DistanceX", "DistanceY"):
@@ -879,7 +880,7 @@ def test_map_unit_patterns_grow_above_their_last_texture(tmp_path, monkeypatch, 
     marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, 1.2)
     marker.setSizeUnit(Qgis.RenderUnit.MapUnits)
     marker.setColor(QColor("black"))
-    marker.setStrokeStyle(0)
+    marker.setStrokeStyle(Qt.PenStyle.NoPen)
     pattern = QgsPointPatternFillSymbolLayer()
     pattern.setSubSymbol(QgsMarkerSymbol([marker]))
     for name in ("DistanceX", "DistanceY"):
@@ -899,7 +900,7 @@ def _point_pattern(spacing, unit, size, size_unit):
     marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, size)
     marker.setSizeUnit(size_unit)
     marker.setColor(QColor("black"))
-    marker.setStrokeStyle(0)
+    marker.setStrokeStyle(Qt.PenStyle.NoPen)
     pattern = QgsPointPatternFillSymbolLayer()
     pattern.setSubSymbol(QgsMarkerSymbol([marker]))
     for name in ("DistanceX", "DistanceY"):
@@ -1069,7 +1070,7 @@ def test_map_unit_markers_in_a_screen_unit_grid(tmp_path, monkeypatch, zoom):
     marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Circle, 1.5)
     marker.setSizeUnit(Qgis.RenderUnit.MapUnits)
     marker.setColor(QColor("black"))
-    marker.setStrokeStyle(0)
+    marker.setStrokeStyle(Qt.PenStyle.NoPen)
     pattern = QgsPointPatternFillSymbolLayer()
     pattern.setSubSymbol(QgsMarkerSymbol([marker]))
     for name in ("DistanceX", "DistanceY"):
@@ -1177,7 +1178,7 @@ def test_viewport_aligned_patterns_start_at_the_view_corner(tmp_path, kind):
         marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, 4)
         marker.setSizeUnit(Qgis.RenderUnit.Pixels)
         marker.setColor(QColor("black"))
-        marker.setStrokeStyle(0)
+        marker.setStrokeStyle(Qt.PenStyle.NoPen)
         pattern.setSubSymbol(QgsMarkerSymbol([marker]))
     pattern.setCoordinateReference(Qgis.SymbolCoordinateReference.Viewport)
     layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol([pattern])))
@@ -1384,7 +1385,7 @@ def _feature_pattern(kind, tmp_path):
         marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, 4)
         marker.setSizeUnit(Qgis.RenderUnit.Pixels)
         marker.setColor(QColor("black"))
-        marker.setStrokeStyle(0)
+        marker.setStrokeStyle(Qt.PenStyle.NoPen)
         pattern.setSubSymbol(QgsMarkerSymbol([marker]))
         return pattern
     if kind == "svg":

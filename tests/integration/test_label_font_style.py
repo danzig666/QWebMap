@@ -41,9 +41,9 @@ def _format(bold=False, italic=False, forced_bold=False, forced_italic=False, st
     ({"family": "DejaVu Sans Mono", "bold": True, "italic": True}, "DejaVu Sans Mono Bold Oblique"),
 ])
 def test_bold_and_italic_labels_use_their_face(extractor, kwargs, expected):
-    from qgis.PyQt.QtGui import QFontDatabase
+    from q2vt_support import font_database  # pylint: disable=import-outside-toplevel
     family = kwargs.get("family", "DejaVu Sans")
-    if expected[len(family) + 1:] not in QFontDatabase().styles(family):
+    if expected[len(family) + 1:] not in font_database().styles(family):
         pytest.skip(f"{expected} is not installed")
     assert extractor.get_text_font(_format(**kwargs)) == expected
 
@@ -148,8 +148,9 @@ def test_frame_padding_wraps_the_ascent_and_descent_like_qgis(plugin, family):
     (text-line-height ems, the baseline 7/24 em below its middle). The
     difference goes into the top and bottom padding: with Open Sans the
     frame was 1.6 px too short at 10 px, all of it above the text."""
-    from qgis.PyQt.QtGui import QFontDatabase, QFontMetricsF
-    if family not in QFontDatabase().families():
+    from qgis.PyQt.QtGui import QFontMetricsF
+    from q2vt_support import font_database  # pylint: disable=import-outside-toplevel
+    if family not in font_database().families():
         pytest.skip(f"{family} is not installed")
     settings, frame = _framed_label(family)
     layer_def = {"layout": {"text-size": 10, "text-line-height": 1.2}, "paint": {}}

@@ -104,3 +104,12 @@ def exit_without_teardown(config):
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(int(status))  # pylint: disable=protected-access
+
+
+def font_database():
+    """QFontDatabase: an instance under Qt 5, the class (static API) under Qt 6."""
+    from qgis.PyQt.QtGui import QFontDatabase  # pylint: disable=import-outside-toplevel
+    try:
+        return QFontDatabase()
+    except TypeError:
+        return QFontDatabase
