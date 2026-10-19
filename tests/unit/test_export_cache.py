@@ -57,6 +57,24 @@ def test_source_fingerprint(tmp_path):
     assert ec.source_fingerprint("ogr", str(gpkg)) == two
 
 
+
+def test_every_file_of_a_dataset_counts(tmp_path):
+    """A MapInfo table edited in QGIS changes only its .dat: the cache took
+    the layer as unchanged (only the .tab was looked at)."""
+    for ext in (".tab", ".dat", ".map", ".id"):
+        (tmp_path / f"roads{ext}").write_bytes(b"x")
+    first = ec.source_fingerprint("ogr", str(tmp_path / "roads.tab"))
+    os.utime(tmp_path / "roads.dat", ns=(1, 1))
+    assert ec.source_fingerprint("ogr", str(tmp_path / "roads.tab")) != first
+    # A VRT: the files it reads.
+    (tmp_path / "points.csv").write_text("x,y\n1,2\n")
+    vrt = tmp_path / "points.vrt"
+    vrt.write_text('<OGRVRTDataSource><OGRVRTLayer name="points"><SrcDataSource relativeToVRT="1">'
+                   'points.csv</SrcDataSource></OGRVRTLayer></OGRVRTDataSource>')
+    first = ec.source_fingerprint("ogr", str(vrt))
+    os.utime(tmp_path / "points.csv", ns=(1, 1))
+    assert ec.source_fingerprint("ogr", str(vrt)) != first
+
 def test_miss_reasons():
     before = {"code": "a", "context": "c", "source": "s", "rule": "r"}
     assert ec.miss_reasons({}, before, {}, {}) == ["first export into this folder (or a new layer / rule)"]

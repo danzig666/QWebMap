@@ -32,6 +32,17 @@ def test_order_by_rank_follows_qgis_request_order(plugin, tmp_path):
     assert ranks == {"D": 0, "C": 1, "B": 2, "A": 3}
 
 
+
+def test_order_by_a_geometry_expression(plugin, tmp_path):
+    """Ordered by $area: the ranking request read no geometry (all NULL, the
+    source order); square C (with a hole) is the smallest."""
+    from q2vt_plugin.src.core.rules_exporter import ORDER_FIELD, RulesExporter
+    zoning_layer(path=str(tmp_path / "z.gpkg"))
+    RulesExporter._add_order_field(str(tmp_path / "z.gpkg"), (("$area", True, False),))
+    saved = QgsVectorLayer(str(tmp_path / "z.gpkg"), "z", "ogr")
+    ranks = {f["id"]: f[ORDER_FIELD] for f in saved.getFeatures()}
+    assert ranks["C"] == 0, ranks
+
 def test_ordered_styles_get_sort_keys(plugin):
     from q2vt_plugin.src.core import maplibre_converter as mc
     from q2vt_plugin.src.core.rules_exporter import ORDER_FIELD

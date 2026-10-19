@@ -310,6 +310,18 @@ class DiagnosticCollector:
         with self._lock:
             return list(self._items)
 
+    def truncate(self, count: int, component: Optional[str] = None) -> None:
+        """Drop the diagnostics added after the first ``count`` (an attempt
+        redone another way), only ``component``'s when given (others are
+        added concurrently); they may be added again."""
+        with self._lock:
+            dropped = [d for d in self._items[count:] if component is None or d.component == component]
+            for diag in dropped:
+                self._seen.discard((diag.code, diag.message, diag.layer_id, diag.rule_id,
+                                    diag.symbol_layer_index, diag.component))
+            ids = {id(d) for d in dropped}
+            self._items[count:] = [d for d in self._items[count:] if id(d) not in ids]
+
     def sort_from(self, start: int, key) -> None:
         """Sort the diagnostics added since ``start`` (stable)."""
         with self._lock:

@@ -146,3 +146,13 @@ def test_a_failing_memory_chain_is_redone_with_files(plugin, tmp_path, monkeypat
     memory = _export(tmp_path, "memory", monkeypatch, False)
     assert len(failed) == 3
     _same(files, memory)
+
+
+def test_interval_markers_written_to_a_file_keep_every_marker(plugin, tmp_path, monkeypatch):
+    """A large line layer's markers go to a GeoPackage: the lines' own "fid"
+    (a GeoPackage input) was every marker's key, so all but each line's
+    first marker failed (UNIQUE) and were dropped without a message."""
+    from q2vt_plugin.src.core import rules_exporter  # pylint: disable=import-error
+    memory = _export(tmp_path, "memory", monkeypatch, False)
+    monkeypatch.setattr(rules_exporter, "_MEMORY_MAX_FEATURES", 0)  # every step: a file
+    _same(memory, _export(tmp_path, "large", monkeypatch, False))
