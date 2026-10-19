@@ -46,6 +46,7 @@ from qgis.PyQt.QtGui import QColor
 
 from ..utils.config import Qt
 from ..utils.flattened_rule import FlattenedRule
+from ..utils.qt_compat import enum_int, symbol_layer_key
 from ..utils.zoom_levels import ZoomLevels
 from .fidelity.model import MAX_STYLE_ZOOM, ZoomInterval
 from .fidelity import zoom as fidelity_zoom
@@ -576,7 +577,7 @@ class SymbolMaterializer:
             (marker is not None and marker.hasDataDefinedProperties())
             or any(props.isActive(k) for k in (P.PropertyMarkerClipping, P.PropertyRandomOffsetX,
                                                P.PropertyRandomOffsetY, P.PropertyAngle))
-            or int(layer.clipMode()) != int(Qgis.MarkerClipMode.Shape)
+            or enum_int(layer.clipMode()) != enum_int(Qgis.MarkerClipMode.Shape)
             or layer.maximumRandomDeviationX() or layer.maximumRandomDeviationY()
             or layer.angle())
 
@@ -917,7 +918,7 @@ class SymbolMaterializer:
         clipped), so it stays a clipped browser pattern. Data-defined
         markers stay points (a texture has one appearance)."""
         try:
-            if int(layer.clipMode()) != int(Qgis.MarkerClipMode.Shape):
+            if enum_int(layer.clipMode()) != enum_int(Qgis.MarkerClipMode.Shape):
                 return False
         except AttributeError:
             return False
@@ -2248,20 +2249,20 @@ class SymbolMaterializer:
         if marker is None:
             return []
         inset = 0.0
-        clip = int(layer.clipMode()) if hasattr(layer, "clipMode") else 1
+        clip = enum_int(layer.clipMode()) if hasattr(layer, "clipMode") else 1
         strokes = self._stroke_marker(marker)
         if strokes is not None and not layer.angle():
             return self._stroke_grid(flat_rule, layer, marker, strokes, clip)
         closed = self._closed_marker(marker)
-        if closed is not None and not layer.angle() and clip == int(Qgis.MarkerClipMode.Shape):
+        if closed is not None and not layer.angle() and clip == enum_int(Qgis.MarkerClipMode.Shape):
             return self._shape_grid(flat_rule, layer, marker, closed)
-        if clip == int(Qgis.MarkerClipMode.CompletelyWithin):
+        if clip == enum_int(Qgis.MarkerClipMode.CompletelyWithin):
             if normalize_unit(marker.sizeUnit()) == "map":
                 inset = marker.size() / 2.0
             else:
                 self._report("Q2VT_PATTERN_APPROXIMATE", "Screen-size markers are kept "
                              "when their centre is inside the polygon.", flat_rule)
-        elif clip != int(Qgis.MarkerClipMode.CentroidWithin):
+        elif clip != enum_int(Qgis.MarkerClipMode.CentroidWithin):
             self._report("Q2VT_PATTERN_APPROXIMATE",
                          "Pattern markers crossing the polygon edge are drawn whole when their "
                          "centre is inside (QGIS clips them to the shape).", flat_rule)
@@ -2270,9 +2271,9 @@ class SymbolMaterializer:
                          "unrotated.", flat_rule)
         recipe = mat.grid_recipe(
             layer.distanceX(), layer.distanceY(),
-            *self._grid_shift(layer, flat_rule, clip == int(Qgis.MarkerClipMode.Shape)),
+            *self._grid_shift(layer, flat_rule, clip == enum_int(Qgis.MarkerClipMode.Shape)),
             self.project_crs or flat_rule.layer.crs().authid(), self._anchor(layer, flat_rule),
-            inset, rows_from_top=clip != int(Qgis.MarkerClipMode.Shape),
+            inset, rows_from_top=clip != enum_int(Qgis.MarkerClipMode.Shape),
             deviation=self._deviation(layer, flat_rule), seed=layer.seed())
         return [self._with_symbol(flat_rule, inherit_opacity(flat_rule.rule.symbol(), marker.clone()),
                                   0, 1, recipe)]
@@ -2283,10 +2284,10 @@ class SymbolMaterializer:
         marker (clip mode other than "Shape": only whole markers, chosen by
         their centre or bounds), not as a clipped texture."""
         try:
-            clip = int(layer.clipMode())
+            clip = enum_int(layer.clipMode())
         except AttributeError:
             return False
-        return clip != int(Qgis.MarkerClipMode.Shape) and layer.subSymbol() is not None \
+        return clip != enum_int(Qgis.MarkerClipMode.Shape) and layer.subSymbol() is not None \
             and not layer.angle() \
             and _to_mm(layer.distanceX(), layer.distanceXUnit()) is not None \
             and _to_mm(layer.distanceY(), layer.distanceYUnit()) is not None
@@ -2329,11 +2330,11 @@ class SymbolMaterializer:
         off_x = math.fmod(mm(layer.offsetX(), layer.offsetXUnit(), dx_mm), dx_mm)
         off_y = math.fmod(mm(layer.offsetY(), layer.offsetYUnit(), dy_mm), dy_mm)
         size_mm = _to_mm(marker.size(), marker.sizeUnit()) or 0.0
-        clip = int(layer.clipMode())
+        clip = enum_int(layer.clipMode())
         # Marker centre in the polygon shrunk (completely within) or grown
         # (no clipping) by the marker's half size.
-        reach = {int(Qgis.MarkerClipMode.CompletelyWithin): size_mm / 2.0,
-                 int(Qgis.MarkerClipMode.NoClipping): -size_mm / 2.0}.get(clip, 0.0)
+        reach = {enum_int(Qgis.MarkerClipMode.CompletelyWithin): size_mm / 2.0,
+                 enum_int(Qgis.MarkerClipMode.NoClipping): -size_mm / 2.0}.get(clip, 0.0)
         if layer.maximumRandomDeviationX() or layer.maximumRandomDeviationY():
             self._report("Q2VT_PATTERN_APPROXIMATE", "Random deviation of pattern markers "
                          "in screen units is not reproduced.", flat_rule)
@@ -2418,7 +2419,7 @@ class SymbolMaterializer:
         # A data-defined stroke colour carries over to the exported line work
         # (the pieces keep their feature's attributes); anything else would
         # change the geometry.
-        if active - {int(QgsSymbolLayer.Property.PropertyStrokeColor)}:
+        if active - {enum_int(QgsSymbolLayer.Property.PropertyStrokeColor)}:
             return None
         return shape
 
@@ -2503,7 +2504,7 @@ class SymbolMaterializer:
         # is invisible, and line work stays cheaper).
         if normalize_unit(simple.strokeWidthUnit()) == "map" and simple.strokeWidth() > 0 \
                 and simple.strokeStyle() == Qt.PenStyle.SolidLine \
-                and clip == int(Qgis.MarkerClipMode.Shape) \
+                and clip == enum_int(Qgis.MarkerClipMode.Shape) \
                 and simple.strokeWidth() >= 0.2 * min(layer.distanceX(), layer.distanceY()):
             cap = {Qt.PenCapStyle.FlatCap: "flat", Qt.PenCapStyle.RoundCap: "round"}.get(
                 simple.penCapStyle(), "square")
@@ -2533,14 +2534,14 @@ class SymbolMaterializer:
         inherit_opacity(flat_rule.rule.symbol(), symbol)
         recipe = mat.grid_recipe(
             layer.distanceX(), layer.distanceY(),
-            *self._grid_shift(layer, flat_rule, clip == int(Qgis.MarkerClipMode.Shape)),
+            *self._grid_shift(layer, flat_rule, clip == enum_int(Qgis.MarkerClipMode.Shape)),
             self.project_crs or flat_rule.layer.crs().authid(), self._anchor(layer, flat_rule),
-            0.0, rows_from_top=clip != int(Qgis.MarkerClipMode.Shape), segments=segments,
-            clip_shape=clip == int(Qgis.MarkerClipMode.Shape), clip_mode={
-                int(Qgis.MarkerClipMode.Shape): "shape",
-                int(Qgis.MarkerClipMode.CentroidWithin): "centroid",
-                int(Qgis.MarkerClipMode.CompletelyWithin): "within",
-                int(Qgis.MarkerClipMode.NoClipping): "none"}.get(clip, "shape"),
+            0.0, rows_from_top=clip != enum_int(Qgis.MarkerClipMode.Shape), segments=segments,
+            clip_shape=clip == enum_int(Qgis.MarkerClipMode.Shape), clip_mode={
+                enum_int(Qgis.MarkerClipMode.Shape): "shape",
+                enum_int(Qgis.MarkerClipMode.CentroidWithin): "centroid",
+                enum_int(Qgis.MarkerClipMode.CompletelyWithin): "within",
+                enum_int(Qgis.MarkerClipMode.NoClipping): "none"}.get(clip, "shape"),
             deviation=self._deviation(layer, flat_rule), seed=layer.seed(), stroke=polygons)
         return [self._with_symbol(flat_rule, symbol, 2 if polygons else 1, 1, recipe)]
 
@@ -2641,6 +2642,7 @@ class SymbolMaterializer:
                 prop = props.property(key)
                 if not prop.isActive() or not prop.expressionString():
                     continue
+                key = symbol_layer_key(key)  # (an int: compared with and passed as the enum)
                 expression = prop.expressionString()
                 used = set(QgsExpression(expression).referencedVariables())
                 if not used & set(self._VERTEX_VARIABLES):

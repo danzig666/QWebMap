@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from qgis.PyQt.QtGui import QColor, QFont, QFontInfo, QFontMetricsF
 from ..utils.config import Qt
+from ..utils.qt_compat import symbol_layer_key
 from qgis.core import (
     QgsVectorTileLayer,
     QgsVectorTileBasicRenderer,
@@ -178,7 +179,7 @@ def _property_name(obj, key: int) -> str:
                 except (TypeError, ValueError):
                     continue
         _PROPERTY_NAMES[owner] = names
-    return names.get(int(key), str(key))
+    return names.get(_enum_int(key, -1), str(key))
 
 
 def _enum_name(value) -> str:
@@ -1177,7 +1178,7 @@ class IconPropertyExtractor:
     @staticmethod
     def get_icon_text_fit(background: QgsTextBackgroundSettings) -> Optional[str]:
         """Return ``icon-text-fit`` if the background is sized as a text buffer."""
-        if background.enabled() and background.sizeType() == 0:
+        if background.enabled() and _enum_int(background.sizeType()) == 0:
             return "both"
         return None
 
@@ -1190,7 +1191,7 @@ class IconPropertyExtractor:
         QGIS adds the buffer size (x horizontally, y vertically) around the
         text bounds.
         """
-        if background.enabled() and background.sizeType() == 0:
+        if background.enabled() and _enum_int(background.sizeType()) == 0:
             size = background.size()
             x_px = PropertyExtractor.static_pixels(size.width(), background.sizeUnit())
             y_px = PropertyExtractor.static_pixels(size.height(), background.sizeUnit())
@@ -3824,7 +3825,7 @@ class QgisMapLibreStyleExporter:
             props = marker.symbolLayer(index).dataDefinedProperties()
             for key in sorted(props.propertyKeys()):
                 prop = props.property(key)
-                if prop and prop.isActive() and prop.propertyType() == 3 and \
+                if prop and prop.isActive() and _enum_int(prop.propertyType()) == 3 and \
                         is_random_only(prop.expressionString()):
                     # @symbol_color is only set while QGIS draws the symbol.
                     color = "'" + QgsSymbolLayerUtils.encodeColor(marker.color()) + "'"
@@ -3857,7 +3858,7 @@ class QgisMapLibreStyleExporter:
                             clone = marker.clone()
                             for layer_index, key, expression in random_ddp:
                                 clone.symbolLayer(layer_index).setDataDefinedProperty(
-                                    key, QgsProperty.fromValue(QgsExpression(expression).evaluate(
+                                    symbol_layer_key(key), QgsProperty.fromValue(QgsExpression(expression).evaluate(
                                         map_view.context())))
                             markers.append(self._marker_images(clone))
                         image = markers[index][ratio - 1]
@@ -4724,7 +4725,7 @@ class QgisMapLibreStyleExporter:
         for key in props.propertyKeys():
             prop = props.property(key)
             if prop is not None and prop.isActive() and not (
-                    prop.propertyType() == 3 and is_random_only(prop.expressionString())):
+                    _enum_int(prop.propertyType()) == 3 and is_random_only(prop.expressionString())):
                 return False
         return True
 
@@ -5803,8 +5804,8 @@ class QgisMapLibreStyleExporter:
         # when placement outside the polygon is allowed: then no label is
         # centred on the point (pal tries that only at distance 0).
         try:
-            outside_allowed = bool(int(label_settings.polygonPlacementFlags())
-                                   & int(Qgis.LabelPolygonPlacementFlag.AllowPlacementOutsideOfPolygon))
+            outside_allowed = bool(_enum_int(label_settings.polygonPlacementFlags())
+                                   & _enum_int(Qgis.LabelPolygonPlacementFlag.AllowPlacementOutsideOfPolygon, 0))
         except (AttributeError, TypeError, ValueError):
             outside_allowed = False
         overridden = QgisMapLibreStyleExporter._outside_override(label_settings)
@@ -5825,9 +5826,9 @@ class QgisMapLibreStyleExporter:
             prop = label_settings.dataDefinedProperties().property(QgsPalLayerSettings.Property.PolygonLabelOutside)
             if not prop or not prop.isActive():
                 return None
-            if prop.propertyType() == QgsProperty.Type.StaticProperty:
+            if _enum_int(prop.propertyType()) == _enum_int(QgsProperty.Type.StaticProperty):
                 value = prop.staticValue()
-            elif prop.propertyType() == QgsProperty.Type.ExpressionBasedProperty:
+            elif _enum_int(prop.propertyType()) == _enum_int(QgsProperty.Type.ExpressionBasedProperty):
                 expression = QgsExpression(prop.expressionString())
                 if expression.hasParserError() or expression.referencedColumns() or expression.needsGeometry():
                     return None

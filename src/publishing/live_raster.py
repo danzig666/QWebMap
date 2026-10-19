@@ -16,6 +16,7 @@ WMTS and other services keep being rendered.
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
+from ..utils.qt_compat import enum_int
 from . import xyz
 
 # Formats a WMS GetFeatureInfo answer may be asked in, best first: features
@@ -27,19 +28,21 @@ INFO_JSON, INFO_HTML, INFO_TEXT = "application/json", "text/html", "text/plain"
 def _flag(provider, name: str) -> bool:
     """A raster interface capability of ``provider`` (QGIS 3.x and 3.36+ names)."""
     try:
-        caps = int(provider.capabilities())
+        caps = enum_int(provider.capabilities())
+        if caps is None:
+            return False
     except Exception:  # pylint: disable=broad-except
         return False
     try:
         from qgis.core import Qgis  # pylint: disable=import-outside-toplevel
         value = getattr(Qgis.RasterInterfaceCapability, name, None)
         if value is not None:
-            return bool(caps & int(value))
+            return bool(caps & (enum_int(value) or 0))
     except (ImportError, AttributeError, TypeError):
         pass
     from qgis.core import QgsRasterInterface  # pylint: disable=import-outside-toplevel
     value = getattr(QgsRasterInterface, name, None)
-    return value is not None and bool(caps & int(value))
+    return value is not None and bool(caps & (enum_int(value) or 0))
 
 
 def info_formats(provider) -> List[str]:

@@ -41,6 +41,7 @@ from qgis.PyQt.QtCore import QPointF
 from qgis.PyQt.QtGui import QFont
 
 from ..utils.config import Qt
+from ..utils.qt_compat import enum_int, symbol_layer_key
 from ..utils.config import QDomDocument
 from ..utils.flattened_rule import FlattenedRule
 from ..utils.zoom_levels import ZoomLevels
@@ -80,7 +81,7 @@ def bind_symbol_color(symbol, color=None) -> None:
         props = layer.dataDefinedProperties()
         for key in props.propertyKeys():
             prop = props.property(key)
-            if prop is not None and prop.propertyType() == 3 and \
+            if prop is not None and enum_int(prop.propertyType()) == 3 and \
                     re.search(r"@symbol_color\b", prop.expressionString()):
                 prop.setExpressionString(re.sub(r"@symbol_color\b", literal,
                                                 prop.expressionString()))
@@ -264,7 +265,7 @@ class RulesFlattener:
         """Return True if the layer is a visible non-geometry-collection vector layer."""
         if layer is None:  # a legend entry whose layer QGIS could not create
             return False
-        is_vector = layer.type() == 0 and layer.geometryType() != 4
+        is_vector = enum_int(layer.type()) == 0 and enum_int(layer.geometryType()) != 4
         if self.layer_ids is not None:
             return is_vector and layer.id() in self.layer_ids
         node = self.layer_tree_root.findLayer(layer.id())
@@ -444,9 +445,9 @@ class RulesFlattener:
             QgsProperty.ExpressionBasedProperty
 
         def missing(prop) -> List[str]:
-            if prop.propertyType() == field_kind:
+            if enum_int(prop.propertyType()) == enum_int(field_kind):
                 names = [prop.field()]
-            elif prop.propertyType() == expression_kind:
+            elif enum_int(prop.propertyType()) == enum_int(expression_kind):
                 names = list(QgsExpression(prop.asExpression()).referencedColumns())
             else:
                 return []
@@ -546,7 +547,7 @@ class RulesFlattener:
         else:
             line = QgsSimpleLineSymbolLayer(renderer.circleColor(), renderer.circleWidth())
             line.setWidthUnit(Qgis.RenderUnit.Millimeters)
-            role = "grid" if int(renderer.placement()) == 2 else "circle"
+            role = "grid" if enum_int(renderer.placement()) == 2 else "circle"
             root.appendChild(QgsRuleBasedRenderer.Rule(
                 QgsLineSymbol([line]), 0, 0, self._role_filter(role), "Displacement " + role))
             if renderer.centerSymbol() is not None:
@@ -598,7 +599,7 @@ class RulesFlattener:
                      if hasattr(symbol, "sizeUnit")]
             center = renderer.centerSymbol()
             params += [
-                ("placement", int(renderer.placement())),
+                ("placement", enum_int(renderer.placement())),
                 ("symbol_diagonal", math.sqrt(2) * max(sizes or [0.0])),
                 ("center_diagonal", math.sqrt(2) * map_units(center.size(), center.sizeUnit())
                  if center is not None else 0.0),
@@ -617,12 +618,12 @@ class RulesFlattener:
             props = layer.dataDefinedProperties()
             for key in props.propertyKeys():
                 prop = props.property(key)
-                if prop.propertyType() == QgsProperty.Type.ExpressionBasedProperty:
+                if enum_int(prop.propertyType()) == enum_int(QgsProperty.Type.ExpressionBasedProperty):
                     text = prop.expressionString()
                     new = text.replace("@cluster_size", f'"{CLUSTER_SIZE_FIELD}"').replace(
                         "@cluster_color", f'"{CLUSTER_COLOR_FIELD}"')
                     if new != text:
-                        layer.setDataDefinedProperty(key, QgsProperty.fromExpression(new, prop.isActive()))
+                        layer.setDataDefinedProperty(symbol_layer_key(key), QgsProperty.fromExpression(new, prop.isActive()))
             RulesFlattener._cluster_variables(layer.subSymbol())
 
     def _group_points(self, layer):

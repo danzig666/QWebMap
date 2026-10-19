@@ -13,6 +13,7 @@ from qgis.core import (Qgis, QgsExpression, QgsProperty, QgsPropertyDefinition, 
                        QgsSymbolLayerUtils)
 
 from ..utils.config import QVariant
+from ..utils.qt_compat import enum_int
 from .fidelity.qgis_expr import enclosed, with_map_scale
 from .fidelity import map_view
 
@@ -239,7 +240,7 @@ class DataDefinedPropertiesFetcher:
             if not prop or not prop.isActive():
                 continue
 
-            property_kind = prop.propertyType()
+            property_kind = enum_int(prop.propertyType())  # (a Python enum on Qt 6)
             if property_kind not in (2, 3):
                 continue
 
@@ -247,14 +248,14 @@ class DataDefinedPropertiesFetcher:
             if prop_def is None:
                 continue
             self._bind_symbol_color(prop)
-            if self._in_texture and prop.propertyType() == 3 and \
+            if self._in_texture and property_kind == 3 and \
                     is_random_only(prop.expressionString()):
                 continue  # a new value per marker: drawn into the texture
             columns = QgsExpression(prop.asExpression()).referencedColumns()
             if columns and all(c.startswith(f"{self.FIELD_PREFIX}_property_") for c in columns):
                 continue  # already replaced by a generated field
             data_type = prop_def.dataType()
-            field_type = self._DATA_TYPE_MAP.get(data_type)
+            field_type = enum_int(self._DATA_TYPE_MAP.get(data_type))
             field_name = self.field_name(prop_def, key, suffix)
 
             if data_type == QgsPropertyDefinition.DataType.DataTypeBoolean:
@@ -271,7 +272,7 @@ class DataDefinedPropertiesFetcher:
     def _bind_symbol_color(self, prop) -> None:
         """Replace ``@symbol_color`` with the walked symbol's colour (as
         QGIS does while drawing it; e.g. sub-symbols following the line colour)."""
-        if prop.propertyType() != 3 or not self._symbol_colors:
+        if enum_int(prop.propertyType()) != 3 or not self._symbol_colors:
             return
         expression = prop.expressionString()
         if "symbol_color" not in QgsExpression(expression).referencedVariables():
@@ -288,7 +289,7 @@ class DataDefinedPropertiesFetcher:
         QGIS builds.
         """
         name = re.sub(r"[^0-9a-z]+", "_", (prop_def.name() or "").lower()).strip("_")
-        return f"{cls.FIELD_PREFIX}_property_{name or 'p'}_{int(key)}{suffix}"
+        return f"{cls.FIELD_PREFIX}_property_{name or 'p'}_{enum_int(key)}{suffix}"
 
     def _process_boolean_prop(self, prop, props_collection, key: int, field_name: str) -> str:
         """Replace boolean property with a field reference; return original expression."""
