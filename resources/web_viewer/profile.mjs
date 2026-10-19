@@ -3,15 +3,7 @@
 // SVG chart with the lowest and highest point, total climb and descent.
 import { t, formatNumber } from "./i18n.mjs";
 import { el } from "./icons.mjs";
-
-const R = 6371008.8;
-
-function metres(a, b) {
-  const rad = Math.PI / 180;
-  const dLat = (b[1] - a[1]) * rad, dLng = (b[0] - a[0]) * rad;
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a[1] * rad) * Math.cos(b[1] * rad) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
-}
+import { distance as metres } from "./geo.mjs";  // the measure tool's ellipsoidal lengths
 
 // [{distance, point}] every length/count metres along the line (both ends included).
 export function sampleLine(points, count = 200) {

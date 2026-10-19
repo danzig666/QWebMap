@@ -20,7 +20,7 @@ export async function loadLocale(requested, base) {
 
 export function t(key, values = {}) {
   let text = strings[key] ?? fallback[key] ?? key;
-  for (const [name, value] of Object.entries(values)) text = text.replace(`{${name}}`, String(value));
+  for (const [name, value] of Object.entries(values)) text = text.replace(`{${name}}`, () => String(value));  // "$&" in a value stays
   return text;
 }
 

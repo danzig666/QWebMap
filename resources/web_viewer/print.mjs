@@ -208,8 +208,9 @@ export class Printer {
     if (flow) flow.replaceChildren();
     for (const node of this.map.getContainer().querySelectorAll(".q2vt-print-north")) node.remove();
     this.map.resize();
-    if (this.view) this.map.jumpTo(this.view);
+    // 3D first: it allows the pitch again (jumpTo then replaces its own easing).
     if (this.threeD) { this.threeD.set(true); this.threeD = null; }
+    if (this.view) this.map.jumpTo(this.view);
     if (this.animator) this.animator.resume();
   }
 

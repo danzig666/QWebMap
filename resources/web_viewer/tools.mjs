@@ -166,6 +166,7 @@ export class Tools {
       if (!this.mode) return;
       cancelAnimationFrame(this.moveFrame);
       this.moveFrame = requestAnimationFrame(() => {
+        if (!this.mode) return;  // finished meanwhile (Enter, Escape)
         const snapped = this.snapAt(e);
         this.showSnap(snapped);
         this.cursor = snapped ? snapped.lngLat : [e.lngLat.lng, e.lngLat.lat];
@@ -261,6 +262,7 @@ export class Tools {
 
   finish() {
     this.back?.closed();
+    cancelAnimationFrame(this.moveFrame);
     this.mode = null;
     this.cursor = null;
     this.showSnap(null);
@@ -290,13 +292,15 @@ export class Tools {
     const threeD = this.viewer.threeD;
     if (!threeD || this.points.length < 2) return null;
     this.profileBox.replaceChildren(el("p", "q2vt-muted", t("app.loading")));
-    const { samples } = sampleLine(this.points, 200);
+    const points = this.points;
+    const { samples } = sampleLine(points, 200);
     let heights = [];
     try {
       heights = (await threeD.elevations(samples.map((s) => s.point))) || [];
     } catch (error) {  // network, or no OffscreenCanvas / createImageBitmap
       console.warn("elevation profile:", error);
     }
+    if (this.points !== points || !this.profileBox.childNodes.length) return null;  // cleared or a new line meanwhile
     return renderProfile(this.profileBox, samples, heights);
   }
 
