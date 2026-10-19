@@ -124,7 +124,8 @@ from qgis.core import (
 from ..utils import crash_log, main_thread
 from ..utils.config import _DATA_SIMPLIFICATION_TOLERANCE, _EPSG_CRS, _FIELD_PREFIX
 from ..utils.flattened_rule import FlattenedRule
-from ..utils.qt_compat import (CURVED_AT_VERTICES, MULTIPART_EVERY, MULTIPART_LARGEST, MULTIPART_SPLIT,
+from ..utils.qt_compat import (CURVED_AT_VERTICES, CURVED_STRETCH_CHARS, CURVED_STRETCH_WORDS,
+                               MULTIPART_EVERY, MULTIPART_LARGEST, MULTIPART_SPLIT,
                                curved_label_mode, enum_int, ignores_whitespace_collisions,
                                label_mode_data_defined, label_multipart_mode)
 from .ddp_fetcher import DataDefinedPropertiesFetcher
@@ -379,6 +380,13 @@ class _RuleGroupSnapshot:
     # QGIS 4 "Split label text lines over parts": each part of a feature
     # labelled with its own line of the text (_label_lines_over_parts).
     split_label_lines: bool = False
+    # ... over the parts of the label's generated geometry (a label geometry
+    # generator): the lines are shared out after the generation.
+    split_generated: bool = False
+    # QGIS 4 "Place characters at vertices" on polygons: the rings labelled,
+    # as lines ("largest": the feature's longest ring, "every": each ring;
+    # _vertex_rings); "" otherwise.
+    vertex_rings: str = ""
 
 
 _RING_FIELD = f"{_FIELD_PREFIX}_ring_cw"
@@ -603,12 +611,13 @@ class RulesExporter:
             cached_outputs = self._reuse_cached(sources, rule_groups)
             pending = [grp for grp in rule_groups if grp.output_dataset not in cached_outputs]
             needed = {grp.layer_id for grp in pending}
-            # Parts are numbered for visible-polygon labels and for QGIS 4
-            # trims, blank segments (listed per part) and extra items
-            # (@geometry_part_num, the parts of a feature collected again).
+            # Parts are numbered for visible-polygon labels, QGIS 4 split
+            # label lines (line i on part i) and QGIS 4 trims, blank segments
+            # (listed per part) and extra items (@geometry_part_num, the
+            # parts of a feature collected again).
             self._part_layers = {grp.layer_id for grp in pending if grp.visible_polygons or (
                 grp.recipe is not None and grp.recipe.kind == "marker_points"
-                and mat.templated_expressions(grp.recipe))}
+                and mat.templated_expressions(grp.recipe)) or grp.split_label_lines}
 
             # Phase 1 — serial source materialisation (caller thread).
             if self._is_cancelled():
@@ -811,6 +820,10 @@ class RulesExporter:
                 anchor_crs=self._map_crs if self._pattern_anchor(primary, geom_target) else "",
                 split_label_lines=primary.get_attr("t") == 1 and getattr(
                     primary, "label_modes", {}).get("multipart") == MULTIPART_SPLIT,
+                vertex_rings=self._vertex_rings_mode(primary),
+                split_generated=primary.get_attr("t") == 1 and getattr(
+                    primary, "label_modes", {}).get("multipart") == MULTIPART_SPLIT
+                and bool(getattr(primary, "label_generated", False)),
             ))
             if self._labels_visible_polygon(primary, geom_target):
                 rule_groups.append(self._visible_polygon_group(rule_groups[-1], primary))
@@ -854,7 +867,7 @@ class RulesExporter:
             # One point per character (_label_chars_at_vertices): its text and
             # angle read the point's number.
             label = f"{_FIELD_PREFIX}_label"
-            return [(10, f"substr({self._VERTEX_CHARS}, @geometry_part_num, 1)", label)] + [
+            return [(10, f"q2vt_vertex_char({self._vertex_text(flat_rule)}, @geometry_part_num)", label)] + [
                 (ftype, expr, name) for ftype, expr, name in fields
                 if expr and name != label and "@geometry_part_num" in expr]
         symbol = flat_rule.rule.symbol() if flat_rule.get_attr("t") == 0 else None
@@ -1272,13 +1285,16 @@ class RulesExporter:
         singleparted = self._run_alg_safe(
             "multiparttosingleparts", "native", INPUT=orig_id
         )
-        if number_parts and geometry_type in (1, 2):  # lines and polygons (visible-label datasets)
-            # The part of its feature each single part is, numbered here,
-            # where the order is that of the split: later steps (a filter
-            # writing a memory layer) renumber the feature ids.
+        if number_parts:
+            # The part of its feature each single part is (@geometry_part_num,
+            # from 1, as QgsGeometry::asGeometryCollection lists them),
+            # numbered here, where the order is that of the split: later
+            # steps (a filter writing a memory layer) renumber the feature
+            # ids, and a rule's filter may drop a part.
             singleparted = self._run_alg_safe(
                 "fieldcalculator", "native", INPUT=singleparted, FIELD_NAME=PART_FIELD,
-                FIELD_TYPE=0, FORMULA=f'@row_number - "{_FIELD_PREFIX}_orig_id"')
+                FIELD_TYPE=1, FORMULA="1")
+            self._number_parts(singleparted)
         self._check_cancel()
         if keep_vertices:
             self._run_alg_safe("savefeatures", "native", INPUT=singleparted, OUTPUT=dst_path)
@@ -1962,14 +1978,16 @@ class RulesExporter:
             FIELDS_MAPPING=field_mapping,
         )
 
-        if grp.split_label_lines:
-            refactored = self._label_lines_over_parts(refactored)
+        if grp.split_label_lines and not grp.split_generated:
+            refactored = self._label_lines_over_parts(refactored, keep_part=bool(grp.visible_polygons))
 
         # Geometry transformation.
         self._check_cancel()
         transbase = refactored
         keep_biggest_part = self._keep_biggest_part(grp)
-        if keep_biggest_part and grp.source_geometry != 2:
+        if grp.vertex_rings:
+            transbase = self._vertex_rings(refactored, grp.vertex_rings)
+        elif keep_biggest_part and grp.source_geometry != 2:
             # Lines and points: regroup the parts of each feature (split in the
             # base layer) without dissolving. Dissolve nodes a self-crossing
             # line into pieces and keepnbiggestparts (polygons only) drops
@@ -2054,6 +2072,12 @@ class RulesExporter:
         if multipoints:
             return cleaned
         self._check_cancel()
+        if grp.split_generated and not grp.part_fields:
+            # Split label lines over the generated parts (QGIS splits the
+            # label geometry the generator returns): numbered in their order.
+            single = self._run_alg_safe("multiparttosingleparts", "native", INPUT=cleaned)
+            out = self._label_lines_over_parts(single, by_order=True)
+            return self._run_alg_safe("savefeatures", "native", INPUT=out, OUTPUT=output_path)
         if not grp.part_fields:
             return self._run_alg_safe(
                 "multiparttosingleparts", "native",
@@ -2062,6 +2086,8 @@ class RulesExporter:
             )
         del cleaned
         out = self._split_parts(transbase, grp.part_fields, grp.geometry_expression, geom_target)
+        if grp.split_generated:
+            out = self._label_lines_over_parts(out, by_order=True)
         return self._run_alg_safe("savefeatures", "native", INPUT=out, OUTPUT=output_path)
 
     # processing geometrybyexpression OUTPUT_GEOMETRY -> geometry type
@@ -2145,7 +2171,43 @@ class RulesExporter:
         del writer
         return out
 
-    def _label_lines_over_parts(self, source: str) -> str:
+    @staticmethod
+    def _vertex_rings_mode(flat_rule: FlattenedRule) -> str:
+        """_RuleGroupSnapshot.vertex_rings of a rule."""
+        if not getattr(flat_rule, "vertex_chars", False) or flat_rule.get_attr("g") != 2:
+            return ""
+        multipart = getattr(flat_rule, "label_modes", {}).get("multipart")
+        return "largest" if multipart == MULTIPART_LARGEST else "every"
+
+    # The feature's longest ring (its parts collected), as a line.
+    _LONGEST_RING = (
+        "with_variable('q2vt_b', boundary(@geometry), "
+        "if(coalesce(num_geometries(@q2vt_b), 1) > 1, geometry_n(@q2vt_b, "
+        "array_find(array_foreach(generate_series(1, num_geometries(@q2vt_b)), "
+        "length(geometry_n(@q2vt_b, @element))), array_max(array_foreach("
+        "generate_series(1, num_geometries(@q2vt_b)), length(geometry_n(@q2vt_b, "
+        "@element))))) + 1), @q2vt_b))")
+
+    def _vertex_rings(self, source: str, mode: str) -> str:
+        """Worker: the rings of polygons labelled with "Place characters at
+        vertices", as lines: QGIS labels a polygon's boundary
+        (QgsPalLayerSettings::registerFeatureWithDetails, PerimeterCurved:
+        ``geom.constGet()->boundary()``, its rings as stored: start vertex
+        and direction kept), each ring a part (pal Layer::registerFeature):
+        "largest part only" the longest ring of the whole feature (the
+        first of equal ones), else every ring, holes included. The base
+        layer's parts are regrouped (collect), not dissolved: a dissolve
+        rewrote the ring (another start vertex, the other direction)."""
+        orig = f"{_FIELD_PREFIX}_orig_id"
+        if mode == "largest":
+            collected = self._run_alg_safe("collect", "native", INPUT=source, FIELD=[orig])
+            return self._run_alg_safe("geometrybyexpression", "native", INPUT=collected,
+                                      OUTPUT_GEOMETRY=1, EXPRESSION=self._LONGEST_RING)
+        rings = self._run_alg_safe("geometrybyexpression", "native", INPUT=source,
+                                   OUTPUT_GEOMETRY=1, EXPRESSION="boundary(@geometry)")
+        return self._run_alg_safe("multiparttosingleparts", "native", INPUT=rings)
+
+    def _label_lines_over_parts(self, source: str, keep_part: bool = False, by_order: bool = False) -> str:
         """Worker: QGIS 4 "Split label text lines over parts"
         (Qgis.MultiPartLabelingBehavior.SplitLabelTextLinesOverParts,
         QgsPalLayerSettings::registerFeatureWithDetails): part i of a
@@ -2155,24 +2217,35 @@ class RulesExporter:
         line have no label, lines beyond the last part are not drawn (a
         single-part feature shows its first line only).
 
-        The base layer holds each part as a feature, in the order of its
-        feature's parts (multiparttosingleparts), the parts of a feature
-        next to each other: the label of the i-th one keeps line i."""
+        The base layer numbers the parts of each feature (PART_FIELD,
+        _number_parts): part i keeps line i whatever the rule's filter left
+        out of the other parts (QGIS filters whole features). PART_FIELD is
+        dropped unless ``keep_part`` (the viewer's visible-polygon labels
+        read it); without it (or ``by_order``: the parts of a label's
+        generated geometry, all from one base part), the parts of a feature
+        follow each other."""
         from qgis.core import QgsFeature, QgsVectorFileWriter  # pylint: disable=import-outside-toplevel
         self._check_cancel()
         layer = self._open(source, "split_lines")
         fields = layer.fields()
         label = fields.indexFromName(f"{_FIELD_PREFIX}_label")
         orig = fields.indexFromName(f"{_FIELD_PREFIX}_orig_id")
+        part = fields.indexFromName(PART_FIELD)
         if label < 0 or orig < 0:
             return source
+        kept = [i for i in range(fields.count()) if keep_part or i != part]
+        if by_order:
+            part = -1
+        out_fields = QgsFields()
+        for i in kept:
+            out_fields.append(fields.at(i))
         out = self._temp_path("lines")[:-len(_TEMP_RULE_FORMAT)] + "fgb"
         with self._temp_files_lock:
             self._temp_files.add(out)
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
-        writer = QgsVectorFileWriter.create(out, fields, layer.wkbType(), layer.crs(),
+        writer = QgsVectorFileWriter.create(out, out_fields, layer.wkbType(), layer.crs(),
                                             QgsProject.instance().transformContext(), options)
         previous, number = None, 0
         for feature in layer.getFeatures():
@@ -2180,12 +2253,20 @@ class RulesExporter:
             key = feature[orig]
             number = number + 1 if key == previous else 0
             previous = key
+            if part >= 0:
+                try:
+                    number = int(feature[part]) - 1
+                except (TypeError, ValueError):
+                    pass
             text = feature[label]
             lines = text.split("\n") if isinstance(text, str) else []  # (QGIS 3: NULL a QVariant)
             if number >= len(lines) or not lines[number]:
                 continue  # QGIS draws nothing for an empty text
-            piece = QgsFeature(feature)
-            piece.setAttribute(label, lines[number])
+            attributes = feature.attributes()
+            attributes[label] = lines[number]
+            piece = QgsFeature(out_fields)
+            piece.setGeometry(feature.geometry())
+            piece.setAttributes([attributes[i] for i in kept])
             writer.addFeature(piece)
         del writer
         return out
@@ -3287,14 +3368,15 @@ class RulesExporter:
             (6, f'"{_FIELD_PREFIX}_orig_id"', f"{_FIELD_PREFIX}_orig_id")
         )
         source_fields = self._open(current_input, "fields").fields()
-        if grp.visible_polygons:
+        if grp.visible_polygons or (grp.split_label_lines and source_fields.indexFromName(PART_FIELD) >= 0):
             # Each part of a multi-part feature (the base datasets are single
             # parts): the viewer labels every part ("Label every part") or
-            # only the biggest, and joins only the tile pieces of one part.
+            # only the biggest, and joins only the tile pieces of one part;
+            # split label lines go by it (_label_lines_over_parts).
             # Distinct within a feature (its parts' ids differ, its orig id
-            # does not); the parts of one feature follow each other, so the
-            # value mostly repeats from feature to feature (a small tile
-            # value table, unlike the unique id).
+            # does not): the part's number, so the value mostly repeats from
+            # feature to feature (a small tile value table, unlike the
+            # unique id).
             # Numbered in the base layer (the same in every chain mode: a
             # filter writing a memory layer renumbers $id); $id only for a
             # base layer without the field.
@@ -3933,26 +4015,44 @@ class RulesExporter:
         return out, QgsVectorFileWriter.create(out, fields, wkb_type, crs,
                                                QgsProject.instance().transformContext(), options)
 
+    def _number_parts(self, ref) -> None:
+        """Worker: PART_FIELD of a base layer's single parts (1 already)
+        counted on within each feature: multiparttosingleparts writes the
+        parts of a feature next to each other, in their order."""
+        layer = self._open(ref, "parts")
+        fields = layer.fields()
+        part, orig = fields.indexFromName(PART_FIELD), fields.indexFromName(f"{_FIELD_PREFIX}_orig_id")
+        if part < 0 or orig < 0:
+            return
+        changes = {}
+        previous, number = None, 1
+        request = QgsFeatureRequest().setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        request.setSubsetOfAttributes([orig])
+        for feature in layer.getFeatures(request):
+            key = feature.attribute(orig)
+            number = number + 1 if key == previous and key is not None else 1
+            previous = key
+            if number > 1:
+                changes[feature.id()] = {part: number}
+        if changes:
+            self._check_cancel()
+            layer.dataProvider().changeAttributeValues(changes)
+
     @staticmethod
     def _part_numbers(layer) -> Dict[int, int]:
         """{feature id: @geometry_part_num} of a base layer's single parts
-        (PART_FIELD counts on within a feature; 1 without it)."""
+        (PART_FIELD, _number_parts; none without it)."""
         part = layer.fields().indexFromName(PART_FIELD)
-        orig = layer.fields().indexFromName(f"{_FIELD_PREFIX}_orig_id")
-        if part < 0 or orig < 0:
+        if part < 0:
             return {}
         values = {}
-        first: Dict[Any, int] = {}
         request = QgsFeatureRequest().setFlags(QgsFeatureRequest.Flag.NoGeometry)
         for feature in layer.getFeatures(request):
             try:
-                number = int(feature.attribute(part))
+                values[feature.id()] = int(feature.attribute(part))
             except (TypeError, ValueError):
                 continue
-            key = feature.attribute(orig)
-            values[feature.id()] = (key, number)
-            first[key] = min(first.get(key, number), number)
-        return {fid: number - first[key] + 1 for fid, (key, number) in values.items()}
+        return values
 
     @staticmethod
     def _value_text(value) -> str:
@@ -4458,17 +4558,31 @@ class RulesExporter:
         modes = getattr(flat_rule, "label_modes", {})
         split = modes.get("multipart") == MULTIPART_SPLIT
         wrap = settings.wrapChar
-        if wrap and (split or modes.get("curved") != CURVED_AT_VERTICES):
+        wrap_by = modes.get("wrap_by", "")
+        if (wrap or wrap_by) and (split or modes.get("curved") != CURVED_AT_VERTICES):
             # QGIS breaks the line at every wrap character (a curved label
             # only to split its lines over the parts: QgsPalLayerSettings::
-            # registerFeatureWithDetails allowMultipleLines).
-            filter_exp = f"replace({filter_exp}, {QgsExpression.quotedString(wrap)}, '\n')"
-        if split and settings.autoWrapLength > 0:
+            # registerFeatureWithDetails allowMultipleLines); a data-defined
+            # one, unless NULL, instead (evaluateLabelContent; empty: none).
+            if wrap_by:
+                filter_exp = with_variable(
+                    "q2vt_lt", filter_exp, with_variable(
+                        "q2vt_wc", f"coalesce(to_string({enclosed(wrap_by)}), "
+                                   f"{QgsExpression.quotedString(wrap)})",
+                        "if(@q2vt_wc = '', @q2vt_lt, replace(@q2vt_lt, @q2vt_wc, '\n'))"))
+            else:
+                filter_exp = f"replace({filter_exp}, {QgsExpression.quotedString(wrap)}, '\n')"
+        wrap_length = modes.get("wrap_length", "")
+        if split and (settings.autoWrapLength > 0 or wrap_length):
             # The lines shared out over the parts are the wrapped ones
-            # (QgsTextDocument::splitLines): wrapped here, not by MapLibre.
-            length = int(settings.autoWrapLength)
-            filter_exp = (f"wordwrap({filter_exp}, "
-                          f"{length if settings.useMaxLineLengthForAutoWrap else -length})")
+            # (QgsTextDocument::splitLines): wrapped here, not by MapLibre;
+            # a data-defined length, unless NULL, instead (any length > 0).
+            length = f"coalesce(to_int({enclosed(wrap_length)}), {int(settings.autoWrapLength)})" \
+                if wrap_length else str(int(settings.autoWrapLength))
+            sign = "" if settings.useMaxLineLengthForAutoWrap else "-"
+            filter_exp = with_variable(
+                "q2vt_lt", filter_exp, with_variable(
+                    "q2vt_wl", length, f"if(@q2vt_wl > 0, wordwrap(@q2vt_lt, {sign}@q2vt_wl), @q2vt_lt)"))
         if not settings.format().allowHtmlFormatting():
             from .maplibre_converter import TextPropertyExtractor  # pylint: disable=import-outside-toplevel
             spaces = TextPropertyExtractor.word_spacing_spaces(settings.format())
@@ -4486,6 +4600,14 @@ class RulesExporter:
         settings.isExpression = False
         settings.fieldName = field_name
         return fields
+
+    @staticmethod
+    def _active_expression(props, key) -> str:
+        """The expression of an active data-defined property ("" if none)."""
+        prop = props.property(key)
+        if prop is None or not prop.isActive():
+            return ""
+        return prop.asExpression() or ""
 
     @staticmethod
     def _with_label_text(filter_expression: str, text: str) -> str:
@@ -4608,11 +4730,32 @@ class RulesExporter:
         split), "curved" (the curved label mode), "whitespace" (blanks do
         not collide) and "per_feature" (the modes set by a field or an
         expression: one value is kept). Split lines of an HTML label: its
-        whole text on every part (its sections are not split)."""
+        whole text on every part (its sections are not split).
+        "vertex_ignored": the options characters at vertices do not follow
+        (merged lines: each line keeps its own vertices; a data-defined
+        label distance: the layer's). "wrap_by" / "wrap_length": the
+        expressions of a data-defined wrap character / automatic wrap length
+        (the export turns data-defined properties into fields)."""
         settings = flat_rule.rule.settings()
         multipart = label_multipart_mode(settings)
         html = settings is not None and settings.format().allowHtmlFormatting()
+        vertex_ignored = ()
+        if curved_label_mode(settings) == CURVED_AT_VERTICES:
+            vertex_ignored = tuple(name for name, ignored in (
+                ("merge connected lines", settings.lineSettings().mergeLines()),
+                ("data-defined label distance", label_mode_data_defined(settings, "LabelDistance")),
+            ) if ignored)
+        curved = curved_label_mode(settings)
+        props = settings.dataDefinedProperties() if settings is not None else None
+        P = QgsPalLayerSettings.Property
         return {
+            "wrap_by": RulesExporter._active_expression(props, P.MultiLineWrapChar) if props else "",
+            "wrap_length": RulesExporter._active_expression(props, P.AutoWrapLength) if props else "",
+            "vertex_ignored": vertex_ignored,
+            # A stretched label spans the whole line, not its visible part
+            # (QgsLabelLineSettings::AnchorClipping::UseEntireLine: not clipped).
+            "stretch_entire_line": curved in (CURVED_STRETCH_CHARS, CURVED_STRETCH_WORDS)
+            and enum_int(settings.lineSettings().anchorClipping()) == 1,
             "multipart": MULTIPART_EVERY if multipart == MULTIPART_SPLIT and html else multipart,
             "split_html": multipart == MULTIPART_SPLIT and html,
             "curved": curved_label_mode(settings),
@@ -4625,8 +4768,12 @@ class RulesExporter:
                                  if label_mode_data_defined(settings, name)),
         }
 
-    # The label's characters without its blanks (QGIS skips them at vertices).
-    _VERTEX_CHARS = f"regexp_replace(\"{_FIELD_PREFIX}_label\", '\\\\s', '')"
+    @staticmethod
+    def _vertex_text(flat_rule: FlattenedRule) -> str:
+        """The arguments of q2vt_vertex_char / q2vt_vertex_count for a label
+        with characters at vertices: its text and whether it is HTML."""
+        html = "true" if getattr(flat_rule, "vertex_html", False) else "false"
+        return f"\"{_FIELD_PREFIX}_label\", {html}"
 
     def _label_chars_at_vertices(self, flat_rule: FlattenedRule) -> bool:
         """QGIS 4 curved labels with "Place characters at vertices"
@@ -4650,9 +4797,8 @@ class RulesExporter:
         if flat_rule.get_attr("g") not in (1, 2) or settings.geometryGeneratorEnabled or \
                 self._pinned_position(settings):
             return False
+        # A polygon's rings come as lines (_vertex_rings).
         line = "geometry($currentfeature)"
-        if flat_rule.get_attr("g") == 2:
-            line = f"exterior_ring({line})"
         # Clockwise degrees (QGIS's angle is counter-clockwise, y up).
         rotation = (
             f"with_variable('q2vt_vl', {line}, with_variable('q2vt_j', "
@@ -4666,6 +4812,14 @@ class RulesExporter:
         settings.repeatDistance = 0.0
         settings.dataDefinedProperties().setProperty(
             QgsPalLayerSettings.Property.LabelRotation, QgsProperty.fromExpression(rotation))
+        text_format = settings.format()
+        if text_format.allowHtmlFormatting():
+            # One plain character a point (vertex_characters drops the
+            # markup): drawn as plain text, not as the label's sections.
+            flat_rule.vertex_html = True
+            text_format.setAllowHtmlFormatting(False)
+            settings.setFormat(text_format)
+        _register_vertex_functions()
         flat_rule.vertex_chars = True
         return True
 
@@ -4768,10 +4922,10 @@ class RulesExporter:
         if getattr(flat_rule, "vertex_chars", False):
             # A point at each vertex that gets a character
             # (_label_chars_at_vertices), numbered as the vertices.
+            # A polygon's rings come as lines (_vertex_rings).
             flat_rule.set_attr("c", 0)
-            line = "exterior_ring(@geometry)" if target_geom == 2 else "@geometry"
-            return [0, f"with_variable('q2vt_vl', {line}, with_variable('q2vt_vn', "
-                       f"min(num_points(@q2vt_vl), length({self._VERTEX_CHARS})), "
+            return [0, f"with_variable('q2vt_vl', @geometry, with_variable('q2vt_vn', "
+                       f"min(num_points(@q2vt_vl), q2vt_vertex_count({self._vertex_text(flat_rule)})), "
                        f"if(@q2vt_vn > 0, collect_geometries(array_foreach(generate_series(1, @q2vt_vn), "
                        f"point_n(@q2vt_vl, @element))), NULL)))"]
         if getattr(flat_rule, "line_label_midpoint", False):
@@ -5132,6 +5286,65 @@ MAX_SMOOTH_ITERATIONS = 5
 
 
 _AGGREGATE_FUNCTIONS: Optional[frozenset] = None
+
+
+def _graphemes(text: str) -> List[str]:
+    """The graphemes of a text as QGIS lays them out one by one
+    (QgsPalLabeling::splitToGraphemes: QTextBoundaryFinder::Grapheme)."""
+    from qgis.core import QgsPalLabeling  # pylint: disable=import-outside-toplevel
+    split = getattr(QgsPalLabeling, "splitToGraphemes", None)
+    if split is not None:
+        return list(split(text))
+    from qgis.PyQt.QtCore import QTextBoundaryFinder  # pylint: disable=import-outside-toplevel
+    finder = QTextBoundaryFinder(QTextBoundaryFinder.BoundaryType.Grapheme, text)
+    out, previous = [], 0
+    while True:
+        boundary = finder.toNextBoundary()
+        if boundary <= 0:
+            return out
+        out.append(text[previous:boundary])
+        previous = boundary
+
+
+def vertex_characters(text, html: bool = False) -> List[str]:
+    """The characters QGIS 4 puts one at each vertex of a line ("Place
+    characters at vertices", pal FeaturePart::
+    createCurvedCandidateWithCharactersAtVertices): the graphemes of the
+    label's text (QgsTextLabelFeature::calculateTextMetrics; an HTML label's
+    text without its markup, QgsTextDocument), blanks left out
+    (``grapheme.trimmed().isEmpty()`` or a tab). An emoji or a letter with
+    combining accents is one character."""
+    if text is None or (isinstance(text, QVariant) and text.isNull()):
+        return []
+    text = html_labels.plain_text(text) if html else str(text)
+    return [g for g in _graphemes(text) if g.strip() and g != "\t"]
+
+
+_VERTEX_FUNCTIONS: list = []
+
+
+def _register_vertex_functions() -> None:
+    """``q2vt_vertex_char(text, html, n)`` (the n-th character placed at a
+    vertex, from 1; NULL past the last) and ``q2vt_vertex_count(text, html)``
+    (vertex_characters) for the export's expressions (idempotent). Python
+    functions: groups using them are exported by the main process
+    (export_workers._parses)."""
+    from qgis.core import qgsfunction  # pylint: disable=import-outside-toplevel
+    if QgsExpression.isFunctionName("q2vt_vertex_char"):
+        return
+
+    @qgsfunction(group="Custom", referenced_columns=[])
+    def q2vt_vertex_char(text, html, index):
+        chars = vertex_characters(text, bool(html))
+        index = int(index)
+        return chars[index - 1] if 0 < index <= len(chars) else None
+
+    @qgsfunction(group="Custom", referenced_columns=[])
+    def q2vt_vertex_count(text, html):
+        return len(vertex_characters(text, bool(html)))
+
+    # QGIS keeps only a pointer (fidelity.html_labels).
+    _VERTEX_FUNCTIONS.extend([q2vt_vertex_char, q2vt_vertex_count])
 
 
 def _uses_aggregates(expression: str) -> bool:

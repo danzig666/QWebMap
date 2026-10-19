@@ -2069,9 +2069,17 @@ skip without the API and compare against QGIS 4 renders.
 - Labels (`qt_compat.label_multipart_mode`, `curved_label_mode`): `multiPartBehavior()` replaces
   the lossy `labelPerPart` shim; split mode (`_label_lines_over_parts`: line i on part i, auto
   wrap via `wordwrap()`); characters at vertices exported as rotated points (exact placement,
-  collisions approximate); stretch modes in the viewer (`placeStretchedOnLine`, data-driven
-  `text-letter-spacing`; word spacing in whole spaces). Whitespace collision handling and
+  collisions approximate); stretch modes in the viewer (`placeStretchedOnLine`; 4.51.0 used a
+  data-driven `text-letter-spacing` and whole spaces). Whitespace collision handling and
   data-defined modes reported (`Q2VT_LABEL_APPROXIMATE`).
+  Fixed after review: stretched labels are laid out by the viewer character by character (one
+  point label per grapheme on its chord of the line, offset curve above / below it): MapLibre
+  cut or dropped line labels longer than ~1000 px; per-character collision boxes. Characters at
+  vertices: graphemes (`QgsPalLabeling.splitToGraphemes`), HTML labels as plain text, polygon
+  rings as stored (longest ring of the whole feature, or every ring with holes; no dissolve).
+  Split lines go by the part number of the base layer (`PART_FIELD`, absolute) and over the
+  parts of a label geometry generator; data-defined wrap character / wrap length followed.
+  A static data-defined "LabelAllParts" reads as `QgsProperty::valueAsBool`.
 - Selective masking source sets (`masks.resolve_source_sets`): resolved as
   `QgsVectorLayerUtils::collectObjectsMasked*FromLayer` does, fed to the existing halo /
   knock-out approximation; a mask marker with an empty list masks when its layer masks.

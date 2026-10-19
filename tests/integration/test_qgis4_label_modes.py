@@ -282,3 +282,189 @@ def test_split_lines_are_not_wrapped_again(plugin, tmp_path, export):  # noqa: F
     _, labels = _style_layers(_labelled(layer, settings), export)
     assert labels and all(l["layout"]["text-max-width"] == 999 for l in labels)
     assert all((l.get("metadata") or {}).get("q2vt:label-per-part", True) for l in labels)
+
+
+def _vertex_chars(outputs, rules):
+    """(orig id, x, y, character, rotation) of a characters-at-vertices dataset."""
+    rule = [r for r in rules if r.get_attr("t") == 1][0]
+    dataset = outputs[rule.output_dataset]
+    rotation = [f.name() for f in dataset.fields() if "rotation" in f.name()][0]
+    return sorted((int(f["q2vt_orig_id"]), round(f.geometry().asPoint().x()), round(f.geometry().asPoint().y()),
+                   f["q2vt_label"], round(f[rotation])) for f in dataset.getFeatures())
+
+
+@pytest.mark.parametrize("value", ["no", "n", "f", "0.0", "", " ", "0", "false", "FALSE", " false", "yes",
+                                   0, 0.0, 2, True, False, None])
+def test_static_label_all_parts_reads_as_qgis(plugin, value):
+    """A static data-defined "LabelAllParts" that names no behaviour is read
+    as QgsProperty::valueAsBool reads it (QVariant::toBool: a string is
+    false only when empty, "0" or "false", any case, untrimmed; NULL keeps
+    the default, "every part" only if it was), on QGIS 3 as on QGIS 4."""
+    from q2vt_plugin.src.utils.qt_compat import label_multipart_mode
+    from qgis.core import QgsExpressionContext
+    for every in (False, True):
+        settings = QgsPalLayerSettings()
+        if QGIS4:
+            placement_settings = settings.placementSettings()
+            placement_settings.setMultiPartBehavior(
+                Qgis.MultiPartLabelingBehavior.LabelEveryPartWithEntireLabel if every
+                else Qgis.MultiPartLabelingBehavior.LabelLargestPartOnly)
+            settings.setPlacementSettings(placement_settings)
+        else:
+            settings.labelPerPart = every
+        prop = QgsProperty.fromValue(value)
+        settings.dataDefinedProperties().setProperty(QgsPalLayerSettings.Property.LabelAllParts, prop)
+        expected, _ = prop.valueAsBool(QgsExpressionContext(), every)
+        assert label_multipart_mode(settings) == ("every" if expected else "largest"), (value, every)
+
+
+@qgis4
+def test_split_with_a_null_label_all_parts_is_largest_part_only(plugin):
+    """QGIS 4: a NULL static "LabelAllParts" names nothing and reads as
+    false (the default: split is not "every part")."""
+    from q2vt_plugin.src.utils.qt_compat import label_multipart_mode
+    settings = _settings(multipart="SplitLabelTextLinesOverParts")
+    settings.dataDefinedProperties().setProperty(
+        QgsPalLayerSettings.Property.LabelAllParts, QgsProperty.fromValue(None))
+    assert label_multipart_mode(settings) == "largest"
+
+
+@qgis4
+def test_characters_at_vertices_of_a_multipart_polygon_keep_its_ring(plugin, tmp_path):
+    """"Largest part only": the characters go on the longest ring of the
+    whole feature from its first vertex, in its direction, as stored (QGIS
+    labels the polygon's boundary): not on a ring rewritten by a dissolve
+    (another start vertex, reversed)."""
+    layer = _layer("MultiPolygon", [
+        ("MULTIPOLYGON(((100 100, -100 100, -100 -100, 100 -100, 100 100)),"
+         "((150 150, 160 150, 160 160, 150 150)))", "ABCDEF")], str(tmp_path / "p.gpkg"))
+    settings = _settings(Qgis.LabelPlacement.PerimeterCurved, curved="PlaceCharactersAtVertices")
+    outputs, rules, _ = _export(_labelled(layer, settings), tmp_path)
+    assert _vertex_chars(outputs, rules) == [
+        (1, -100, -100, "C", 0), (1, -100, 100, "B", 90), (1, 100, -100, "D", -90),
+        (1, 100, 100, "A", -180), (1, 100, 100, "E", -90)]
+
+
+@qgis4
+def test_characters_at_vertices_on_every_ring(plugin, tmp_path):
+    """"Label every part": every ring of the boundary is a part, holes
+    included, each with the text from its first vertex."""
+    layer = _layer("Polygon", [
+        ("POLYGON((100 100, -100 100, -100 -100, 100 -100, 100 100),(-10 -10, 10 -10, 10 10, -10 -10))",
+         "AB")], str(tmp_path / "p.gpkg"))
+    settings = _settings(Qgis.LabelPlacement.PerimeterCurved, curved="PlaceCharactersAtVertices",
+                         multipart="LabelEveryPartWithEntireLabel")
+    outputs, rules, _ = _export(_labelled(layer, settings), tmp_path)
+    chars = [(x, y, text) for _, x, y, text, _ in _vertex_chars(outputs, rules)]
+    assert sorted(chars) == [(-100, 100, "B"), (-10, -10, "A"), (10, -10, "B"), (100, 100, "A")], chars
+
+
+@qgis4
+def test_characters_at_vertices_are_graphemes(plugin, tmp_path):
+    """One grapheme a vertex (QgsPalLabeling::splitToGraphemes): an emoji
+    or a letter with a combining accent is one character, never half a
+    surrogate pair; blanks (any white space) take no vertex."""
+    layer = _layer("LineString", [("LINESTRING(-100 0, -50 0, 0 0, 50 0, 100 0)",
+                                   "a\U0001F600 é b")], str(tmp_path / "l.gpkg"))
+    settings = _settings(Qgis.LabelPlacement.Curved, curved="PlaceCharactersAtVertices")
+    outputs, rules, _ = _export(_labelled(layer, settings), tmp_path)
+    chars = [(x, text) for _, x, _, text, _ in _vertex_chars(outputs, rules)]
+    assert chars == [(-100, "a"), (-50, "\U0001F600"), (0, "é"), (50, "b")], chars
+
+
+@qgis4
+def test_characters_at_vertices_of_html_labels_are_plain(plugin, tmp_path, export):  # noqa: F811
+    """An HTML label's characters at vertices are its text's, not its
+    markup's, and each point draws its own character (plain text-field)."""
+    layer = _layer("LineString", [("LINESTRING(-100 0, -50 0, 0 0, 50 0, 100 0)", "<b>Ab</b> c")],
+                   str(tmp_path / "l.gpkg"))
+    settings = _settings(Qgis.LabelPlacement.Curved, curved="PlaceCharactersAtVertices")
+    fmt = settings.format()
+    fmt.setAllowHtmlFormatting(True)
+    settings.setFormat(fmt)
+    outputs, rules, _ = _export(_labelled(layer, settings), tmp_path)
+    assert [(x, text) for _, x, _, text, _ in _vertex_chars(outputs, rules)] == [
+        (-100, "A"), (-50, "b"), (0, "c")]
+    web = tmp_path / "web"
+    web.mkdir()
+    layer = _web_layer(web, "LineString", "LINESTRING(-100 0, -50 0, 0 0, 50 0)", "<b>Ab</b> c")
+    settings = _settings(Qgis.LabelPlacement.Curved, curved="PlaceCharactersAtVertices")
+    fmt = settings.format()
+    fmt.setAllowHtmlFormatting(True)
+    settings.setFormat(fmt)
+    _, labels = _style_layers(_labelled(layer, settings), export)
+    assert labels[0]["layout"]["text-field"] == ["get", "q2vt_label"]
+
+
+@qgis4
+def test_split_lines_follow_the_part_number(plugin, tmp_path):
+    """Line i goes to part i of the feature (asGeometryCollection) even
+    where the rule's filter drops another part of it: the parts are
+    numbered in the base layer."""
+    from qgis.core import QgsRuleBasedLabeling
+    layer = _layer("MultiPolygon", [(
+        "MULTIPOLYGON(((-150 -150, -140 -150, -140 -140, -150 -140, -150 -150)),"
+        "((0 0, 50 0, 50 50, 0 50, 0 0)),((100 100, 150 100, 150 150, 100 150, 100 100)))",
+        "One|Two|Three")], str(tmp_path / "p.gpkg"))
+    settings = _settings(Qgis.LabelPlacement.OverPoint, multipart="SplitLabelTextLinesOverParts")
+    settings.wrapChar = "|"
+    _labelled(layer, settings)
+    root = QgsRuleBasedLabeling.Rule(None)
+    rule = QgsRuleBasedLabeling.Rule(settings)
+    rule.setFilterExpression("$area > 1000")  # evaluated on each part here
+    root.appendChild(rule)
+    layer.setLabeling(QgsRuleBasedLabeling(root))
+    outputs, rules, _ = _export(layer, tmp_path)
+    labels = sorted((text, round(g.asPoint().x())) for _, text, g in _labels(outputs, rules))
+    assert labels == [("Three", 125), ("Two", 25)], labels
+    rule = [r for r in rules if r.get_attr("t") == 1][0]
+    assert outputs[rule.output_dataset].fields().indexFromName("q2vt_part") < 0  # only used here
+
+
+@qgis4
+def test_split_lines_over_generated_parts(plugin, tmp_path):
+    """A label geometry generator: QGIS shares the lines out over the parts
+    of the generated geometry."""
+    layer = _layer("LineString", [("LINESTRING(-100 0, 100 0)", "Start|End")], str(tmp_path / "g.gpkg"))
+    settings = _settings(Qgis.LabelPlacement.OverPoint, multipart="SplitLabelTextLinesOverParts")
+    settings.wrapChar = "|"
+    settings.geometryGeneratorEnabled = True
+    settings.geometryGeneratorType = Qgis.GeometryType.Point
+    settings.geometryGenerator = "collect_geometries(start_point($geometry), end_point($geometry))"
+    outputs, rules, _ = _export(_labelled(layer, settings), tmp_path)
+    assert sorted((text, round(g.asPoint().x())) for _, text, g in _labels(outputs, rules)) == [
+        ("End", 100), ("Start", -100)]
+
+
+@qgis4
+def test_split_lines_with_data_defined_wrapping(plugin, tmp_path):
+    """A data-defined wrap character and automatic wrap length decide the
+    lines shared out over the parts (QgsPalLayerSettings::
+    evaluateLabelContent); NULL keeps the layer's."""
+    layer = _layer("MultiPolygon", [
+        ("MULTIPOLYGON(((-150 -150, -100 -150, -100 -100, -150 -100, -150 -150)),"
+         "((0 0, 50 0, 50 50, 0 50, 0 0)))", "North;South"),
+        ("MULTIPOLYGON(((100 -150, 150 -150, 150 -100, 100 -100, 100 -150)),"
+         "((150 -50, 190 -50, 190 -10, 150 -10, 150 -50)))", "one two")], str(tmp_path / "p.gpkg"))
+    settings = _settings(multipart="SplitLabelTextLinesOverParts")
+    settings.wrapChar = "|"
+    props = settings.dataDefinedProperties()
+    props.setProperty(QgsPalLayerSettings.Property.MultiLineWrapChar,
+                      QgsProperty.fromExpression("if(\"id\" = 0, ';', NULL)"))
+    props.setProperty(QgsPalLayerSettings.Property.AutoWrapLength,
+                      QgsProperty.fromExpression("if(\"id\" = 1, 3, NULL)"))
+    outputs, rules, _ = _export(_labelled(layer, settings), tmp_path)
+    labels = sorted((orig, text) for orig, text, _ in _labels(outputs, rules))
+    assert labels == [(1, "North"), (1, "South"), (2, "one"), (2, "two")], labels
+
+
+@qgis4
+def test_characters_at_vertices_report_what_they_do_not_follow(plugin, tmp_path, export):  # noqa: F811
+    layer = _web_layer(tmp_path, "LineString", "LINESTRING(-100 0, -50 0, -50 50)", "abc")
+    settings = _settings(Qgis.LabelPlacement.Curved, curved="PlaceCharactersAtVertices")
+    line_settings = settings.lineSettings()
+    line_settings.setMergeLines(True)
+    settings.setLineSettings(line_settings)
+    exporter, _ = _style_layers(_labelled(layer, settings), export)
+    assert any("merge connected lines" in d.message
+               for d in exporter.diagnostics.by_code("Q2VT_LABEL_APPROXIMATE"))
