@@ -2902,7 +2902,7 @@ class QgisMapLibreStyleExporter:
         from .sprite_generator import SymbolImage  # pylint: disable=import-outside-toplevel
         sub = layer.subSymbol()
         if normalize_unit(layer.distanceUnit()) in ("map", "m") or \
-                sub.usesMapUnits() or \
+                any(self._symbol_layer_uses_map_units(line) for line in sub.symbolLayers()) or \
                 any(self._active_ddp_names(line) for line in sub.symbolLayers()):
             return None
         spacing = self._texture_px(layer.distance(), layer.distanceUnit())
@@ -3404,12 +3404,21 @@ class QgisMapLibreStyleExporter:
             if unit_getter == "widthUnit" and hasattr(layer, "penStyle") and \
                     layer.penStyle() == no_pen:
                 continue
+            if unit_getter == "blankSegmentsUnit" and not cls._blank_segments_set(layer):
+                continue  # QGIS 4: map units by default, used only by its data-defined segments
             if not hasattr(layer, value_getter) or \
                     cls._map_length(getattr(layer, value_getter)(), unit):
                 return True
         sub = layer.subSymbol()
         return sub is not None and any(cls._symbol_layer_uses_map_units(sub.symbolLayer(i))
                                        for i in range(sub.symbolLayerCount()))
+
+    @staticmethod
+    def _blank_segments_set(layer) -> bool:
+        """Whether a line has blank segments (QGIS 4: a data-defined property
+        only)."""
+        key = getattr(QgsSymbolLayer.Property, "BlankSegments", None)
+        return key is not None and layer.dataDefinedProperties().isActive(key)
 
     @classmethod
     def _pattern_uses_map_units(cls, layer) -> bool:

@@ -3249,12 +3249,12 @@ def test_smooth_passes_are_capped_in_exported_generators(plugin, expression, cap
     300 m polygon); beyond five the outline moves by millimetres."""
     from qgis.core import QgsExpression
     from q2vt_plugin.src.core.rules_exporter import MAX_SMOOTH_ITERATIONS, _capped_smoothing
-    out = _capped_smoothing(expression)
+    out = _capped_smoothing(expression)  # QGIS 4 writes 0.3 as 0.29999999999999999
     assert not QgsExpression(out).hasParserError()
     if not capped:
         assert out == expression
         return
-    passes = [int(p) for p in __import__("re").findall(r"smooth\(.*?, (\d+), 0\.3|, (\d+), 0\.25", out) for p in p if p]
+    passes = [int(p) for p in __import__("re").findall(r"smooth\(.*?, (\d+), 0\.(?:3|2999+\d*)|, (\d+), 0\.25", out) for p in p if p]
     assert passes and max(passes) == MAX_SMOOTH_ITERATIONS
 
 

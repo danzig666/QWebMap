@@ -13,6 +13,13 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FOLDER = "QWebMap"
 
+def _qgis_python_path() -> str:
+    """Only QGIS's own Python folder (some installs, the QGIS 4 image, find
+    it through PYTHONPATH alone), not this checkout."""
+    import qgis  # pylint: disable=import-outside-toplevel
+    return os.path.dirname(os.path.dirname(os.path.abspath(qgis.__file__)))
+
+
 SMOKE = textwrap.dedent("""
     import os, sys
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -131,7 +138,7 @@ def test_release_zip_installs_and_loads(tmp_path):
         handle.extractall(tmp_path / "plugins")
     result = subprocess.run([sys.executable, "-c", SMOKE, str(tmp_path / "plugins")],
                             capture_output=True, text=True, timeout=300,
-                            cwd=str(tmp_path), env={**os.environ, "PYTHONPATH": ""})
+                            cwd=str(tmp_path), env={**os.environ, "PYTHONPATH": _qgis_python_path()})
     assert result.returncode == 0 and "OK" in result.stdout, result.stdout + result.stderr
     assert "('toolbar', 'QWebMap: Publish Web Map…')" in result.stdout
     # Right in the Web menu, no QWebMap submenu.

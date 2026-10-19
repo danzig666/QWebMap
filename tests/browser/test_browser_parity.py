@@ -1082,8 +1082,8 @@ def test_map_unit_markers_in_a_screen_unit_grid(tmp_path, monkeypatch, zoom):
     assert browser == pytest.approx(qgis, rel=0.03), (qgis, browser)
     if zoom % 1:  # the middle of the zoom
         assert browser_ink == pytest.approx(qgis_ink, rel=0.15), (qgis_ink, browser_ink)
-    else:  # dot area 2x at most
-        assert qgis_ink < browser_ink < 2.2 * qgis_ink, (qgis_ink, browser_ink)
+    else:  # dot area 2x at most (QGIS 4 draws the dots up to a pixel narrower than 3.34)
+        assert qgis_ink < browser_ink < 2.4 * qgis_ink, (qgis_ink, browser_ink)
 
 
 def test_dash_arrays_of_every_zoom_fit_the_line_atlas(tmp_path, monkeypatch):
