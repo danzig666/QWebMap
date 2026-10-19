@@ -521,7 +521,9 @@ def test_hatch_of_markers_is_qgis_brush_tile(plugin):
     hatch.setSubSymbol(QgsLineSymbol([markers]))
     pencil = hatch.clone()
     exporter._convert_symbol(QgsFillSymbol([hatch]), "s", "src", "q2vt", 14, 24)
-    image = exporter.pattern_images[exporter.style["layers"][0]["paint"]["fill-pattern"]].img_1x
+    name = exporter.style["layers"][0]["paint"]["fill-pattern"]
+    assert name in exporter.pattern_images, (name, list(exporter.pattern_images), exporter.style["layers"][0])
+    image = exporter.pattern_images[name].img_1x
     spacing = 3.2 * 96 / 25.4
     side = int(spacing / _math.sin(_math.radians(45)))
     assert image.size == (side, side)

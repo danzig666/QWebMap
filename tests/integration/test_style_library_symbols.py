@@ -11,6 +11,7 @@ from qgis.core import (Qgis, QgsEllipseSymbolLayer, QgsFillSymbol, QgsGeometry,
                        QgsMarkerSymbol, QgsPointPatternFillSymbolLayer, QgsProject, QgsProperty,
                        QgsSimpleMarkerSymbolLayer, QgsSingleSymbolRenderer, QgsSymbolLayer,
                        QgsSVGFillSymbolLayer)
+from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
 
 from fidelity.diagnostics import DiagnosticCollector
@@ -62,7 +63,7 @@ def _fantasia():
     else:
         diamond.setShape(QgsEllipseSymbolLayer.Shape.Diamond)
     diamond.setColor(QColor(149, 183, 255, 109))
-    diamond.setStrokeStyle(0)
+    diamond.setStrokeStyle(Qt.PenStyle.NoPen)
     for key, expression in ((QgsSymbolLayer.Property.PropertyAngle, "rand(0,360)"),
                             (QgsSymbolLayer.Property.PropertyFillColor,
                              "set_color_part(@symbol_color, 'hue', rand(0,360))"),

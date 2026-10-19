@@ -13,6 +13,7 @@ from qgis.core import (Qgis, QgsFillSymbol, QgsLinePatternFillSymbolLayer, QgsLi
                        QgsProcessingFeedback, QgsProperty, QgsSimpleLineSymbolLayer,
                        QgsSimpleMarkerSymbolLayer, QgsSingleSymbolRenderer, QgsSymbol,
                        QgsSVGFillSymbolLayer)
+from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
 
 from q2vt_fixtures import reset_project
@@ -28,7 +29,7 @@ OPACITY_KEY = getattr(QgsSymbol.Property, "Opacity", getattr(QgsSymbol.Property,
 def _square_marker(size=3.0):
     marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, size)
     marker.setColor(QColor("#d7191c"))
-    marker.setStrokeStyle(0)
+    marker.setStrokeStyle(Qt.PenStyle.NoPen)
     return QgsMarkerSymbol([marker])
 
 

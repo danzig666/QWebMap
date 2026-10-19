@@ -16,8 +16,17 @@ WMTS and other services keep being rendered.
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
-from ..utils.qt_compat import enum_int
 from . import xyz
+
+def enum_int(value):
+    """An enum's integer (PyQt5: an int already; PyQt6: a Python enum).
+    (Here, not utils.qt_compat: the unit tests import this module alone.)"""
+    value = getattr(value, "value", value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 
 # Formats a WMS GetFeatureInfo answer may be asked in, best first: features
 # as GeoJSON (GeoServer, QGIS Server, MapServer with OGR output), an HTML
