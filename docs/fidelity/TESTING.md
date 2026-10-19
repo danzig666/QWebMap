@@ -48,6 +48,13 @@ fails only that file. Nightly at 1:23 Budapest time (backup slot 2:47, used only
 branch's last successful run (on `hu-hesz` only its own files count). *Run workflow* in the
 Actions tab always runs everything. JUnit reports are attached to each run.
 
+The same nightly run also runs the whole suite under Qt6, in the official `qgis/qgis:4.2.3`
+image (`.github/workflows/qt6.yml`, called as the `qt6` job: unit + integration in one job,
+browser in another, after a probe of the PyQt6 enum behaviour, `tools/ci/qt6_probe.py`). That
+image has no git or pip: the workflow installs git before the checkout, and
+`tools/ci/prepare_qgis_container.sh` installs pytest 7.4.4 into a virtualenv that sees the
+system's QGIS. *Run workflow* on "Tests (Qt6, QGIS 4)" runs it alone.
+
 ### QGIS 3.44 / 4.x (required before advertising those versions)
 
 Use the official QGIS images, e.g.:
