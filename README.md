@@ -512,7 +512,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.50.1**. Newest first:
+This README describes QWebMap **4.50.2**. Newest first:
+
+**4.50.2** — angled labels no longer show level while panning
+- On a heavy map, labels placed at an angle (*Free* placement, e.g. parcel numbers in narrow parcels) showed level for a moment after panning, then turned; they appear at their angle at once.
 
 **4.50.1** — bug check: about 50 fixes
 - The Publish window opens on Python 3.10/3.11 (Linux QGIS builds); labels in fonts whose regular style is named "Normal" are drawn; copied layers (memory, edits, joins) keep the right popups; Shapefile encodings and project/layer variables are respected; an upload no longer saves its settings into another project; exports never remove the project's own hidden layers; the web map retries failed loads, places labels reliably after a jump, and many smaller viewer fixes.

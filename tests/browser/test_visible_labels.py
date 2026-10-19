@@ -1624,3 +1624,27 @@ def test_curved_line_label_piece_runs_left_to_right():
     box = [0.05, 0.01]
     points = _curved([(1, [[3000, 2048], [1000, 2100]])], [0, 0, 1, 1], box)[1]["coordinates"]
     assert points[0][0] < points[-1][0]
+
+
+
+def test_a_free_label_placed_in_advance_is_already_turned():
+    """A narrow upright strip just off the screen gets its label in advance;
+    kept as placed while it scrolls in and the tiles still load (a heavy
+    map), it showed level for a moment when that label had no angle."""
+    script = f"""
+import {{ labelPoints, newLabelState }} from {json.dumps('file://' + MODULE)};
+const maplibregl = {{ MercatorCoordinate: class {{
+  constructor(x, y) {{ this.x = x; this.y = y; }}
+  toLngLat() {{ return {{ lng: this.x, lat: this.y }}; }} }} }};
+const ring = [[2600, 600], [2680, 600], [2680, 3400], [2600, 3400]].map(([x, y]) => ({{ x, y }}));
+const feature = {{ _x: 0, _y: 0, _z: 0, properties: {{ q2vt_orig_id: 1 }},
+  _vectorTileFeature: {{ extent: 4096, loadGeometry: () => [ring] }} }};
+const out = labelPoints([feature], [0, 0, 0.6, 1], maplibregl, {{ state: newLabelState(),
+  reach: [-0.3, -0.3, 0.9, 1.3], anchor: "pole", orient: "free", rotationField: "rot",
+  labelBox: () => [0.03, 0.0045], precision: 0.0005 }});
+console.log(JSON.stringify(out.features.map((f) => [f.geometry.coordinates[0], f.properties.rot])));
+"""
+    run = subprocess.run(["node", "--input-type=module", "-e", script],
+                         capture_output=True, text=True, check=True)
+    ((x, rot),) = json.loads(run.stdout)  # x 0.635-0.654: off the view, inside its reach
+    assert x > 0.6 and rot is not None and abs(abs(rot) - 90) < 5
