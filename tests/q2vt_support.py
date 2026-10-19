@@ -83,3 +83,24 @@ def register_plugin_package():
             if name == prefix or name.startswith(prefix + "."):
                 sys.modules[alias + name[len(prefix):]] = mod
     return module
+
+
+def is_qt6() -> bool:
+    """Whether QGIS runs on Qt 6 (QGIS 4)."""
+    try:
+        from qgis.PyQt.QtCore import QT_VERSION_STR  # pylint: disable=import-outside-toplevel
+    except Exception:  # noqa: BLE001
+        return False
+    return QT_VERSION_STR.startswith("6")
+
+
+def exit_without_teardown(config):
+    """Under Qt 6, Python's teardown of the QGIS objects segfaults once all
+    tests have run (exit 139 although they passed): leave with pytest's
+    status instead, its reports already written (pytest_unconfigure)."""
+    status = getattr(config, "_q2vt_exitstatus", None)
+    if status is None or not is_qt6():
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(int(status))  # pylint: disable=protected-access

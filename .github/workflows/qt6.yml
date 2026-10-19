@@ -34,6 +34,7 @@ jobs:
           print(f"QGIS {Qgis.QGIS_VERSION}, Qt {QT_VERSION_STR}, PyQt {PYQT_VERSION_STR}")
           assert QT_VERSION_STR.startswith("6"), "not a Qt6 build"
           PY
+          python3 tools/ci/qt6_probe.py
       - name: Unit tests
         if: success() || failure()
         run: tools/ci/run_test_files.sh "Unit tests (Qt6)" $(ls tests/unit/test_*.py | sort)
