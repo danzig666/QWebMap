@@ -2001,3 +2001,33 @@ at 2 (`MAX_PIXEL_RATIO`); the shared label source and the id leak fix stay.
   text only, and links to the answer when CORS hides it; legend image from GetLegendGraphic.
 - **Zoom to layer** (`InteractionConfig.zoom_to_layer`, default off): layer entries get
   `bounds` (layer extent ∩ export extent); the layer list shows a `fitBounds` button.
+
+## 4.50.1 — bug check (six parallel audits, about 50 fixes)
+
+- **Compatibility**: `r2_guide` f-strings parse on Python < 3.12 (the Publish window failed to
+  open on 3.10/3.11); no `typing.TypeAlias` or `X | None` annotations.
+- **Converter**: glyph fontstacks match "Normal" ↔ "Regular" styles; data-defined
+  multi-line alignment mapped to `text-justify` (`match` on the downcased value).
+- **Export pipeline**: publishing keys of copied layers from the project layer's ids
+  (`key_in_copy`); folded data-defined values evaluated with project/layer scopes; provider
+  encoding kept (and in the cache key); every file of a dataset fingerprinted; order by geometry
+  expressions; interval markers without `fid`; layer variables via `with_variable`;
+  `DiagnosticCollector.truncate`; the Processing tool fails when nothing was exported.
+- **Publishing**: `index.html` uploaded after its bootstrap module; values-filter options as
+  JavaScript strings (`_js_string`); live layers: XYZ default max zoom 18, the probe rejects HTTP
+  errors and non-image WMS answers, `TRANSPARENT=TRUE` unless JPEG, live services in the review
+  and its fingerprint (only when present); search schema accepts packed shards; preview HEAD
+  errors without body; `frame-src 'self' blob:` with Street View (reader print).
+- **Publish window**: an upload outliving the window never saves into another project; local
+  export application-modal; `done()` on project change; bulk edits skip hidden rows; multi-layer
+  scale edits change only edited limits; the address follows the title only for new settings;
+  `_clear_project` keeps the project's own layers; filter aliases, collapsed groups, duplicate
+  layer names, Preview folder.
+- **Viewer**: failed manifest/shard/pack loads are retried; `visible_labels` re-places at the
+  first idle after a move (stale tile set at moveend; found by the nightly browser run) and its
+  outside-candidate centroid is vertex-relative; search Enter/stale list; permalink filters no
+  longer cut at 2000 characters; locked layers at least 10 % opaque; labels back on without a
+  Layers tab; links without `?embed`; live layers in the visible-only/printed legend; `step`
+  opacity scaling; measuring/profile races; print restores the 3D pitch; overview skips the
+  Street View coverage; `t()` keeps `$&` literal.
+
