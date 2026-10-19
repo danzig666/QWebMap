@@ -513,7 +513,12 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.50.3**. Newest first:
+This README describes QWebMap **4.51.0**. Newest first:
+
+**4.51.0** — new QGIS 4 symbology
+- Marker and hash lines: *trim distance* at start/end, *blank segments* and *extra items* (QGIS 4.0–4.2) are drawn as in QGIS.
+- Labels: *split label text lines over parts* gives each part of a feature its own line; curved labels with *characters at vertices* (exact) and *stretched character/word spacing* (word spacing approximate).
+- Selective masking through QGIS 4 *masking sets* masks like the masks' own lists.
 
 **4.50.3** — QGIS 4 (Qt6) support
 - Tested on QGIS 4.2 (Qt6): the whole test suite passes there, and the plugin is marked Qt6-ready, so QGIS 4 installs it. Hatches drawn with a marker line are exact on QGIS 4 too (they fell back to an approximation).
