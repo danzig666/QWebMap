@@ -82,11 +82,13 @@ def test_raster_layer_gets_its_own_image_archive_under_the_vectors(tmp_path):
     lid = layer_logical_id(ortho.id())
     raster = [s for s in manifest["sources"] if s.get("role") == "raster"]
     assert manifest["sources"][0]["tileType"] == "mvt" and len(raster) == 1
-    assert raster[0]["tileType"] == "webp" and raster[0]["href"] == f"data/raster-{lid}.pmtiles"
+    from publishing.raster_tiles import tile_format  # WebP, or PNG where this QGIS cannot write it
+    image = tile_format("webp")
+    assert raster[0]["tileType"] == image and raster[0]["href"] == f"data/raster-{lid}.pmtiles"
     summary = validate_pmtiles(os.path.join(rel, raster[0]["href"]), sample=0, kind="image")
-    assert summary["tileType"] == "webp" and summary["maxZoom"] == 15
+    assert summary["tileType"] == image and summary["maxZoom"] == 15
     with open_pmtiles(os.path.join(rel, raster[0]["href"])) as archive:
-        assert archive.metadata()["format"] == "webp"
+        assert archive.metadata()["format"] == image
     # The vector map is still MVT only and the raster sits under the parcels.
     validate_pmtiles(os.path.join(rel, "data", "map.pmtiles"), sample=0)
     ids = [layer["id"] for layer in style["layers"]]

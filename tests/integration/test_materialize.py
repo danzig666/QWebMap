@@ -1205,7 +1205,7 @@ def test_arrow_outline_is_a_line_on_the_arrow_rings(plugin, tmp_path):
 
     assert [r.get_attr("c") for r in rules] == [2, 1]  # the outline above the fill
     assert all(r.recipe.kind == "arrow_polygons" for r in rules)
-    assert rules[0].rule.symbol().symbolLayer(0).strokeStyle() == 0  # Qt.NoPen
+    assert rules[0].rule.symbol().symbolLayer(0).strokeStyle() == Qt.PenStyle.NoPen
     line = rules[1].rule.symbol()
     assert line.type() == Qgis.SymbolType.Line
     assert line.symbolLayer(0).layerType() == "SimpleLine"

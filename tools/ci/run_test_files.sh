@@ -37,7 +37,11 @@ for path in sorted(glob.glob(os.environ["REPORTS"] + "/*.xml")):
             node = case.find(kind)
             if node is not None:
                 first = (node.get("message") or node.text or "").strip().splitlines()
-                lines.append(f"{case.get('classname')}::{case.get('name')}: {first[0][:160] if first else kind}")
+                # Where it failed: the last "path:line: Error" of the traceback.
+                import re
+                where = re.findall(r"^([\w./-]+\.py):(\d+): \w+", node.text or "", re.M)
+                at = f" @ {where[-1][0].split('QWebMap/')[-1]}:{where[-1][1]}" if where else ""
+                lines.append(f"{case.get('classname')}::{case.get('name')}: {first[0][:160] if first else kind}{at}")
 print("\n".join(lines))
 PY
 )"

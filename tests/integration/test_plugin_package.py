@@ -107,8 +107,9 @@ SMOKE = textwrap.dedent("""
 
 def test_release_zip_installs_and_loads(tmp_path):
     archive = tmp_path / "plugin.zip"
-    subprocess.run([sys.executable, os.path.join(ROOT, "tools", "build_release.py"),
-                    "--out", str(archive)], check=True, capture_output=True)
+    run = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "build_release.py"),
+                          "--out", str(archive)], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr[-2000:]
     with zipfile.ZipFile(archive) as handle:
         names = handle.namelist()
         assert all(name.startswith(f"{FOLDER}/") for name in names)
