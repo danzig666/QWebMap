@@ -7,7 +7,7 @@ import json
 import os
 
 import pytest
-from qgis.core import (QgsCategorizedSymbolRenderer, QgsFeature, QgsField, QgsFillSymbol,
+from qgis.core import (QgsCategorizedSymbolRenderer, QgsFeature, QgsFeatureRequest, QgsField, QgsFillSymbol,
                        QgsGeometry, QgsPalLayerSettings, QgsProject, QgsRectangle,
                        QgsRendererCategory, QgsTextFormat, QgsVectorLayer,
                        QgsVectorLayerSimpleLabeling, Qgis)
@@ -201,6 +201,66 @@ def test_export_scoped_identity_without_key(project, tmp_path):
     keys.discard(None)
     assert keys == {f"e{feature.id()}" for feature in parcels.getFeatures() if feature["zone"]}
 
+
+
+def _tile_keys(result):
+    keys = set()
+    with open_pmtiles(os.path.join(result.release.release_dir, "data", "map.pmtiles")) as archive:
+        for _, data in archive.tiles():
+            for info in mvt.decode(data).values():
+                keys.update(f["properties"].get("q2vt_feature_key") for f in info["features"])
+    keys.discard(None)
+    return keys
+
+
+def test_export_scoped_keys_of_a_copied_layer_are_the_project_ids(project, tmp_path):
+    """A layer with unsaved edits is copied from the project; the copy numbered
+    its features anew, so the key 'e' || $id named other features than the
+    popups and search (computed on the project's layer)."""
+    project, parcels = project
+    parcels.startEditing()
+    first = min(f.id() for f in parcels.getFeatures())
+    assert parcels.deleteFeature(first)  # ids 2, 3, 4 left; the copy would say 1, 2, 3
+    try:
+        result = export_local(project, _profile(parcels, tmp_path, key_fields=[]), EXTENT)
+        expected = {f"e{feature.id()}" for feature in parcels.getFeatures() if feature["zone"]}
+        assert _tile_keys(result) == expected
+    finally:
+        parcels.rollBack()
+
+
+def test_the_data_source_encoding_set_in_qgis_is_kept(project, tmp_path):
+    """A Shapefile without .cpg read as windows-1250 in QGIS: the export
+    reopened it with the default encoding (garbled labels)."""
+    from qgis.core import (QgsCoordinateTransformContext,  # pylint: disable=import-outside-toplevel
+                           QgsVectorFileWriter)
+    project, parcels = project
+    project.layerTreeRoot().findLayer(parcels.id()).setItemVisibilityChecked(True)
+    names = {"00123/4": "Őszirózsa ő", "00123/5": "Szőlő ű", "12345678901234567890": "Tűzoltó"}
+    memory = parcels.materialize(QgsFeatureRequest())
+    memory.startEditing()
+    index = memory.fields().indexFromName("hrsz")
+    for feature in memory.getFeatures():
+        memory.changeAttributeValue(feature.id(), index, names.get(feature["hrsz"], feature["hrsz"]))
+    assert memory.commitChanges()
+    path = str(tmp_path / "zones.shp")
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName, options.fileEncoding = "ESRI Shapefile", "windows-1250"
+    error = QgsVectorFileWriter.writeAsVectorFormatV3(memory, path, QgsCoordinateTransformContext(), options)
+    assert error[0] == QgsVectorFileWriter.NoError, error
+    for side in ("zones.cpg", "zones.CPG"):
+        if os.path.exists(tmp_path / side):
+            os.remove(tmp_path / side)
+    shapes = QgsVectorLayer(path, "Zónák", "ogr")
+    shapes.setProviderEncoding("windows-1250")
+    assert {f["hrsz"] for f in shapes.getFeatures()} >= set(names.values())
+    shapes.setRenderer(parcels.renderer().clone())
+    shapes.setLabeling(parcels.labeling().clone())
+    shapes.setLabelsEnabled(True)
+    project.removeMapLayer(parcels.id())
+    project.addMapLayer(shapes)
+    profile = _profile(shapes, tmp_path)
+    assert _label_texts(export_local(project, profile, EXTENT)) == set(names.values())
 
 def test_unapproved_field_in_tiles_is_refused(project, tmp_path):
     """Legacy "All fields" without the explicit include_all_fields approval

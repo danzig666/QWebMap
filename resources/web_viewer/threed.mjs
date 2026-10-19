@@ -199,7 +199,7 @@ export class ThreeD {
       const fx = ((lng + 180) / 360) * n;
       const sin = Math.sin((lat * Math.PI) / 180);
       const fy = (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * n;
-      const tile = await decode(Math.floor(fx), Math.floor(fy));
+      const tile = await decode(Math.floor(fx), Math.floor(fy)).catch(() => null);  // a gap, not no profile
       if (!tile) { out.push(null); continue; }
       const px = Math.min(tile.size - 1, Math.floor((fx % 1) * tile.size));
       const py = Math.min(tile.size - 1, Math.floor((fy % 1) * tile.size));

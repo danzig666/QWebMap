@@ -22,7 +22,7 @@ const PATTERNS = { background: "background-pattern", fill: "fill-pattern", line:
 // not the runtime overlays (measuring, drawing, highlights, the visible-label
 // points: GeoJSON sources) nor the label helper's tile loaders.
 export function overviewLayer(map, layer) {
-  if (layer.type === "raster") return true;
+  if (layer.type === "raster") return layer.id !== "q2vt_streetview_coverage";  // (Google tiles, billed)
   if (PATTERNS[layer.type] && map.getPaintProperty(layer.id, PATTERNS[layer.type]) !== undefined) return false;
   if (layer.type === "background") return true;
   const source = layer.source && map.getSource(layer.source);

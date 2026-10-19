@@ -42,6 +42,17 @@ MAX_SAFE_INT = 2 ** 53 - 1
 FILTER_VALUES_LIMIT = 500
 
 
+
+def _js_string(value) -> str:
+    """A value as the web map writes it (JavaScript String(), MapLibre
+    to-string): the filter options must match the tiles' values. ``2.0`` is
+    "2", ``True`` is "true"."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer() and abs(value) < 1e21:
+        return str(int(value))
+    return str(value)
+
 def _enum(value) -> int:
     return int(getattr(value, "value", value))
 
@@ -563,7 +574,8 @@ def collect_records(project: QgsProject, profile: PublicationProfile, rules, ext
                         domain["min"] = raw if domain["min"] is None else min(domain["min"], raw)
                         domain["max"] = raw if domain["max"] is None else max(domain["max"], raw)
                     elif domain["kind"] == "values" and len(domain["values"]) <= FILTER_VALUES_LIMIT:
-                        domain["values"][str(raw)] = domain["values"].get(str(raw), 0) + 1
+                        text = _js_string(raw)
+                        domain["values"][text] = domain["values"].get(text, 0) + 1
                 anchor, bounds = _anchor_and_bounds(feature.geometry(), to_wgs)
                 record = {"layerId": lid, "featureKey": value, "fid": feature.id(),
                           "label": str(label), "terms": terms, "anchor": anchor, "bounds": bounds,

@@ -42,10 +42,8 @@ def searchable(combo: QComboBox) -> QComboBox:
     if combo.lineEdit() is not None:
         combo.lineEdit().setPlaceholderText(tr("Type to find a layer…"))
 
-    def chosen(text):
-        index = combo.findText(text, Qt.MatchFlag.MatchExactly)
-        if index >= 0:
-            combo.setCurrentIndex(index)
+    # A layer chosen in the list: the combo box selects that row itself (by
+    # index; by its text it would be the first of two layers of one name).
 
     def finished():
         text = combo.currentText()
@@ -58,6 +56,5 @@ def searchable(combo: QComboBox) -> QComboBox:
         else:  # no such layer: back to the chosen one
             combo.setEditText(combo.itemText(combo.currentIndex()))
 
-    completer.activated[str].connect(chosen)
     combo.lineEdit().editingFinished.connect(finished)
     return combo

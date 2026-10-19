@@ -44,6 +44,9 @@ MAX_AGE_DAYS = 30
 MAX_BYTES = 4 * 1024 ** 3
 FILE_PROVIDERS = {"ogr", "delimitedtext", "spatialite", "gpx"}
 _SIDE_CARS = (".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".sbn", ".sbx")
+# The other files of a dataset saved as several (an edit in QGIS may change
+# only one of them: a MapInfo .tab's records are in its .dat).
+_COMPANIONS = _SIDE_CARS[1:] + (".dat", ".map", ".id", ".ind", ".mid", ".csvt")
 
 
 @functools.lru_cache(maxsize=1)
@@ -93,10 +96,24 @@ def _source_files(provider: str, uri: str) -> Optional[List[str]]:
         return None
     files = [path]
     stem, ext = os.path.splitext(path)
-    if ext.lower() == ".shp":
-        files += [stem + side for side in _SIDE_CARS[1:] if os.path.exists(stem + side)]
-        files += [stem + side.upper() for side in _SIDE_CARS[1:] if os.path.exists(stem + side.upper())]
+    if ext.lower() not in (".gpkg", ".sqlite", ".db"):
+        files += [stem + side for side in _COMPANIONS if os.path.exists(stem + side)]
+        files += [stem + side.upper() for side in _COMPANIONS if os.path.exists(stem + side.upper())]
+    if ext.lower() == ".vrt":  # and the files it reads
+        files += _gdal_files(path)
     return sorted(set(files))
+
+
+def _gdal_files(path: str) -> List[str]:
+    """The files GDAL reads for ``path`` (a VRT's sources), existing ones."""
+    try:
+        from osgeo import gdal  # pylint: disable=import-outside-toplevel
+        dataset = gdal.OpenEx(path, gdal.OF_VECTOR)
+        names = (dataset.GetFileList() or []) if dataset is not None else []
+        dataset = None  # closed: an open handle keeps the file busy on Windows
+    except Exception:  # pylint: disable=broad-except
+        return []
+    return [os.path.abspath(n) for n in names if os.path.isfile(n)]
 
 
 def _connect_readonly(path: str):

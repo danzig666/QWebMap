@@ -512,7 +512,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.50.0**. Newest first:
+This README describes QWebMap **4.50.1**. Newest first:
+
+**4.50.1** — bug check: about 50 fixes
+- The Publish window opens on Python 3.10/3.11 (Linux QGIS builds); labels in fonts whose regular style is named "Normal" are drawn; copied layers (memory, edits, joins) keep the right popups; Shapefile encodings and project/layer variables are respected; an upload no longer saves its settings into another project; exports never remove the project's own hidden layers; the web map retries failed loads, places labels reliably after a jump, and many smaller viewer fixes.
 
 **4.50.0** — live WMS and web tile layers, zoom to layer
 - XYZ tile and WMS layers of the project are loaded live from their own server in the web map (https, no login, CORS allowed; otherwise rendered as before); a click on a WMS layer shows its GetFeatureInfo answer, and its legend comes from the server. Optional *Zoom-to-layer buttons* in the layer list (off by default).

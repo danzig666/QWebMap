@@ -326,7 +326,11 @@ def test_layer_drop_downs_find_layers_by_part_of_their_name(many_layers):
         found.append(completer.currentCompletion())
     assert sorted(found) == ["Main roads", "Side roads"]
     assert combo.currentLayer() is layers["Rivers"]  # typing alone does not change the layer
-    completer.activated[str].emit("Side roads")  # picked from the list
+    # Picked from the list: the combo box selects the row by index (the
+    # completer's index signal), right also when two layers share a name.
+    model = completer.completionModel()
+    row = next(r for r in range(model.rowCount()) if model.index(r, 0).data() == "Side roads")
+    completer.activated[type(model.index(row, 0))].emit(model.index(row, 0))
     assert combo.currentLayer() is layers["Side roads"]
     # Text that names no layer is undone; the chosen layer stays.
     combo.lineEdit().setText("no such layer")
@@ -385,3 +389,49 @@ def test_zoomed_out_load_zooms_can_be_edited_for_every_layer(many_layers):
     low, _high, labels_low = dialog._item_scales(items[rivers.id()])  # pylint: disable=protected-access
     assert (low, labels_low) == (zoom_load.scale_for_zoom(1.1e8, 14), zoom_load.scale_for_zoom(1.1e8, 15))
     window.close()
+
+
+def test_bulk_changes_skip_layers_the_filter_hides(setup):
+    """A selected group applies to the layers the find box shows, not to hidden ones."""
+    dialog, project, parcels, zones, ortho = setup
+    items, groups = _items(dialog), _groups(dialog)
+    dialog.tree.selectAll()
+    dialog.apply_to_selection(1, False)
+    dialog.tree_filter.setText("Övez")  # parcels hidden
+    assert items[parcels.id()].isHidden() and not items[zones.id()].isHidden()
+    dialog.tree.clearSelection()
+    groups[("Szabályozás",)].setSelected(True)
+    dialog.apply_to_selection(2, True)  # visible at start (publishes too)
+    assert items[zones.id()].checkState(1) == CHECKED
+    assert items[parcels.id()].checkState(1) == UNCHECKED  # hidden: unchanged
+    dialog.tree_filter.clear()
+
+
+def test_scales_of_several_layers_change_only_what_is_edited(setup, monkeypatch):
+    """Several rows: limits they do not share start empty, and a limit left
+    as it was keeps each row's own."""
+    dialog, project, parcels, zones, ortho = setup
+    items = _items(dialog)
+    dialog._set_item_scales(items[parcels.id()], 0, 0, 10000)  # pylint: disable=protected-access
+    dialog._set_item_scales(items[zones.id()], 0, 0, 0)  # pylint: disable=protected-access
+    from q2vt_plugin.src.gui import scale_range  # pylint: disable=import-error
+    shown = {}
+
+    class Chosen:  # the user sets only "Hide when zoomed out beyond"
+        def __init__(self, parent, low, high, count, own, canvas, labels_low):
+            shown.update(low=low, high=high, labels=labels_low, count=count)
+
+        def exec(self):
+            return True
+
+        def values(self):
+            return 50000.0, 0.0, 0.0
+
+    monkeypatch.setattr(scale_range, "ScaleRangeDialog", Chosen)
+    dialog.tree.clearSelection()
+    items[parcels.id()].setSelected(True)
+    items[zones.id()].setSelected(True)
+    assert dialog.edit_scales()
+    assert shown == {"low": 0.0, "high": 0.0, "labels": 0.0, "count": 2}  # labels limits differ
+    assert dialog._item_scales(items[parcels.id()]) == (50000.0, 0.0, 10000.0)  # pylint: disable=protected-access
+    assert dialog._item_scales(items[zones.id()]) == (50000.0, 0.0, 0.0)  # pylint: disable=protected-access

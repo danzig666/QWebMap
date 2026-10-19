@@ -405,11 +405,15 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   const onMove = throttled(MOVE_INTERVAL_MS);
   // Each polygon tile as it arrives (not only once the whole source loaded).
   const onSourceData = (e) => { if (e.sourceId === sourceId && (e.tile || e.isSourceLoaded)) onTile(); };
-  const onMoveEnd = () => { if (pending) { clearTimeout(pending); pending = null; } schedule(); };
+  // Once more at the first idle after a move: the update at moveend runs
+  // before the map switched to the new view's tiles (the old ones count as
+  // loaded), and a tile taken from MapLibre's cache sends no tile event.
+  let settling = false;
+  const onMoveEnd = () => { if (pending) { clearTimeout(pending); pending = null; } settling = true; schedule(); };
   map.on("move", onMove);
   map.on("moveend", onMoveEnd);
   map.on("sourcedata", onSourceData);
-  const onIdle = () => { if (dirty) schedule(); };
+  const onIdle = () => { if (dirty || settling) { settling = false; schedule(); } };
   map.on("idle", onIdle);
   update();
   return {
@@ -1139,14 +1143,16 @@ function segmentMeetsBox([ax, ay], [bx, by], [x0, y0, x1, y1]) {
 // Centroid of the rings' area (holes subtract), inside or not.
 function centroidOf(rings) {
   let area = 0, cx = 0, cy = 0;
+  // Relative to a vertex, like labelPoint (world-unit cross products cancel).
+  const [ox, oy] = (rings.find((ring) => ring.length) || [[0, 0]])[0];
   for (const ring of rings) {
     for (let i = 0, n = ring.length; i < n; i++) {
       const [x1, y1] = ring[i], [x2, y2] = ring[(i + 1) % n];
-      const cross = x1 * y2 - x2 * y1;
-      area += cross; cx += (x1 + x2) * cross; cy += (y1 + y2) * cross;
+      const cross = (x1 - ox) * (y2 - oy) - (x2 - ox) * (y1 - oy);
+      area += cross; cx += (x1 + x2 - 2 * ox) * cross; cy += (y1 + y2 - 2 * oy) * cross;
     }
   }
-  return Math.abs(area) < 1e-22 ? null : [cx / (3 * area), cy / (3 * area)];
+  return Math.abs(area) < 1e-22 ? null : [ox + cx / (3 * area), oy + cy / (3 * area)];
 }
 
 // The export's pole of inaccessibility (EPSG:3857 metres, ``q2vt_pole_*``)

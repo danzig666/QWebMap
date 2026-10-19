@@ -124,6 +124,7 @@ export class ParcelReport {
         this.catalog = await b.json();
         this.restrictions = new Map((this.catalog.restrictions || []).map((r) => [r.i, r]));
       });
+      this.ready.catch(() => { this.ready = null; });  // tried again at the next click
     }
     return this.ready;
   }
@@ -195,7 +196,11 @@ export class ParcelReport {
     const shard = this.index.shards.find((s) => s.key === shardKey);
     if (!shard) return null;
     const id = shardId(shard);
-    if (!this.shards.has(id)) this.shards.set(id, fetchShard(this.base, shard));
+    if (!this.shards.has(id)) {
+      const loading = fetchShard(this.base, shard);
+      this.shards.set(id, loading);
+      loading.catch(() => this.shards.delete(id));  // tried again next time
+    }
     return (await this.shards.get(id)).find((r) => r.k === String(key)) || null;
   }
 

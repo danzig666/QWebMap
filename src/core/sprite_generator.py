@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from json import dumps
 from os import makedirs
 from os.path import join
-from typing import Dict, List, Optional, TypeAlias, Union
+from typing import Dict, List, Optional, Union
 
 
 from PIL import Image
@@ -56,7 +56,7 @@ else:
     _ARGB = QImage.Format.Format_ARGB32_Premultiplied
     _ANTIALIAS = QPainter.RenderHint.Antialiasing
 
-Img: TypeAlias = Image.Image
+Img = Image.Image  # (typing.TypeAlias needs Python 3.10)
 
 _BASE_CANVAS_PX = 1000
 _MAX_CANVAS_PX = 4096

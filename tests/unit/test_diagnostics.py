@@ -15,6 +15,22 @@ def test_collector_dedupes_and_counts():
     assert c.counts() == {"info": 1, "warning": 1, "error": 0}
 
 
+
+def test_truncate_drops_a_redone_attempt():
+    """A rule group redone with files: its first attempt's diagnostics go
+    (the old code deleted them from a copy), only that group's in parallel."""
+    c = DiagnosticCollector()
+    c.add("Q2VT_SPRITE_TRANSPARENT", component="a")
+    before = len(c.items)
+    c.add("Q2VT_DDP_NO_EMITTER", "x", component="b")
+    c.add("Q2VT_DDP_NO_EMITTER", "y", component="a")
+    c.truncate(before, "a")
+    assert [(d.message, d.component) for d in c.items[before:]] == [("x", "b")]
+    c.truncate(before)
+    assert len(c.items) == before
+    c.add("Q2VT_DDP_NO_EMITTER", "y", component="a")  # may be added again
+    assert len(c.items) == before + 1
+
 def test_unknown_code_rejected():
     with pytest.raises(KeyError):
         DiagnosticCollector().add("NOPE")

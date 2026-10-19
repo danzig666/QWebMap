@@ -278,7 +278,9 @@ def _render_index(template_path: str, title: str, connect: Iterable[str] = (),
             return f"{directive} {sources} {GOOGLE_CSP[directive]}"
         text = re.sub(r"(script-src|img-src|connect-src|style-src|font-src|child-src) ([^;\"]*)",
                       widen, text, count=0)
-        text = text.replace("object-src 'none'", f"frame-src {GOOGLE_CSP['child-src']}; object-src 'none'")
+        # frame-src replaces child-src for frames: keep the reader's print frame (blob:).
+        text = text.replace("object-src 'none'",
+                            f"frame-src 'self' blob: {GOOGLE_CSP['child-src']}; object-src 'none'")
     if web_tiles or street_view:
         text = text.replace('<meta name="referrer" content="no-referrer">',
                             '<meta name="referrer" content="strict-origin-when-cross-origin">')

@@ -21,6 +21,7 @@ export class FeatureLookup {
         if (!r.ok) throw new Error(`features manifest: HTTP ${r.status}`);
         return r.json();
       });
+      this.index.catch(() => { this.index = null; });  // tried again next time
     }
     return this.index;
   }
@@ -33,7 +34,11 @@ export class FeatureLookup {
     const shard = index.shards.find((s) => s.key === shardKey);
     if (!shard) return null;
     const id = shardId(shard);
-    if (!this.shards.has(id)) this.shards.set(id, fetchShard(this.base, shard));
+    if (!this.shards.has(id)) {
+      const loading = fetchShard(this.base, shard);
+      this.shards.set(id, loading);
+      loading.catch(() => this.shards.delete(id));  // tried again next time
+    }
     const records = await this.shards.get(id);
     return records.find((r) => r.l === layerId && r.k === String(key)) || null;
   }

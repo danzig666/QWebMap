@@ -1593,10 +1593,8 @@ class TextPropertyExtractor:
         """Return ``text-justify`` mapped from the multi-line alignment setting.
 
         Honours a data-defined ``MultiLineAlignment`` override when active.
-        For field-based overrides the source attribute is expected to
-        contain the literal MapLibre keyword (``"left"``, ``"center"``,
-        ``"right"`` or ``"auto"``); QGIS-specific integer/string codes are
-        not translated server-side.
+        Data-defined values are QGIS's names (``Left``, ``Center``,
+        ``Right``, ``Follow``, ``Justify``, any case), mapped to MapLibre's.
         """
         try:
             # An unreadable (unset) alignment is drawn left aligned by QGIS:
@@ -1614,9 +1612,17 @@ class TextPropertyExtractor:
             justify_prop = label_settings.dataDefinedProperties().property(
                 QgsPalLayerSettings.Property.MultiLineAlignment
             )
-            return PropertyExtractor.get_value_or_expression(base_justify, justify_prop)
+            value = PropertyExtractor.get_value_or_expression(base_justify, justify_prop)
         except (AttributeError, RuntimeError):
             return base_justify
+        names = {"left": "left", "center": "center", "centre": "center", "right": "right",
+                 "follow": "auto", "auto": "auto", "justify": "left"}
+        if isinstance(value, str):
+            return names.get(value.strip().lower(), base_justify)
+        if isinstance(value, list):
+            pairs = [item for name, out in names.items() for item in (name, out)]
+            return ["match", ["downcase", ["to-string", value]], *pairs, base_justify]
+        return base_justify
 
     @staticmethod
     def get_text_offset(label_settings: QgsPalLayerSettings,

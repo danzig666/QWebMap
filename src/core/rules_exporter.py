@@ -74,6 +74,7 @@ QgsTask. This is intentional:
    * No QCoreApplication.processEvents() polling loop.
 """
 
+import functools
 import json
 import math
 import dataclasses
@@ -102,8 +103,10 @@ from qgis.core import (
     QgsProcessingContext,
     QgsProcessingFeedback,
     QgsProcessingException,
+    QgsFeature,
     QgsFeatureRequest,
     QgsField,
+    QgsFields,
     QgsGeometry,
     QgsMemoryProviderUtils,
     QgsPalLayerSettings,
@@ -129,7 +132,7 @@ from . import marker_points
 from .fidelity.diagnostics import DiagnosticCollector, Severity
 from .fidelity import feature_order as fo
 from .fidelity.qgis_expr import (bind_geometry, enclosed, in_layer_crs,
-                                 uses_map_scale, with_map_scale)
+                                 uses_map_scale, with_map_scale, with_variable)
 from .fidelity import zoom as fidelity_zoom
 from .fidelity import map_view
 from .fidelity import html_labels
@@ -300,6 +303,12 @@ class _SourceSnapshot:
     # The layer's own URI for cache keys when source_uri is a per-export copy
     # (a memory layer's features); "" = source_uri.
     key_uri: str = ""
+    # The copy already holds FEATURE_KEY_FIELD, computed on the project's
+    # layer (the copy numbers its features anew: $id differs).
+    key_in_copy: bool = False
+    # The data source encoding set in QGIS (a Shapefile without .cpg): not
+    # part of the URI, a reopened layer would read the default.
+    encoding: str = ""
 
     @property
     def needs_serial_read(self) -> bool:
@@ -677,7 +686,7 @@ class RulesExporter:
                 # _snapshot_reason): its features are copied here, on the
                 # caller thread, as QGIS has them.
                 key_uri = f"{reason}:{self._stable_source(source_uri)}"
-                source_uri, fingerprint = self._memory_snapshot(r.layer)
+                source_uri, fingerprint = self._memory_snapshot(r.layer, self.feature_keys.get(lid, ""))
                 provider = "ogr"
             sources[lid] = _SourceSnapshot(
                 layer_id=lid,
@@ -689,6 +698,8 @@ class RulesExporter:
                 feature_key=self.feature_keys.get(lid, ""),
                 data_fingerprint=fingerprint if self.cache else None,
                 key_uri=key_uri,
+                key_in_copy=bool(reason and self.feature_keys.get(lid)),
+                encoding=self._encoding(r.layer) if provider == "ogr" and not reason else "",
             )
 
         # Snapshot rule groups.
@@ -751,6 +762,14 @@ class RulesExporter:
             self._report_view_variables(primary, [
                 primary.rule.filterExpression(), geom_expr, primary.pre_generator,
                 *(expr for _, expr, _ in expr_fields)])
+            # The layer's variables (@layer_name, its own ones): Processing
+            # would give the temporary input layer's.
+            bind = functools.partial(self._with_layer_variables, layer=primary.layer)
+            filter_expression, geom_expr, pre_generator = (
+                bind(filter_expression), bind(geom_expr), bind(pre_generator))
+            expr_fields, part_fields, generated_fields = (
+                [(ftype, bind(expr), name) for ftype, expr, name in fields]
+                for fields in (expr_fields, part_fields, generated_fields))
 
             rule_groups.append(_RuleGroupSnapshot(
                 output_dataset=primary.output_dataset,
@@ -842,18 +861,44 @@ class RulesExporter:
         return ""
 
     @staticmethod
+    def _with_layer_variables(expression, layer):
+        """``expression`` with the layer-scope variables it reads bound to the
+        project layer's values (literals: also part of the cache key)."""
+        if not expression or not isinstance(expression, str) or "@" not in expression and "var(" not in expression:
+            return expression
+        parsed = QgsExpression(expression)
+        if parsed.hasParserError():
+            return expression
+        scope = QgsExpressionContextUtils.layerScope(layer)
+        for name in sorted(set(parsed.referencedVariables()) & set(scope.variableNames())):
+            value = scope.variable(name)
+            if value is not None and not isinstance(value, (str, int, float, bool)):
+                continue  # (@layer: the layer object)
+            literal = "NULL" if value is None else QgsExpression.quotedValue(value)
+            expression = with_variable(name, literal, expression)
+        return expression
+
+    @staticmethod
+    def _encoding(layer) -> str:
+        try:
+            return layer.dataProvider().encoding() or ""
+        except (AttributeError, RuntimeError):
+            return ""
+
+    @staticmethod
     def _stable_source(uri: str) -> str:
         """The layer source without what changes on every project load: QGIS
         gives a memory layer a new random ``uid={...}`` each time (the
         content digest tells whether its features changed)."""
         return re.sub(r"[&?]uid=\{[^}]*\}", "", uri)
 
-    def _memory_snapshot(self, layer) -> Tuple[str, Optional[str]]:
+    def _memory_snapshot(self, layer, feature_key: str = "") -> Tuple[str, Optional[str]]:
         """Caller thread: the layer's features as the project has them
-        (feature ids kept; joined and virtual fields, unsaved edits) in a
-        GeoPackage, and a fingerprint of its content for the export cache."""
+        (joined and virtual fields, unsaved edits) in a GeoPackage, and a
+        fingerprint of its content for the export cache. The copy numbers
+        its features anew, so the publishing key (``feature_key``, may read
+        ``$id``) is computed here, on the project's layer."""
         import hashlib  # pylint: disable=import-outside-toplevel
-        from qgis.core import QgsVectorFileWriter  # pylint: disable=import-outside-toplevel
         path = join(self.utils_dir, f"memory_{layer.id()}.gpkg")
         if exists(path):
             os.remove(path)
@@ -861,18 +906,41 @@ class RulesExporter:
         options.driverName, options.layerName = "GPKG", "memory"
         # A GeoPackage source's own "fid" column would be written as the
         # copy's key: an unsaved feature's provisional value collides.
-        options.attributes = [i for i, field in enumerate(layer.fields())
-                              if field.name().lower() not in ("fid", "ogc_fid")]
-        error = QgsVectorFileWriter.writeAsVectorFormatV3(
-            layer, path, QgsProject.instance().transformContext(), options)
-        if error[0] != QgsVectorFileWriter.NoError:
-            self.feedback.reportError(f"Cannot copy temporary layer '{layer.name()}': {error[1]}")
+        keep = [i for i, field in enumerate(layer.fields())
+                if field.name().lower() not in ("fid", "ogc_fid")]
+        fields = QgsFields()
+        for i in keep:
+            fields.append(layer.fields().at(i))
+        key = context = None
+        if feature_key:
+            fields.append(QgsField(FEATURE_KEY_FIELD, QVariant.String))
+            context = QgsExpressionContext(QgsExpressionContextUtils.globalProjectLayerScopes(layer))
+            key = QgsExpression(feature_key)
+            key.prepare(context)
+        writer = QgsVectorFileWriter.create(path, fields, layer.wkbType(), layer.crs(),
+                                            QgsProject.instance().transformContext(), options)
+        if writer.hasError() != QgsVectorFileWriter.NoError:
+            self.feedback.reportError(f"Cannot copy temporary layer '{layer.name()}': "
+                                      f"{writer.errorMessage()}")
         digest = hashlib.sha256(self._stable_source(layer.source()).encode("utf-8"))
         digest.update(repr(layer.fields().names()).encode("utf-8"))
+        digest.update(feature_key.encode("utf-8"))
         for feature in layer.getFeatures():
             digest.update(str(feature.id()).encode())
             digest.update(bytes(feature.geometry().asWkb()))
             digest.update(repr(feature.attributes()).encode("utf-8"))
+            values = [feature.attribute(i) for i in keep]
+            if key is not None:
+                context.setFeature(feature)
+                value = key.evaluate(context)
+                # As publishing.qgis_model.collect_records computes it.
+                values.append(None if value is None or (hasattr(value, "isNull") and value.isNull())
+                              else str(value))
+            out = QgsFeature(fields)
+            out.setGeometry(feature.geometry())
+            out.setAttributes(values)
+            writer.addFeature(out)
+        del writer  # (written and closed)
         return f"{path}|layername=memory", digest.hexdigest()
 
     @staticmethod
@@ -889,7 +957,8 @@ class RulesExporter:
         clauses = [QgsFeatureRequest.OrderByClause(expr, asc, nulls)
                    for expr, asc, nulls in order_by]
         request = QgsFeatureRequest().setOrderBy(QgsFeatureRequest.OrderBy(clauses))
-        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        if not any(QgsExpression(expr).needsGeometry() for expr, _, _ in order_by):
+            request.setFlags(QgsFeatureRequest.Flag.NoGeometry)  # ($area etc. need it)
         ranks = [feature.id() for feature in layer.getFeatures(request)]
         provider = layer.dataProvider()
         provider.addAttributes([QgsField(ORDER_FIELD, QVariant.Int)])
@@ -933,6 +1002,8 @@ class RulesExporter:
             # here we deliberately don't reuse it. The newly constructed
             # layer is owned by this thread.
             layer = QgsVectorLayer(src.source_uri, src.name, src.provider)
+            if layer.isValid() and src.encoding and layer.dataProvider().encoding() != src.encoding:
+                layer.setProviderEncoding(src.encoding)  # e.g. windows-1250 set in QGIS
             if layer.isValid() and src.crs_wkt:
                 # Épületek (a shapefile without .prj, EPSG:23700 set in the
                 # project) reopened without a CRS: the extent filter then
@@ -953,7 +1024,7 @@ class RulesExporter:
             # feature key, computed on the source (provider FIDs and
             # attributes as the project has them).
             source = layer
-            if src.feature_key:
+            if src.feature_key and not src.key_in_copy:
                 source = self._run_alg_safe(
                     "fieldcalculator", "native", INPUT=layer, FIELD_NAME=FEATURE_KEY_FIELD,
                     FIELD_TYPE=2, FIELD_LENGTH=0, FORMULA=src.feature_key)
@@ -1568,7 +1639,7 @@ class RulesExporter:
             except Exception as error:  # noqa: BLE001 - redone as before, with files
                 crash_log.note(f"Rule group {grp.output_dataset}: memory chain failed ({error}); "
                                "redone with files")
-                del self.diagnostics.items[before:]
+                self.diagnostics.truncate(before, grp.output_dataset if self.parallel else None)
                 output_path = join(self.utils_dir, f"{grp.output_dataset}.{_TEMP_RULE_FORMAT}")
                 if exists(output_path):
                     os.remove(output_path)
@@ -3712,11 +3783,26 @@ class RulesExporter:
             path = self._temp_path("temp")
             options = QgsVectorFileWriter.SaveVectorOptions()
             options.driverName = "GPKG"
-            writer = QgsVectorFileWriter.create(path, fields, QgsWkbTypes.Point, source.crs(),
+            # The lines' own "fid" (a GeoPackage input) would become every
+            # marker's key: all but a line's first marker failed (UNIQUE).
+            keep = [i for i, field in enumerate(fields) if field.name().lower() not in ("fid", "ogc_fid")]
+            written = QgsFields()
+            for i in keep:
+                written.append(fields.at(i))
+            writer = QgsVectorFileWriter.create(path, written, QgsWkbTypes.Point, source.crs(),
                                                 self._transform_context, options)
             for batch in batches:
                 self._check_cancel()
-                writer.addFeatures(batch)
+                if len(keep) != fields.count():
+                    copies = []
+                    for feature in batch:
+                        point = QgsFeature(written)
+                        point.setGeometry(feature.geometry())
+                        point.setAttributes([feature.attribute(i) for i in keep])
+                        copies.append(point)
+                    batch = copies
+                if not writer.addFeatures(batch):
+                    raise RuntimeError(f"interval markers: {writer.errorMessage()}")
             del writer
             self.step_stats["file"] += 1
             return path
@@ -3839,7 +3925,7 @@ class RulesExporter:
             suffix = flat_rule.get_attr("s") if rule_type == 0 else flat_rule.get_attr("f")
             min_scale = fidelity_zoom.zoom_to_scale(flat_rule.evaluation_zoom())
             rule_fields = DataDefinedPropertiesFetcher(
-                flat_rule.rule, min_scale, suffix, diagnostics=self.diagnostics
+                flat_rule.rule, min_scale, suffix, diagnostics=self.diagnostics, layer=flat_rule.layer
             ).fetch()
             if rule_fields:
                 # Normalise to tuples of primitives so the snapshot is

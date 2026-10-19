@@ -162,7 +162,8 @@ def upload_stable_entry(provider, publication_dir: str) -> bool:
     directory index (object storage). Returns whether those exist."""
     from .bundle import sha256_path  # pylint: disable=import-outside-toplevel
     aliases = False
-    for name in stable_files(publication_dir):
+    # The page last: it must never point at a bootstrap module not uploaded yet.
+    for name in sorted(stable_files(publication_dir), key=lambda n: n == "index.html"):
         if name == "current.json":
             continue
         path = os.path.join(publication_dir, name)

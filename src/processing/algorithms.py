@@ -366,5 +366,9 @@ class QGIS2VectorTilesAlgorithm(QgsProcessingAlgorithm):
             # end as a success without outputs.
             raise QgsProcessingException(f"Error during Vector tiles package generation: {e}") from e
 
-        # Return empty results dictionary (modify as needed for your use case)
+        if feedback is None or not feedback.isCanceled():
+            # Nothing exported (an error reported above, no visible layer):
+            # a model or batch run must not see a success.
+            raise QgsProcessingException("Vector tiles package generation failed: nothing was "
+                                         "exported (see the log above).")
         return {}

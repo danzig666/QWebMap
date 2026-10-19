@@ -17,7 +17,9 @@ async function packBytes(url, shard) {
     const response = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } });
     if (response.status === 206) return new Uint8Array(await response.arrayBuffer());
     if (!response.ok) throw new Error(`${shard.path}: HTTP ${response.status}`);
-    wholePacks.set(url.href, response.arrayBuffer().then((buffer) => new Uint8Array(buffer)));
+    const loading = response.arrayBuffer().then((buffer) => new Uint8Array(buffer));
+    wholePacks.set(url.href, loading);
+    loading.catch(() => wholePacks.delete(url.href));  // tried again next time
   }
   return (await wholePacks.get(url.href)).subarray(start, end + 1);
 }

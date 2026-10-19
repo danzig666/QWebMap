@@ -76,6 +76,9 @@ def test_pmtiles_only_keeps_no_mbtiles_and_adds_no_layer(plugin, tmp_path):
     assert len(project.mapLayers()) == count
 
 
+_PROVIDERS = []
+
+
 def test_processing_algorithm_returns_archive_outputs(plugin, tmp_path, monkeypatch):
     from qgis.core import QgsProcessingFeedback  # pylint: disable=import-outside-toplevel
     from q2vt_plugin.src.core.server_initializer import ServerInitializer  # noqa  pylint: disable=import-error
@@ -84,10 +87,14 @@ def test_processing_algorithm_returns_archive_outputs(plugin, tmp_path, monkeypa
     _layers(tmp_path)
     provider_id = "QGIS2VectorTilesFork"
     registry = QgsApplication.processingRegistry()
-    if registry.providerById(provider_id) is None:
-        from q2vt_plugin.src.processing.provider import QGIS2VectorTilesPorvider  # noqa  pylint: disable=import-error
-        registry.addProvider(QGIS2VectorTilesPorvider())
     alg = registry.algorithmById(f"{provider_id}:QGIS2VectorTiles_action")
+    if alg is None:
+        from q2vt_plugin.src.processing.provider import QGIS2VectorTilesPorvider  # noqa  pylint: disable=import-error
+        # Kept referenced: a garbage-collected Python provider stays registered
+        # as an empty one (id "", no algorithms).
+        _PROVIDERS.append(QGIS2VectorTilesPorvider())
+        registry.addProvider(_PROVIDERS[-1])
+        alg = registry.algorithmById(f"{provider_id}:QGIS2VectorTiles_action")
     out = tmp_path / "proc"
     params = {"MIN_ZOOM": 10, "MAX_ZOOM": 11, "EXTENT": "2119000,2123000,6019000,6023000 [EPSG:3857]",
               "CPU_PERCENT": 50, "FIELDS_INCLUDED": 0, "BACKGROUND_TYPE": 2, "VIEWER": 0,

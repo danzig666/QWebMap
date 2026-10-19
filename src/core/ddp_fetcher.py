@@ -152,8 +152,10 @@ class DataDefinedPropertiesFetcher:
 
     FIELD_PREFIX = "q2vt"
 
-    def __init__(self, qgis_object, min_scale, suffix=0, diagnostics=None, context=None):
+    def __init__(self, qgis_object, min_scale, suffix=0, diagnostics=None, context=None, layer=None):
         self._root = qgis_object
+        # Project and layer variables (@line_w * 2) for values folded here.
+        self._layer = layer
         self._min_scale = float(min_scale)
         self._suffix = f"_{suffix:02d}"
         self._results: list = []
@@ -316,7 +318,7 @@ class DataDefinedPropertiesFetcher:
             # property and create no field. The legacy code tested
             # truthiness, so 0/False/'' became per-feature fields, and stored
             # the value as a quoted string (turning 3 into '3').
-            value = QgsExpression(raw).evaluate(map_view.context())
+            value = QgsExpression(raw).evaluate(self._fold_context())
             props_collection.setProperty(key, QgsProperty.fromValue(value))
             return None
 
@@ -347,6 +349,15 @@ class DataDefinedPropertiesFetcher:
         # constants here.
         "canvas_cursor_point", "symbol_color", "symbol_angle",
     })
+
+    def _fold_context(self):
+        """The context a feature-independent value is evaluated in: the
+        global, project and layer variables, then the web map's view."""
+        from qgis.core import QgsExpressionContextUtils, QgsProject  # pylint: disable=import-outside-toplevel
+        scopes = [QgsExpressionContextUtils.projectScope(QgsProject.instance())]
+        if self._layer is not None:
+            scopes.append(QgsExpressionContextUtils.layerScope(self._layer))
+        return map_view.context(*scopes)
 
     @classmethod
     def _is_static(cls, expression: str) -> bool:

@@ -80,7 +80,8 @@ export function decodeState(manifest, hash) {
   }
   if (params.get("f")) {
     try {
-      const filters = JSON.parse(unb64url(params.get("f")).slice(0, 2000));
+      const json = unb64url(params.get("f"));  // (the hash is at most MAX_HASH long)
+      const filters = JSON.parse(json);
       if (filters && typeof filters === "object") out.filters = filters;
     } catch { /* ignored */ }
   }
@@ -123,6 +124,7 @@ export class Permalink {
   links(extra = {}) {
     const hash = `#${this.hash(extra)}`;
     const here = new URL(location.href);
+    here.searchParams.delete("embed");  // a shared link opens the full map, not the embedded one
     // The release's own page (the address bar may show the stable entry).
     const versioned = new URL((window.q2vtViewer && window.q2vtViewer.releaseUrl) || here.href);
     versioned.search = here.search;
