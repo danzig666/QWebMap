@@ -38,3 +38,124 @@ def symbol_key(key):
     """A data-defined property key of a symbol (QgsSymbol.Property)."""
     from qgis.core import QgsSymbol  # pylint: disable=import-outside-toplevel
     return as_enum(QgsSymbol.Property, key)
+
+
+# Multi-part label behaviour (label_multipart_mode).
+MULTIPART_LARGEST = "largest"
+MULTIPART_EVERY = "every"
+MULTIPART_SPLIT = "split"
+
+# Curved label modes (curved_label_mode).
+CURVED_DEFAULT = "default"
+CURVED_AT_VERTICES = "vertices"
+CURVED_STRETCH_CHARS = "stretch_chars"
+CURVED_STRETCH_WORDS = "stretch_words"
+
+
+def _label_property(settings, name):
+    """(active, static value) of the data-defined label property ``name``;
+    the value is None unless the property is a static value."""
+    from qgis.core import QgsPalLayerSettings, QgsProperty  # pylint: disable=import-outside-toplevel
+    key = getattr(QgsPalLayerSettings.Property, name, None)
+    if key is None:
+        return False, None
+    prop = settings.dataDefinedProperties().property(key)
+    if prop is None or not prop.isActive():
+        return False, None
+    if enum_int(prop.propertyType()) != enum_int(QgsProperty.StaticProperty):
+        return True, None
+    return True, prop.staticValue()
+
+
+def label_mode_data_defined(settings, name: str) -> bool:
+    """True when the data-defined label property ``name`` (LabelAllParts,
+    CurvedLabelMode, WhitespaceCollisionHandling) reads a field or an
+    expression: the mode then changes per feature, the export keeps one."""
+    if settings is None:
+        return False
+    active, value = _label_property(settings, name)
+    return active and value is None
+
+
+def label_multipart_mode(settings) -> str:
+    """How a label treats a multi-part feature: MULTIPART_LARGEST (the
+    largest part only), MULTIPART_EVERY (the whole label on every part) or
+    MULTIPART_SPLIT (the text's lines shared out over the parts, one line
+    per part).
+
+    QGIS 4 replaced ``labelPerPart`` by
+    ``QgsLabelPlacementSettings::multiPartBehavior()``
+    (Qgis::MultiPartLabelingBehavior); ``labelPerPart`` stays for Python as
+    a lossy shim that reads SplitLabelTextLinesOverParts as False. A static
+    data-defined "LabelAllParts" overrides it as
+    QgsLabelPlacementSettings::updateDataDefinedProperties reads it: a
+    behaviour name (QGIS 4), else a boolean."""
+    if settings is None:
+        return MULTIPART_LARGEST
+    placement = settings.placementSettings() if hasattr(settings, "placementSettings") else None
+    behaviour = None
+    if placement is not None and hasattr(placement, "multiPartBehavior"):
+        behaviour = enum_int(placement.multiPartBehavior())
+    if behaviour is None:
+        mode = MULTIPART_EVERY if settings.labelPerPart else MULTIPART_LARGEST
+    else:
+        mode = {1: MULTIPART_EVERY, 2: MULTIPART_SPLIT}.get(behaviour, MULTIPART_LARGEST)
+    _, value = _label_property(settings, "LabelAllParts")
+    if value is None:
+        return mode
+    text = str(value).strip().lower()
+    if behaviour is not None:  # QGIS 4: a behaviour name first
+        named = {"largestpartonly": MULTIPART_LARGEST, "labeleverypart": MULTIPART_EVERY,
+                 "splitlabeltextlinesoverparts": MULTIPART_SPLIT}.get(text)
+        if named:
+            return named
+    if isinstance(value, bool):
+        return MULTIPART_EVERY if value else MULTIPART_LARGEST
+    if text in ("true", "yes", "y", "t"):
+        return MULTIPART_EVERY
+    if text in ("false", "no", "n", "f"):
+        return MULTIPART_LARGEST
+    try:  # QVariant::toBool: a non-zero number is true
+        return MULTIPART_EVERY if float(text) != 0 else MULTIPART_LARGEST
+    except ValueError:
+        return mode
+
+
+def curved_label_mode(settings) -> str:
+    """The curved label mode of a Curved / PerimeterCurved label (QGIS 4,
+    ``QgsLabelLineSettings::curvedLabelMode()``, Qgis::CurvedLabelMode):
+    CURVED_DEFAULT, CURVED_AT_VERTICES (one character at each vertex),
+    CURVED_STRETCH_CHARS or CURVED_STRETCH_WORDS (the character or word
+    spacing stretched so the text fills the line). A static data-defined
+    "CurvedLabelMode" overrides it (QgsLabelLineSettings::
+    updateDataDefinedProperties). Other placements and QGIS 3: CURVED_DEFAULT."""
+    if settings is None or enum_int(settings.placement) not in (3, 7):  # Curved, PerimeterCurved
+        return CURVED_DEFAULT
+    line_settings = settings.lineSettings()
+    if not hasattr(line_settings, "curvedLabelMode"):
+        return CURVED_DEFAULT
+    mode = {1: CURVED_AT_VERTICES, 2: CURVED_STRETCH_CHARS, 3: CURVED_STRETCH_WORDS}.get(
+        enum_int(line_settings.curvedLabelMode()), CURVED_DEFAULT)
+    _, value = _label_property(settings, "CurvedLabelMode")
+    if value is not None:
+        mode = {"default": CURVED_DEFAULT, "charactersatvertices": CURVED_AT_VERTICES,
+                "stretchcharacterspacingtofit": CURVED_STRETCH_CHARS,
+                "stretchwordspacingtofit": CURVED_STRETCH_WORDS}.get(str(value).strip().lower(), mode)
+    return mode
+
+
+def ignores_whitespace_collisions(settings) -> bool:
+    """QGIS 4 "Ignore whitespace collisions"
+    (``QgsLabelPlacementSettings::whitespaceCollisionHandling()``): the
+    blanks of a curved label do not collide with other labels."""
+    if settings is None or not hasattr(settings, "placementSettings"):
+        return False
+    placement = settings.placementSettings()
+    if not hasattr(placement, "whitespaceCollisionHandling"):
+        return False
+    ignored = enum_int(placement.whitespaceCollisionHandling()) == 1
+    _, value = _label_property(settings, "WhitespaceCollisionHandling")
+    if value is not None:
+        ignored = {"treatwhitespaceascollision": False, "ignorewhitespacecollisions": True}.get(
+            str(value).strip().lower(), ignored)
+    return ignored

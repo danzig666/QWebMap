@@ -847,6 +847,8 @@ class QGIS2VectorTiles:
                       for rule in rules or [] if getattr(rule, "z_order", None)},
             feature_filters={rule.rule.description(): rule.feature_filter
                              for rule in rules or [] if getattr(rule, "feature_filter", None)},
+            label_modes={rule.rule.description(): rule.label_modes for rule in rules or []
+                         if getattr(rule, "label_modes", None)},
             label_windows={rule.rule.description() for rule in rules or []
                            if rule.recipe is not None and rule.recipe.kind == "label_windows"},
             disjoint_bands={rule.rule.description() for rule in rules or []

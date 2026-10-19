@@ -434,6 +434,42 @@ def test_line_labels_take_the_side_qgis_takes(tmp_path, placement, flags, repeat
         assert abs(qgis - browser) <= 4, (qgis, browser)
 
 
+@pytest.mark.skipif(not hasattr(QgsMarkerLineSymbolLayer, "setTrimDistanceStart"),
+                    reason="marker-line trims and extra items need QGIS 4.2")
+@pytest.mark.parametrize("zoom", [16.5, 17.25])
+def test_trimmed_and_blanked_marker_lines_with_extra_items(tmp_path, zoom):
+    """QGIS 4 marker lines: a millimetre trim at the start, a map-unit trim
+    at the end, blank segments and extra items drawn where QGIS draws them.
+    (The line stays inside the view: QGIS trims a line clipped to it.)"""
+    from qgis.core import QgsProperty, QgsSymbolLayer
+    cx, cy = CENTER
+    memory = QgsVectorLayer("LineString?crs=EPSG:3857", "lines", "memory")
+    feature = QgsFeature()
+    feature.setGeometry(QgsGeometry.fromWkt(
+        f"LINESTRING({cx - 80} {cy - 50}, {cx - 20} {cy - 50}, {cx - 20} {cy + 40}, "
+        f"{cx + 75} {cy + 70})"))
+    memory.dataProvider().addFeature(feature)
+    layer = to_geopackage(memory, str(tmp_path / "lines.gpkg"))
+    marker = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.ArrowHeadFilled, 3)
+    marker.setColor(QColor("black"))
+    marker.setStrokeColor(QColor("black"))
+    markers = QgsMarkerLineSymbolLayer(True, 10)
+    markers.setIntervalUnit(Qgis.RenderUnit.MapUnits)
+    markers.setPlacements(Qgis.MarkerLinePlacement.Interval | Qgis.MarkerLinePlacement.FirstVertex)
+    markers.setAverageAngleLength(0)
+    markers.setSubSymbol(QgsMarkerSymbol([marker]))
+    markers.setTrimDistanceStart(8)
+    markers.setTrimDistanceStartUnit(Qgis.RenderUnit.Millimeters)
+    markers.setTrimDistanceEnd(20)
+    markers.setTrimDistanceEndUnit(Qgis.RenderUnit.MapUnits)
+    markers.setDataDefinedProperty(QgsSymbolLayer.Property.BlankSegments,
+                                   QgsProperty.fromValue("(((30 60, 120 150)))"))
+    markers.setDataDefinedProperty(QgsSymbolLayer.Property.ExtraItems, QgsProperty.fromValue(
+        f"{cx + 60} {cy - 60} 45, {cx - 70} {cy + 60} 200"))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([markers])))
+    assert _compare(tmp_path, layer, zoom=zoom) > 0.9
+
+
 def test_overlapping_markers_stack_in_feature_order(tmp_path):
     """Two markers of one rule that overlap: QGIS draws the later feature on
     top. MapLibre stacked them by their height on the screen (the lower one

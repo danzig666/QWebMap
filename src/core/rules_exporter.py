@@ -124,7 +124,9 @@ from qgis.core import (
 from ..utils import crash_log, main_thread
 from ..utils.config import _DATA_SIMPLIFICATION_TOLERANCE, _EPSG_CRS, _FIELD_PREFIX
 from ..utils.flattened_rule import FlattenedRule
-from ..utils.qt_compat import enum_int
+from ..utils.qt_compat import (CURVED_AT_VERTICES, MULTIPART_EVERY, MULTIPART_LARGEST, MULTIPART_SPLIT,
+                               curved_label_mode, enum_int, ignores_whitespace_collisions,
+                               label_mode_data_defined, label_multipart_mode)
 from .ddp_fetcher import DataDefinedPropertiesFetcher
 from . import export_cache
 from .datasets import DatasetInfo, ExportedDataset, gpkg_info
@@ -374,6 +376,9 @@ class _RuleGroupSnapshot:
     # Only each feature's biggest part (from flat_rules; set for a worker
     # process, which has no rules: RulesExporter._keep_biggest_part).
     keep_biggest_part: Optional[bool] = None
+    # QGIS 4 "Split label text lines over parts": each part of a feature
+    # labelled with its own line of the text (_label_lines_over_parts).
+    split_label_lines: bool = False
 
 
 _RING_FIELD = f"{_FIELD_PREFIX}_ring_cw"
@@ -598,7 +603,11 @@ class RulesExporter:
             cached_outputs = self._reuse_cached(sources, rule_groups)
             pending = [grp for grp in rule_groups if grp.output_dataset not in cached_outputs]
             needed = {grp.layer_id for grp in pending}
-            self._part_layers = {grp.layer_id for grp in pending if grp.visible_polygons}
+            # Parts are numbered for visible-polygon labels and for QGIS 4
+            # blank segments (listed per part).
+            self._part_layers = {grp.layer_id for grp in pending if grp.visible_polygons or (
+                grp.recipe is not None and grp.recipe.kind == "marker_points"
+                and grp.recipe.param("blank"))}
 
             # Phase 1 — serial source materialisation (caller thread).
             if self._is_cancelled():
@@ -711,7 +720,10 @@ class RulesExporter:
             primary = next((r for r in flat_rules if not r.shares_dataset), flat_rules[0])
 
             if primary.get_attr("t") == 1:
-                self._single_line_label_as_point(primary)
+                for rule in flat_rules:  # read before the export changes the settings
+                    rule.label_modes = self._label_modes(rule)
+                if not self._label_chars_at_vertices(primary):
+                    self._single_line_label_as_point(primary)
             # Compute expression fields (data-defined properties, optional
             # label field) — these read from the rule symbol/settings.
             expr_fields = self._create_expression_fields(flat_rules)
@@ -795,6 +807,8 @@ class RulesExporter:
                 data_max_zoom=None if primary.get_attr("i") is None else int(primary.get_attr("i")),
                 pattern_anchor=self._pattern_anchor(primary, geom_target),
                 anchor_crs=self._map_crs if self._pattern_anchor(primary, geom_target) else "",
+                split_label_lines=primary.get_attr("t") == 1 and getattr(
+                    primary, "label_modes", {}).get("multipart") == MULTIPART_SPLIT,
             ))
             if self._labels_visible_polygon(primary, geom_target):
                 rule_groups.append(self._visible_polygon_group(rule_groups[-1], primary))
@@ -816,6 +830,13 @@ class RulesExporter:
         @geometry_part_num))`` = the length of one generated segment), not on
         the source feature. They are computed again on every exported part
         (_split_parts)."""
+        if getattr(flat_rule, "vertex_chars", None) and not generated:
+            # One point per character (_label_chars_at_vertices): its text and
+            # angle read the point's number.
+            label = f"{_FIELD_PREFIX}_label"
+            return [(10, f"substr({self._VERTEX_CHARS}, @geometry_part_num, 1)", label)] + [
+                (ftype, expr, name) for ftype, expr, name in fields
+                if expr and name != label and "@geometry_part_num" in expr]
         symbol = flat_rule.rule.symbol() if flat_rule.get_attr("t") == 0 else None
         if symbol is None or not symbol.symbolLayerCount() or (
                 not generated and symbol.symbolLayer(0).layerType() != "GeometryGenerator"):
@@ -1122,10 +1143,13 @@ class RulesExporter:
         keep = set()
         for rule in self.flattened_rules or []:
             recipe = getattr(rule, "recipe", None)
+            if getattr(rule, "vertex_chars", False):  # a character at each vertex
+                keep.add(rule.layer.id())
             if recipe is None:
                 continue
-            if recipe.kind == "arrow_polygons" or (recipe.kind == "marker_points" and any(
-                    p in mat.VERTEX_PLACEMENTS or p == "SegmentCenter" for p in recipe.placements)):
+            if recipe.kind == "arrow_polygons" or (recipe.kind == "marker_points" and (any(
+                    p in mat.VERTEX_PLACEMENTS or p == "SegmentCenter" for p in recipe.placements)
+                    or recipe.param("trim") or recipe.param("blank"))):
                 keep.add(rule.layer.id())
         return keep
 
@@ -1611,7 +1635,7 @@ class RulesExporter:
             return False  # every window is a label (_label_windows keeps the longest part)
         if grp.rule_type == 1 and not grp.visible_polygons:
             settings = grp.flat_rules[0].rule.settings()
-            if settings and not settings.labelPerPart:
+            if settings and label_multipart_mode(settings) == MULTIPART_LARGEST:
                 return True
         if grp.rule_type == 0:
             symbol_layer = grp.flat_rules[0].rule.symbol().symbolLayers()[0]
@@ -1918,6 +1942,9 @@ class RulesExporter:
             FIELDS_MAPPING=field_mapping,
         )
 
+        if grp.split_label_lines:
+            refactored = self._label_lines_over_parts(refactored)
+
         # Geometry transformation.
         self._check_cancel()
         transbase = refactored
@@ -2095,6 +2122,51 @@ class RulesExporter:
                 piece.setGeometry(part)
                 writer.addFeature(piece)
             scope.removeGeometry()
+        del writer
+        return out
+
+    def _label_lines_over_parts(self, source: str) -> str:
+        """Worker: QGIS 4 "Split label text lines over parts"
+        (Qgis.MultiPartLabelingBehavior.SplitLabelTextLinesOverParts,
+        QgsPalLayerSettings::registerFeatureWithDetails): part i of a
+        feature (asGeometryCollection) is labelled with line i of its text
+        (QgsTextDocument::splitBlocksToDocuments: the lines after the wrap
+        character, new lines and automatic wrapping); parts beyond the last
+        line have no label, lines beyond the last part are not drawn (a
+        single-part feature shows its first line only).
+
+        The base layer holds each part as a feature, in the order of its
+        feature's parts (multiparttosingleparts), the parts of a feature
+        next to each other: the label of the i-th one keeps line i."""
+        from qgis.core import QgsFeature, QgsVectorFileWriter  # pylint: disable=import-outside-toplevel
+        self._check_cancel()
+        layer = self._open(source, "split_lines")
+        fields = layer.fields()
+        label = fields.indexFromName(f"{_FIELD_PREFIX}_label")
+        orig = fields.indexFromName(f"{_FIELD_PREFIX}_orig_id")
+        if label < 0 or orig < 0:
+            return source
+        out = self._temp_path("lines")[:-len(_TEMP_RULE_FORMAT)] + "fgb"
+        with self._temp_files_lock:
+            self._temp_files.add(out)
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = "FlatGeobuf"
+        options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
+        writer = QgsVectorFileWriter.create(out, fields, layer.wkbType(), layer.crs(),
+                                            QgsProject.instance().transformContext(), options)
+        previous, number = None, 0
+        for feature in layer.getFeatures():
+            self._check_cancel()
+            key = feature[orig]
+            number = number + 1 if key == previous else 0
+            previous = key
+            text = feature[label]
+            lines = text.split("\n") if isinstance(text, str) else []  # (QGIS 3: NULL a QVariant)
+            if number >= len(lines) or not lines[number]:
+                continue  # QGIS draws nothing for an empty text
+            piece = QgsFeature(feature)
+            piece.setAttribute(label, lines[number])
+            writer.addFeature(piece)
         del writer
         return out
 
@@ -3071,7 +3143,15 @@ class RulesExporter:
 
     def _materialize_marker_points(self, source: str, recipe: Recipe, source_geometry: int) -> str:
         """Worker: exact marker-line positions as points with ``ANGLE_FIELD``."""
+        if "ExtraItems" in recipe.placements:
+            return self._extra_item_points(source, recipe, source_geometry)
         lines = source
+        if recipe.param("trim") or recipe.param("blank"):
+            # QGIS 4: trimmed parts / rings with their blank segments, then
+            # offset and placed as lines (an offset polygon outline has
+            # neither, see SymbolMaterializer._trimmed_or_blanked).
+            lines = self._templated_lines(source, recipe, source_geometry)
+            source_geometry = 1
         if source_geometry == 2 and (recipe.param("offset") or recipe.param("ring_filter")):
             # QGIS buffers each ring (positive = inwards), see polygon_offset_expression.
             lines = self._run_alg_safe(
@@ -3100,7 +3180,8 @@ class RulesExporter:
         if vertex_placements:
             outputs.append(self._vertex_points(lines, vertex_placements, recipe.param("along") or 0.0,
                                                recipe))
-        if "Interval" in recipe.placements and self._memory_active:
+        if "Interval" in recipe.placements and (self._memory_active or recipe.param("blank")):
+            # (Blank segments are skipped in Python only.)
             outputs.append(self._interval_points_direct(lines, recipe))
         elif "Interval" in recipe.placements:
             multipoints = self._run_alg_safe(
@@ -3115,6 +3196,9 @@ class RulesExporter:
         for placement in ("CentralPoint", "SegmentCenter"):
             if placement not in recipe.placements:
                 continue
+            if recipe.param("blank"):
+                outputs.append(self._centre_points(lines, placement, recipe))
+                continue
             base = lines
             if placement == "SegmentCenter":
                 base = self._run_alg_safe("explodelines", "native", INPUT=lines)
@@ -3125,9 +3209,13 @@ class RulesExporter:
             outputs.append(self._run_alg_safe(
                 "geometrybyexpression", "native", INPUT=angled, OUTPUT_GEOMETRY=2,
                 EXPRESSION="line_interpolate_point(@geometry, length(@geometry) / 2)"))
-        if len(outputs) == 1:
-            return outputs[0]
-        return self._run_alg_safe("mergevectorlayers", "native", LAYERS=outputs)
+        merged = outputs[0] if len(outputs) == 1 else \
+            self._run_alg_safe("mergevectorlayers", "native", LAYERS=outputs)
+        if recipe.param("blank") and \
+                self._open(merged, "fields").fields().indexFromName(mat.BLANK_FIELD) >= 0:
+            merged = self._run_alg_safe("deletecolumn", "native", INPUT=merged,
+                                        COLUMN=[mat.BLANK_FIELD])
+        return merged
 
     # QVariant type of an expression field -> fieldcalculator FIELD_TYPE
     # (0 decimal, 1 integer, 2 text).
@@ -3724,6 +3812,24 @@ class RulesExporter:
             drawn = marker_points.along_vertex_marker(xs, ys, placement, along * ratio)
             return point.x(), point.y(), drawn[2] if drawn is not None else moved[2]
 
+        # QGIS 4 blank segments (_templated_lines): measured along the line
+        # in the recipe CRS, as QGIS measures them on screen.
+        blank_index = source.fields().indexFromName(mat.BLANK_FIELD)
+        blank_to = self._recipe_transforms(source, recipe)[0] if blank_index >= 0 else None
+
+        def blanked_walkers(xs, ys, blanks):
+            """(x, y of the line in the recipe CRS, its vertex distances); None
+            without blank segments."""
+            if not blanks:
+                return None
+            if blank_to is not None:
+                try:
+                    moved = [blank_to.transform(x, y) for x, y in zip(xs, ys)]
+                    xs, ys = [p.x() for p in moved], [p.y() for p in moved]
+                except QgsCsException:
+                    return None
+            return xs, ys, marker_points.cumulative_lengths(xs, ys)
+
         for feature in source.getFeatures():
             self._check_cancel()
             geometry = feature.geometry()
@@ -3732,15 +3838,32 @@ class RulesExporter:
             attributes = [feature[field.name()] for field in fields
                           if field.name() != mat.ANGLE_FIELD and field.name() not in
                           {name for name, _ in vertex_fields}]
+            blanks = marker_points.blank_pairs(feature.attribute(blank_index)) \
+                if blank_index >= 0 else []
             for part in geometry.constParts():
                 line = part.curveToLine() if part.hasCurvedSegments() else part
                 xs = [line.xAt(i) for i in range(line.numPoints())]
                 ys = [line.yAt(i) for i in range(line.numPoints())]
+                measured = blanked_walkers(xs, ys, blanks)
                 drawn = set()
                 for placement in placements:
+                    # One walker per placement pass, as renderPolylineVertex.
+                    walker = marker_points.BlankWalker(blanks) if measured else None
                     if along and placement in ("FirstVertex", "LastVertex"):
                         # Moved along the line; none where the line is shorter.
                         moved = moved_along(xs, ys, placement)
+                        if moved is not None and walker is not None and along < 0:
+                            # Not moved: QGIS places it on its vertex.
+                            if walker.inside(measured[2][0 if placement == "FirstVertex" else -1]):
+                                moved = None
+                        elif moved is not None and walker is not None:
+                            mxs, mys, cumulative = measured
+                            there = marker_points.along_vertex_marker(mxs, mys, placement, along)
+                            index = marker_points.along_vertex_index(mxs, mys, placement, along)
+                            if there is not None and index is not None and walker.inside(
+                                    marker_points.walker_distance(mxs, mys, cumulative, index,
+                                                                  there[0], there[1])):
+                                moved = None
                         if moved is not None:
                             number = 1 if placement == "FirstVertex" else len(xs)
                             values, x, y = per_vertex(feature, number, len(xs), moved[0], moved[1],
@@ -3751,6 +3874,8 @@ class RulesExporter:
                             writer.addFeature(point)
                         continue
                     for index, angle in marker_points.vertex_markers(xs, ys, placement):
+                        if walker is not None and walker.inside(measured[2][index]):
+                            continue  # in a blank segment
                         if (index, angle) in drawn:
                             continue  # the same marker of two placements
                         drawn.add((index, angle))
@@ -3760,6 +3885,302 @@ class RulesExporter:
                         point.setAttributes(attributes + values + [angle])
                         point.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
                         writer.addFeature(point)
+        del writer
+        return out
+
+    @staticmethod
+    def _recipe_transforms(source, recipe: Recipe):
+        """(to, back): transforms between ``source``'s CRS and the recipe CRS
+        (the project's, where QGIS measures lengths); (None, None) when they
+        are the same."""
+        crs = recipe.param("crs") or ""
+        if not crs or crs == source.crs().authid():
+            return None, None
+        target = QgsCoordinateReferenceSystem(crs)
+        if not target.isValid():
+            return None, None
+        return (QgsCoordinateTransform(source.crs(), target, QgsProject.instance()),
+                QgsCoordinateTransform(target, source.crs(), QgsProject.instance()))
+
+    def _point_writer(self, prefix: str, fields, wkb_type, crs):
+        """(path, writer) of a worker's FlatGeobuf output (in feature order)."""
+        out = self._temp_path(prefix)[:-len(_TEMP_RULE_FORMAT)] + "fgb"
+        with self._temp_files_lock:
+            self._temp_files.add(out)
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = "FlatGeobuf"
+        options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
+        return out, QgsVectorFileWriter.create(out, fields, wkb_type, crs,
+                                               QgsProject.instance().transformContext(), options)
+
+    @staticmethod
+    def _part_numbers(layer) -> Dict[int, int]:
+        """{feature id: @geometry_part_num} of a base layer's single parts
+        (PART_FIELD counts on within a feature; 1 without it)."""
+        part = layer.fields().indexFromName(PART_FIELD)
+        orig = layer.fields().indexFromName(f"{_FIELD_PREFIX}_orig_id")
+        if part < 0 or orig < 0:
+            return {}
+        values = {}
+        first: Dict[Any, int] = {}
+        request = QgsFeatureRequest().setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        for feature in layer.getFeatures(request):
+            try:
+                number = int(feature.attribute(part))
+            except (TypeError, ValueError):
+                continue
+            key = feature.attribute(orig)
+            values[feature.id()] = (key, number)
+            first[key] = min(first.get(key, number), number)
+        return {fid: number - first[key] + 1 for fid, (key, number) in values.items()}
+
+    @staticmethod
+    def _value_text(value) -> str:
+        """QVariant::toString of an expression result ("" for NULL)."""
+        if value is None or (isinstance(value, QVariant) and value.isNull()):
+            return ""
+        return str(value)
+
+    @staticmethod
+    def _part_rings(part, polygon: bool, ring_filter: int):
+        """[(@geometry_ring_num, ring)] QGIS draws a templated line on:
+        renderPolygonStroke's exterior ring (unless "interior rings only")
+        and interior rings (unless "exterior ring only")."""
+        if not polygon:
+            return [(0, part)]
+        rings = [] if ring_filter == 2 else [(0, part.exteriorRing())]
+        if ring_filter != 1:
+            rings += [(i + 1, part.interiorRing(i)) for i in range(part.numInteriorRings())]
+        return [(number, ring) for number, ring in rings if ring is not None]
+
+    def _templated_lines(self, source: str, recipe: Recipe, source_geometry: int) -> str:
+        """Worker: the line parts (a polygon's rings, by the recipe's ring
+        filter) a QGIS 4 marker / hash line places its items on, each trimmed
+        as QGIS trims it before anything else (marker_points.trim_points, in
+        the recipe CRS: the "trim" lengths, or per cent of the part) and
+        with its blank segments (``mat.BLANK_FIELD``: the evaluated
+        string's list for this part and ring, in the recipe CRS's units).
+        Data-defined values are evaluated for every part and ring as QGIS
+        evaluates them (@geometry_part_num, @geometry_ring_num set). A part
+        trimmed away is left out."""
+        from qgis.core import QgsPointXY  # pylint: disable=import-outside-toplevel
+        self._check_cancel()
+        layer = self._open(source, "templated")
+        trims = recipe.param("trim") or (None, None)
+        blank = recipe.param("blank")
+        fields = QgsFields()
+        for field in layer.fields():
+            if field.name().lower() not in ("fid", "ogc_fid") and field.name() != mat.BLANK_FIELD:
+                fields.append(field)
+        if blank:
+            fields.append(QgsField(mat.BLANK_FIELD, QVariant.String))
+        context = self._worker_expression_context()
+        context.setFields(layer.fields())
+        scope = QgsExpressionContextScope()
+        context.appendScope(scope)
+        expressions = {}
+        for key, text in (("start", trims[0][3] if trims[0] else ""),
+                          ("end", trims[1][3] if trims[1] else ""),
+                          ("blank", blank[0] if blank else "")):
+            if text:
+                expressions[key] = QgsExpression(text)
+                expressions[key].prepare(context)
+        to_crs, back = self._recipe_transforms(layer, recipe)
+        parts = self._part_numbers(layer) if blank else {}
+        polygon = source_geometry == 2
+        ring_filter = int(recipe.param("ring_filter", 0) or 0)
+
+        def length(index):
+            """(trim length, per cent) at one end, for the current context."""
+            trim = trims[index]
+            if trim is None:
+                return 0.0, False
+            value, factor, pct, _ = trim
+            expression = expressions.get("start" if index == 0 else "end")
+            if expression is not None:
+                # valueAsDouble: the static value when NULL or not a number.
+                result = expression.evaluate(context)
+                try:
+                    value = float(self._value_text(result)) if not expression.hasEvalError() \
+                        else value
+                except ValueError:
+                    pass
+            return (value, True) if pct else (value * factor, False)
+
+        out, writer = self._point_writer("templated", fields, QgsWkbTypes.LineString, layer.crs())
+        for feature in layer.getFeatures():
+            self._check_cancel()
+            geometry = feature.geometry()
+            if geometry.isNull() or geometry.isEmpty():
+                continue
+            context.setFeature(feature)
+            attributes = [feature[field.name()] for field in fields if field.name() != mat.BLANK_FIELD]
+            part_number = parts.get(feature.id(), 1)
+            for offset, part in enumerate(geometry.constParts()):
+                for ring_number, ring in self._part_rings(part, polygon, ring_filter):
+                    line = ring.curveToLine() if ring.hasCurvedSegments() else ring
+                    xs = [line.xAt(i) for i in range(line.numPoints())]
+                    ys = [line.yAt(i) for i in range(line.numPoints())]
+                    try:
+                        if to_crs is not None:
+                            moved = [to_crs.transform(x, y) for x, y in zip(xs, ys)]
+                            xs, ys = [p.x() for p in moved], [p.y() for p in moved]
+                    except QgsCsException:
+                        continue
+                    scope.setVariable("geometry_part_num", part_number + offset)
+                    scope.setVariable("geometry_ring_num", ring_number)
+                    (start, start_pct), (end, end_pct) = length(0), length(1)
+                    trimmed = marker_points.trim_points(xs, ys, start, end, start_pct, end_pct)
+                    if trimmed is None:
+                        continue  # nothing left to place on
+                    xs, ys = trimmed
+                    values = list(attributes)
+                    if blank:
+                        pairs = []
+                        parsed = marker_points.parse_blank_segments(
+                            self._value_text(expressions["blank"].evaluate(context)))
+                        index = part_number + offset - 1
+                        if parsed and index < len(parsed) and ring_number < len(parsed[index]):
+                            pairs = [[start_ * blank[1], end_ * blank[1]]
+                                     for start_, end_ in parsed[index][ring_number]]
+                        values.append(json.dumps(pairs) if pairs else None)
+                    try:
+                        if back is not None:
+                            moved = [back.transform(x, y) for x, y in zip(xs, ys)]
+                            xs, ys = [p.x() for p in moved], [p.y() for p in moved]
+                    except QgsCsException:
+                        continue
+                    piece = QgsFeature(fields)
+                    piece.setAttributes(values)
+                    piece.setGeometry(QgsGeometry.fromPolylineXY(
+                        [QgsPointXY(x, y) for x, y in zip(xs, ys)]))
+                    writer.addFeature(piece)
+        del writer
+        return out
+
+    def _centre_points(self, lines: str, placement: str, recipe: Recipe) -> str:
+        """Worker: "CentralPoint" / "SegmentCenter" markers of lines with
+        QGIS 4 blank segments, placed as the processing chain places them
+        (half way along the line or segment, its azimuth) and left out
+        where renderPolylineCentral / renderPolylineVertex's walker blanks
+        them: the centre at half the line's length; a segment's centre, as
+        QGIS measures it from the segment's end vertex, at that vertex's
+        distance plus half the segment."""
+        from qgis.core import QgsPointXY  # pylint: disable=import-outside-toplevel
+        self._check_cancel()
+        layer = self._open(lines, "centres")
+        fields = QgsFields()
+        for field in layer.fields():
+            if field.name().lower() not in ("fid", "ogc_fid") and field.name() != mat.ANGLE_FIELD:
+                fields.append(field)
+        fields.append(QgsField(mat.ANGLE_FIELD, QVariant.Double))
+        blank_index = layer.fields().indexFromName(mat.BLANK_FIELD)
+        to_crs, _ = self._recipe_transforms(layer, recipe)
+        out, writer = self._point_writer("centres", fields, QgsWkbTypes.Point, layer.crs())
+
+        def add(attributes, x, y, angle):
+            point = QgsFeature(fields)
+            point.setAttributes(attributes + [angle])
+            point.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
+            writer.addFeature(point)
+        for feature in layer.getFeatures():
+            self._check_cancel()
+            geometry = feature.geometry()
+            if geometry.isNull() or geometry.isEmpty():
+                continue
+            attributes = [feature[field.name()] for field in fields if field.name() != mat.ANGLE_FIELD]
+            blanks = marker_points.blank_pairs(feature.attribute(blank_index)) \
+                if blank_index >= 0 else []
+            for part in geometry.constParts():
+                line = part.curveToLine() if part.hasCurvedSegments() else part
+                xs = [line.xAt(i) for i in range(line.numPoints())]
+                ys = [line.yAt(i) for i in range(line.numPoints())]
+                if len(xs) < 2:
+                    continue
+                mxs, mys = xs, ys
+                if to_crs is not None:
+                    try:
+                        moved = [to_crs.transform(x, y) for x, y in zip(xs, ys)]
+                    except QgsCsException:
+                        continue
+                    mxs, mys = [p.x() for p in moved], [p.y() for p in moved]
+                cumulative = marker_points.cumulative_lengths(mxs, mys)
+                walker = marker_points.BlankWalker(blanks)
+                if placement == "CentralPoint":
+                    if cumulative[-1] <= 0 or walker.inside(cumulative[-1] / 2):
+                        continue
+                    drawn = marker_points.Line(xs, ys)
+                    point = drawn.point(drawn.length / 2)
+                    if point is not None:
+                        add(attributes, point[0], point[1], drawn.angle(drawn.length / 2))
+                    continue
+                for i in range(1, len(xs)):
+                    mid = (0.5 * (mxs[i] + mxs[i - 1]), 0.5 * (mys[i] + mys[i - 1]))
+                    if walker.inside(marker_points.walker_distance(mxs, mys, cumulative, i, *mid)):
+                        continue
+                    segment = marker_points.Line(xs[i - 1:i + 1], ys[i - 1:i + 1])
+                    add(attributes, 0.5 * (xs[i] + xs[i - 1]), 0.5 * (ys[i] + ys[i - 1]),
+                        segment.angle(segment.length / 2))
+        del writer
+        return out
+
+    def _extra_item_points(self, source: str, recipe: Recipe, source_geometry: int) -> str:
+        """Worker: the extra items of a QGIS 4.2 marker / hash line, points
+        with the source fields and ``ANGLE_FIELD``: the "extra" string
+        evaluated for every part (QGIS draws them in renderPolyline, once a
+        line part or polygon part: not for a polygon whose only rings
+        "interior rings only" leaves out), "x y angle" as map coordinates
+        of the recipe CRS and a clockwise angle from the line direction
+        east, turned with the grid into the export CRS."""
+        from qgis.core import QgsPointXY  # pylint: disable=import-outside-toplevel
+        self._check_cancel()
+        layer = self._open(source, "extra_items")
+        fields = QgsFields()
+        for field in layer.fields():
+            if field.name().lower() not in ("fid", "ogc_fid") and field.name() != mat.ANGLE_FIELD:
+                fields.append(field)
+        fields.append(QgsField(mat.ANGLE_FIELD, QVariant.Double))
+        context = self._worker_expression_context()
+        context.setFields(layer.fields())
+        scope = QgsExpressionContextScope()
+        context.appendScope(scope)
+        expression = QgsExpression(recipe.param("extra"))
+        expression.prepare(context)
+        _, back = self._recipe_transforms(layer, recipe)
+        parts = self._part_numbers(layer)
+        ring_filter = int(recipe.param("ring_filter", 0) or 0)
+        out, writer = self._point_writer("extra_items", fields, QgsWkbTypes.Point, layer.crs())
+        for feature in layer.getFeatures():
+            self._check_cancel()
+            geometry = feature.geometry()
+            if geometry.isNull() or geometry.isEmpty():
+                continue
+            attributes = [feature[field.name()] for field in fields if field.name() != mat.ANGLE_FIELD]
+            context.setFeature(feature)
+            for offset, part in enumerate(geometry.constParts()):
+                if source_geometry == 2 and ring_filter == 2 and not part.numInteriorRings():
+                    continue
+                scope.setVariable("geometry_part_num", parts.get(feature.id(), 1) + offset)
+                items = marker_points.parse_extra_items(
+                    self._value_text(expression.evaluate(context)))
+                for x, y, angle in items:
+                    # A line angle of 0 points east: azimuth 90.
+                    azimuth = (angle + 90.0) % 360.0
+                    if back is not None:
+                        step = 1e-3
+                        ahead = (x + step * math.sin(math.radians(azimuth)),
+                                 y + step * math.cos(math.radians(azimuth)))
+                        try:
+                            point = back.transform(x, y)
+                            far = back.transform(*ahead)
+                        except QgsCsException:
+                            continue
+                        x, y = point.x(), point.y()
+                        azimuth = math.degrees(math.atan2(far.x() - x, far.y() - y)) % 360.0
+                    item = QgsFeature(fields)
+                    item.setAttributes(attributes + [azimuth])
+                    item.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
+                    writer.addFeature(item)
         del writer
         return out
 
@@ -3953,9 +4374,20 @@ class RulesExporter:
         )
         if settings.useSubstitutions:
             filter_exp = self._substituted(filter_exp, settings.substitutions)
+        modes = getattr(flat_rule, "label_modes", {})
+        split = modes.get("multipart") == MULTIPART_SPLIT
         wrap = settings.wrapChar
-        if wrap:  # QGIS breaks the line at every wrap character
+        if wrap and (split or modes.get("curved") != CURVED_AT_VERTICES):
+            # QGIS breaks the line at every wrap character (a curved label
+            # only to split its lines over the parts: QgsPalLayerSettings::
+            # registerFeatureWithDetails allowMultipleLines).
             filter_exp = f"replace({filter_exp}, {QgsExpression.quotedString(wrap)}, '\n')"
+        if split and settings.autoWrapLength > 0:
+            # The lines shared out over the parts are the wrapped ones
+            # (QgsTextDocument::splitLines): wrapped here, not by MapLibre.
+            length = int(settings.autoWrapLength)
+            filter_exp = (f"wordwrap({filter_exp}, "
+                          f"{length if settings.useMaxLineLengthForAutoWrap else -length})")
         if not settings.format().allowHtmlFormatting():
             from .maplibre_converter import TextPropertyExtractor  # pylint: disable=import-outside-toplevel
             spaces = TextPropertyExtractor.word_spacing_spaces(settings.format())
@@ -4037,6 +4469,9 @@ class RulesExporter:
             return None
         if rule_type == 0 and getattr(flat_rule, "shift", None):
             transformation[1] = self._shifted(transformation[1], *flat_rule.shift)
+        # Characters at vertices: all of a line's points, numbered as its
+        # vertices (QGIS does not clip such a line).
+        cut = cut and not getattr(flat_rule, "vertex_chars", False)
         transformation[1] = self._clip_to_extent(transformation[1], cut)
         return tuple(transformation)
 
@@ -4084,6 +4519,74 @@ class RulesExporter:
         "length(geometry_n(@geometry, @element))), array_max(array_foreach("
         "generate_series(1, num_geometries(@geometry)), length(geometry_n(@geometry, "
         "@element))))) + 1), @geometry)")
+
+    @staticmethod
+    def _label_modes(flat_rule: FlattenedRule) -> dict:
+        """The label's QGIS 4 placement modes (utils.qt_compat), read before
+        the export changes its settings: "multipart" (largest / every /
+        split), "curved" (the curved label mode), "whitespace" (blanks do
+        not collide) and "per_feature" (the modes set by a field or an
+        expression: one value is kept). Split lines of an HTML label: its
+        whole text on every part (its sections are not split)."""
+        settings = flat_rule.rule.settings()
+        multipart = label_multipart_mode(settings)
+        html = settings is not None and settings.format().allowHtmlFormatting()
+        return {
+            "multipart": MULTIPART_EVERY if multipart == MULTIPART_SPLIT and html else multipart,
+            "split_html": multipart == MULTIPART_SPLIT and html,
+            "curved": curved_label_mode(settings),
+            # Only curved labels have blanks of their own (pal curvedPlacementAtOffset).
+            "whitespace": ignores_whitespace_collisions(settings) and settings is not None
+            and enum_int(settings.placement) in (enum_int(Qgis.LabelPlacement.Curved),
+                                                 enum_int(Qgis.LabelPlacement.PerimeterCurved)),
+            "per_feature": tuple(name for name in ("LabelAllParts", "CurvedLabelMode",
+                                                   "WhitespaceCollisionHandling")
+                                 if label_mode_data_defined(settings, name)),
+        }
+
+    # The label's characters without its blanks (QGIS skips them at vertices).
+    _VERTEX_CHARS = f"regexp_replace(\"{_FIELD_PREFIX}_label\", '\\\\s', '')"
+
+    def _label_chars_at_vertices(self, flat_rule: FlattenedRule) -> bool:
+        """QGIS 4 curved labels with "Place characters at vertices"
+        (Qgis.CurvedLabelMode.PlaceCharactersAtVertices, pal
+        FeaturePart::createCurvedCandidateWithCharactersAtVertices): the
+        characters of the text, blanks skipped, one at each vertex of the
+        line from its first one (characters beyond the last vertex are left
+        out), each turned to the segment starting at its vertex (the last
+        vertex: the segment ending there) and moved the label distance to
+        its left. The line is neither simplified nor clipped
+        (QgsPalLayerSettings::evaluateLabelGeometry, generateLabelFeature).
+
+        Exported as one point per character, the character and its angle
+        evaluated per point (_split_parts, _part_fields); each is drawn as an
+        over-point label with its box's bottom-left corner on the vertex, as
+        QGIS draws a character from its label position. The converter lays
+        them out (QgisMapLibreStyleExporter, label_modes "vertices")."""
+        settings = flat_rule.rule.settings()
+        if settings is None or getattr(flat_rule, "label_modes", {}).get("curved") != CURVED_AT_VERTICES:
+            return False
+        if flat_rule.get_attr("g") not in (1, 2) or settings.geometryGeneratorEnabled or \
+                self._pinned_position(settings):
+            return False
+        line = "geometry($currentfeature)"
+        if flat_rule.get_attr("g") == 2:
+            line = f"exterior_ring({line})"
+        # Clockwise degrees (QGIS's angle is counter-clockwise, y up).
+        rotation = (
+            f"with_variable('q2vt_vl', {line}, with_variable('q2vt_j', "
+            f"if(@geometry_part_num < num_points(@q2vt_vl), @geometry_part_num, @geometry_part_num - 1), "
+            f"-degrees(atan2(y(point_n(@q2vt_vl, @q2vt_j + 1)) - y(point_n(@q2vt_vl, @q2vt_j)), "
+            f"x(point_n(@q2vt_vl, @q2vt_j + 1)) - x(point_n(@q2vt_vl, @q2vt_j))))))")
+        settings.placement = Qgis.LabelPlacement.OverPoint
+        settings.quadOffset = Qgis.LabelQuadrantPosition.AboveRight
+        settings.xOffset = settings.yOffset = 0.0
+        settings.angleOffset = 0.0
+        settings.repeatDistance = 0.0
+        settings.dataDefinedProperties().setProperty(
+            QgsPalLayerSettings.Property.LabelRotation, QgsProperty.fromExpression(rotation))
+        flat_rule.vertex_chars = True
+        return True
 
     def _single_line_label_as_point(self, flat_rule: FlattenedRule) -> None:
         """A line label drawn once per line (no repeat distance), as QGIS
@@ -4181,6 +4684,15 @@ class RulesExporter:
         settings = flat_rule.rule.settings()
         target_geom = flat_rule.get_attr("g")
         transform_expr = "@geometry"
+        if getattr(flat_rule, "vertex_chars", False):
+            # A point at each vertex that gets a character
+            # (_label_chars_at_vertices), numbered as the vertices.
+            flat_rule.set_attr("c", 0)
+            line = "exterior_ring(@geometry)" if target_geom == 2 else "@geometry"
+            return [0, f"with_variable('q2vt_vl', {line}, with_variable('q2vt_vn', "
+                       f"min(num_points(@q2vt_vl), length({self._VERTEX_CHARS})), "
+                       f"if(@q2vt_vn > 0, collect_geometries(array_foreach(generate_series(1, @q2vt_vn), "
+                       f"point_n(@q2vt_vl, @element))), NULL)))"]
         if getattr(flat_rule, "line_label_midpoint", False):
             flat_rule.set_attr("c", 0)
             return [0, f"with_variable('q2vt_l', {self._label_line(flat_rule)}, "
@@ -4204,7 +4716,8 @@ class RulesExporter:
             # lines (a centroid has no line for MapLibre's line placement).
             flat_rule.set_attr("c", 1)
             target_geom = 1
-            transform_expr = self._EXTERIOR_RINGS if settings.labelPerPart else self._LARGEST_RING
+            transform_expr = self._LARGEST_RING if label_multipart_mode(settings) == MULTIPART_LARGEST \
+                else self._EXTERIOR_RINGS
         elif target_geom == 2:
             # A label on the visible part: the static point (for clients
             # without the viewer's visible-polygon labels) lies in the part
@@ -4354,6 +4867,8 @@ class RulesExporter:
             return False
         if getattr(flat_rule, "label_generated", False) or settings.geometryGeneratorEnabled:
             return False  # placed on the generated geometry (exported), not the polygon
+        if getattr(flat_rule, "vertex_chars", False):
+            return False  # characters at the ring's vertices
         if self.cent_source == 0:
             return False
         if self.cent_source == 1:
@@ -4373,7 +4888,8 @@ class RulesExporter:
         name = label.output_dataset + self.VISIBLE_POLYGONS_SUFFIX
         for rule in label.flat_rules:
             rule.visible_polygons = name
-            rule.label_per_part = bool(flat_rule.rule.settings().labelPerPart)
+            # Split lines: each part labelled (with its own line).
+            rule.label_per_part = label_multipart_mode(flat_rule.rule.settings()) != MULTIPART_LARGEST
         return dataclasses.replace(
             label, output_dataset=name, geometry_target=2,
             geometry_expression=self._clip_to_extent("@geometry"),
@@ -4388,7 +4904,8 @@ class RulesExporter:
         name = label.output_dataset + self.VISIBLE_LINES_SUFFIX
         for rule in label.flat_rules:
             rule.visible_polygons = name
-            rule.label_per_part = bool(flat_rule.rule.settings().labelPerPart)
+            # Split lines: each part labelled (with its own line).
+            rule.label_per_part = label_multipart_mode(flat_rule.rule.settings()) != MULTIPART_LARGEST
             rule.visible_kind = "line"
             rule.line_curved = bool(getattr(flat_rule, "line_label_curved", False))
             # "Merge connected lines" (line layers; not with direction

@@ -43,6 +43,10 @@ def test_classify_reports_unsupported_ddp_and_unknown_types():
     assert result.strategy == Strategy.NATIVE and result.unsupported_properties == ("CapStyle",)
     assert classify("MyPluginLayer").strategy == Strategy.UNSUPPORTED
     assert classify("InterpolatedLine").strategy == Strategy.MATERIALIZED  # supported since 4.14
+    # QGIS 4 templated-line properties are placed by the exporter.
+    for kind in ("MarkerLine", "HashLine"):
+        assert classify(kind, ["TrimStart", "TrimEnd", "BlankSegments", "ExtraItems"]
+                        ).unsupported_properties == ()
 
 
 def test_capability_doc_mentions_every_type():

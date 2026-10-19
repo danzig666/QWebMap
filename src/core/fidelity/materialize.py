@@ -46,6 +46,9 @@ PATTERN_ANCHOR_Y_FIELD = "q2vt_pat_y"
 # q2vt_mat_v0, q2vt_mat_v1...
 VERTEX_FIELD_PREFIX = "q2vt_mat_v"
 RUN_FIELD = "q2vt_mat_run"          # its ordinal along the lines (earlier runs' caps on top)
+# A marker line's blank segments on one line part (QGIS 4 "Blank segments"),
+# JSON [[start, end], ...] in the recipe CRS's units (see templated_params).
+BLANK_FIELD = "q2vt_mat_blank"
 
 VERTEX_PLACEMENTS = frozenset({"Vertex", "InnerVertices", "FirstVertex", "LastVertex",
                                "CurvePoint"})

@@ -46,7 +46,9 @@
 // (metadata["q2vt:line-orient"]) is drawn level, centred on the line. A
 // repeated line label (metadata["q2vt:repeat"]) gets one label per repeat
 // part of the longest visible stretch, as QGIS chops the line clipped to
-// the map extent.
+// the map extent. A curved label QGIS 4 stretches to fit its line
+// (metadata["q2vt:curved-stretch"]: its letter or word spacing) spans the
+// longest visible stretch of the line, or each repeat part of it.
 // While the map moves
 // (drag, zoom animation) placed labels do not move at all - only polygons
 // without a label get one - and the rule above is applied once the map
@@ -166,6 +168,14 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
     if (layer.metadata["q2vt:line-orient"] === "horizontal") groups.get(polygons).level = true;
     // QGIS Curved placement: bent along the line, glyph by glyph.
     if (layer.metadata["q2vt:line-curved"]) groups.get(polygons).curved = true;
+    // QGIS 4 "Stretch character / word spacing to fit line": spread over
+    // the visible line; the extra letter spacing is each label's own.
+    const stretch = layer.metadata["q2vt:curved-stretch"];
+    if (stretch) {
+      groups.get(polygons).stretch = stretch;
+      const spacing = stretchedSpacing(layer.layout?.["text-letter-spacing"] ?? 0);
+      if (stretch === "characters" && spacing) layer.layout = { ...layer.layout, "text-letter-spacing": spacing };
+    }
     // A repeated line label: one label per repeat part of the visible line.
     if (layer.metadata["q2vt:repeat"]) groups.get(polygons).repeat = layer.metadata["q2vt:repeat"];
     // "Merge connected lines": lines of one text meeting end to end are one line.
@@ -344,6 +354,8 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
         curved: group.curved && !group.level ? curvedOption(map, activeLayer(group, zoom).layout || {}, zoom, perPx)
           : null,
         repeat: repeatOption(group.repeat, zoom, perPx),
+        stretch: group.stretch && group.curved && !group.level
+          ? { mode: group.stretch, field: (activeLayer(group, zoom).layout || {})["text-field"] } : null,
         mergeText: group.merge ? textKey((activeLayer(group, zoom).layout || {})["text-field"]) : null,
         textAnchor: (activeLayer(group, zoom).layout || {})["text-anchor"],
         rotationField: group.orient === "free" ? FREE_ROTATION : rotationField(group, zoom),
@@ -655,7 +667,8 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         for (const part of parts) points.set(part, state.points.get(part));
         continue;
       }
-      placeRepeatedOnLine(loaded, properties, view, avoid, lineOptions).forEach((placed, k) => {
+      const stretched = options.stretch ? placeStretchedOnLine(loaded, properties, view, avoid, lineOptions) : null;
+      (stretched || placeRepeatedOnLine(loaded, properties, view, avoid, lineOptions)).forEach((placed, k) => {
         points.set(key + PART_SEPARATOR + k, { ...placed, orig });
         if (placed.box) {
           boxes.push(placed.box);
@@ -665,7 +678,9 @@ export function labelPoints(features, view, maplibregl, options = {}) {
       continue;
     }
     if (options.kind === "line") {
-      const placed = placeOnLine(loaded, properties, old, view, guarded, avoid, lineOptions);
+      const stretched = options.stretch ? placeStretchedOnLine(loaded, properties, view, avoid, lineOptions) : null;
+      const placed = stretched ? stretched[0]
+        : placeOnLine(loaded, properties, old, view, guarded, avoid, lineOptions);
       if (placed) {
         points.set(key, { ...placed, orig });
         if (placed.box) {
@@ -2044,6 +2059,82 @@ function placeRepeatedOnLine(loaded, properties, view, avoid, options) {
     }
   }
   return out;
+}
+
+// QGIS 4 "Stretch character / word spacing to fit line" (pal
+// FeaturePart::createDefaultCurvedCandidatesAlongLine): one candidate from
+// the start to the end of the line clipped to the map extent (its longest
+// visible stretch, or each one with "label every part"; each repeat part of
+// it), no curvature check: the spacing grows (or shrinks) by the line's
+// length less the text's width, 99.5 % of it (100.5 % when shrinking),
+// shared by the gaps between the characters - as extra letter spacing of
+// the label (STRETCH_SPACING) - or by its spaces. MapLibre has no word
+// spacing: each space grows by whole spaces, as many as come nearest. A
+// label without spaces is placed as usual in word mode (null), as in QGIS.
+// The label is centred on the stretch, drawn whatever its box overlaps at
+// the screen edge; it keeps clear of the labels placed before it unless
+// QGIS allows overlaps. Returns the placements.
+const STRETCH_SPACING = "q2vt_stretch_spacing";
+function placeStretchedOnLine(loaded, properties, view, avoid, options) {
+  const { mode, field } = options.stretch;
+  const box = options.labelBox ? options.labelBox(properties) : null;
+  const name = Array.isArray(field) && field[0] === "get" && typeof field[1] === "string" ? field[1] : null;
+  const text = name ? String(properties[name] ?? "") : "";
+  const chars = [...text];
+  if (!box || !box.text || !box.size || chars.length < 2) return null;
+  const spaces = chars.filter((c) => c === " ").length;
+  if (mode === "words" && !spaces) return null;
+  const width = 2 * box.text[0];
+  const perEm = box.size * (options.precision || 0);  // world units per em
+  const stretchTo = (length) => {
+    let extra = length - width;
+    extra *= extra > 0 ? 0.995 : 1.005;
+    if (mode !== "words") {
+      return perEm > 0 ? { ...properties, [STRETCH_SPACING]: extra / (chars.length - 1) / perEm } : properties;
+    }
+    // One more space in each gap: its width; then as many as fit best.
+    const wider = options.labelBox({ ...properties, [name]: text.replaceAll(" ", "  ") });
+    const space = wider && wider.text ? (2 * wider.text[0] - width) / spaces : 0;
+    const more = space > 0 ? Math.max(0, Math.round(extra / spaces / space)) : 0;
+    return more ? { ...properties, [name]: text.replaceAll(" ", " ".repeat(1 + more)) } : properties;
+  };
+  const chains = stitch(loaded.flatMap((piece) => clipLine(piece, view)), joinTolerance(options))
+    .map((chain) => ({ chain, length: chainLength(chain) })).sort((a, b) => b.length - a.length);
+  const out = [];
+  for (const { chain, length } of options.perPart ? chains : chains.slice(0, 1)) {
+    for (const [a, b] of repeatParts(length, width, options.repeat || 0)) {
+      if (!(b > a)) continue;
+      const stretched = stretchTo(b - a);
+      const s = (a + b) / 2;
+      const at = along(chain, s);
+      if (!at) continue;
+      const half = options.labelBox(stretched) || box;
+      const [ex, ey] = envelope(half, at.rotation * Math.PI / 180);
+      const spot = [at.point[0] - ex, at.point[1] - ey, at.point[0] + ex, at.point[1] + ey];
+      if (!options.overlap && avoid.some((other) => intersect(other, spot))) continue;
+      const placed = { point: at.point, properties: options.rotationField
+        ? { ...stretched, [options.rotationField]: at.rotation } : stretched, box: spot, line: { chain, s } };
+      out.push(placed);
+      avoid = avoid.concat([spot]);
+    }
+  }
+  return out;
+}
+
+// The letter spacing of a stretched curved label: the style's own plus the
+// label's STRETCH_SPACING (in each stop of a zoom curve); null when the
+// style's cannot take it.
+export function stretchedSpacing(base) {
+  const plus = (value) => ["+", value, ["coalesce", ["get", STRETCH_SPACING], 0]];
+  if (typeof base === "number") return plus(base);
+  if (!Array.isArray(base)) return null;
+  if (base[0] === "interpolate") {
+    return [...base.slice(0, 3), ...base.slice(3).map((value, i) => (i % 2 ? plus(value) : value))];
+  }
+  if (base[0] === "step") {
+    return [...base.slice(0, 2), plus(base[2]), ...base.slice(3).map((value, i) => (i % 2 ? plus(value) : value))];
+  }
+  return null;
 }
 
 // (start, end) along a line of the parts pal labels one by one

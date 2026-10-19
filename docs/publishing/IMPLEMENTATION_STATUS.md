@@ -2052,3 +2052,26 @@ true for every marker-line hatch; `_register_drawn_line_pattern` now uses
 active. Test-side: Qt6 enums, `os._exit` after the session (PyQt6 teardown crash), QGIS 4's
 `0.29999999999999999` in expression dumps, slightly narrower QGIS 4 map-unit dots.
 `metadata.txt`: `supportsQt6=True`.
+
+## 4.51.0 — QGIS 4 symbology options
+
+Compared against the QGIS 4.2.3 source (vs 3.44): no new symbol layer, renderer, callout or
+effect types; new options on existing ones. All behind `hasattr` guards (3.x unchanged); tests
+skip without the API and compare against QGIS 4 renders.
+
+- Marker / hash lines (`marker_points.py` ports `trimPoints`, `parseBlankSegments`,
+  `parseExtraItems`, `BlankSegmentsWalker`; `materializer.py`, `rules_exporter._templated_lines`,
+  `_extra_item_points`): trim start/end (map units, percent exact; screen units per quarter
+  zoom), blank segments (per part/ring field, QGIS's measuring quirks kept), extra items (own
+  point rule; markers turn only with rotateSymbols). Not on offset polygon outlines, browser-placed
+  intervals or past the last tile zoom (`Q2VT_MARKER_PLACEMENT_APPROX`). QGIS measures on the
+  line clipped to the view + 10 %; the export uses the whole line.
+- Labels (`qt_compat.label_multipart_mode`, `curved_label_mode`): `multiPartBehavior()` replaces
+  the lossy `labelPerPart` shim; split mode (`_label_lines_over_parts`: line i on part i, auto
+  wrap via `wordwrap()`); characters at vertices exported as rotated points (exact placement,
+  collisions approximate); stretch modes in the viewer (`placeStretchedOnLine`, data-driven
+  `text-letter-spacing`; word spacing in whole spaces). Whitespace collision handling and
+  data-defined modes reported (`Q2VT_LABEL_APPROXIMATE`).
+- Selective masking source sets (`masks.resolve_source_sets`): resolved as
+  `QgsVectorLayerUtils::collectObjectsMasked*FromLayer` does, fed to the existing halo /
+  knock-out approximation; a mask marker with an empty list masks when its layer masks.

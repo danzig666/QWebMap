@@ -343,6 +343,9 @@ class SymbolMaterializer:
                                     layer.setInterval)
             self._fold_constant_ddp(layer, QgsSymbolLayer.Property.PropertyOffsetAlongLine,
                                     layer.setOffsetAlongLine)
+            templated = self._templated_extras(flat_rule, layer)
+            if templated is not None:
+                return templated
         if kind == "SVGFill":
             return self._svg_fill(flat_rule, layer)
         if kind in ("SimpleMarker", "CentroidFill"):
@@ -3017,6 +3020,166 @@ class SymbolMaterializer:
             else:
                 rules.append(native)
         return rules
+
+    # -- QGIS 4 templated-line extras ------------------------------------------
+    # Data-defined keys of QgsTemplatedLineSymbolLayerBase added in QGIS 4.0
+    # (blank segments) and 4.2 (extra items), qgssymbollayer.h: None before.
+    _BLANK_SEGMENTS_KEY = getattr(QgsSymbolLayer.Property, "BlankSegments", None)
+    _EXTRA_ITEMS_KEY = getattr(QgsSymbolLayer.Property, "ExtraItems", None)
+    _TRIM_KEYS = (getattr(QgsSymbolLayer.Property, "PropertyTrimStart", None),
+                  getattr(QgsSymbolLayer.Property, "PropertyTrimEnd", None))
+
+    def _templated_length_unit(self, unit) -> Optional[Tuple[Optional[float], bool, Optional[float]]]:
+        """(project map units per unit, per cent, mm per unit) of a trim or
+        blank-segment length in ``unit``; None for a unit not placed."""
+        if _enum_value(unit) == _enum_value(Qgis.RenderUnit.Percentage):
+            return None, True, None
+        factor = self._scaled_map_distance(1.0, unit)
+        if factor is not None:
+            return factor, False, None
+        mm = _to_mm(1.0, unit)
+        return (None, False, mm) if mm is not None else None
+
+    def _templated_extras(self, flat_rule: FlattenedRule, layer) -> Optional[List[FlattenedRule]]:
+        """QGIS 4 marker and hash lines: trim distance at start / end (4.2),
+        data-defined blank segments (4.0) and extra items (4.2). QGIS trims
+        every line part / ring (trimPoints) before offsetting it and placing
+        anything on it, skips the items whose distance along the drawn line
+        falls inside a blank segment (BlankSegmentsWalker) and draws each
+        extra item once per part at its map position and angle
+        (QgsTemplatedLineSymbolLayerBase::renderPolyline). The symbol is
+        materialized without them, its placed markers' recipes then carry
+        the trim and blank segments (applied by the exporter's
+        _templated_lines and placement steps); extra items are a point rule
+        of their own. None when the layer has none of them."""
+        props = layer.dataDefinedProperties()
+
+        def expression(key) -> str:
+            return props.property(key).asExpression() \
+                if key is not None and props.isActive(key) else ""
+        ends = []
+        if hasattr(layer, "trimDistanceStart"):
+            for value, unit, key in (
+                    (layer.trimDistanceStart(), layer.trimDistanceStartUnit(), self._TRIM_KEYS[0]),
+                    (layer.trimDistanceEnd(), layer.trimDistanceEndUnit(), self._TRIM_KEYS[1])):
+                text = expression(key)
+                ends.append((float(value), unit, text) if abs(float(value)) > 1e-12 or text else None)
+        blank = expression(self._BLANK_SEGMENTS_KEY)
+        extra = expression(self._EXTRA_ITEMS_KEY)
+        if not any(ends) and not blank and not extra:
+            return None
+        crs = self.project_crs or flat_rule.layer.crs().authid()
+        clone = layer.clone()
+        if any(ends):
+            clone.setTrimDistanceStart(0.0)
+            clone.setTrimDistanceEnd(0.0)
+        clone_props = clone.dataDefinedProperties()
+        for key in (*self._TRIM_KEYS, self._BLANK_SEGMENTS_KEY, self._EXTRA_ITEMS_KEY):
+            if key is not None and clone_props.isActive(key):
+                clone_props.setProperty(key, QgsProperty())
+        clone.setDataDefinedProperties(clone_props)
+        base = flat_rule.derive()
+        replace_symbol_layer(base.rule.symbol(), clone)
+        if any(ends) or blank:
+            rules = self._trimmed_or_blanked(base, layer, ends, blank)
+        else:
+            placed = self.materialize(base, base.rule.symbol().symbolLayer(0))
+            rules = placed if placed is not None else [base]
+        items = self._extra_items_rule(flat_rule, layer, extra, crs) if extra else None
+        return rules + ([items] if items is not None else [])
+
+    def _trimmed_or_blanked(self, base: FlattenedRule, layer, ends, blank: str) -> List[FlattenedRule]:
+        """``base`` (the layer without trim and blank segments) materialized,
+        its placed markers' recipes given them as "trim" ((value, map units
+        per unit, per cent, expression) at start and end) and "blank"
+        (expression, map units per unit). Screen-unit lengths are converted
+        per quarter of a zoom, as a simple line's trim (at the last zoom's
+        value beyond the last tiles)."""
+        trims, screen = [], False
+        for end in ends:
+            resolved = self._templated_length_unit(end[1]) if end is not None else None
+            if end is not None and resolved is None:
+                self._report("Q2VT_MARKER_PLACEMENT_APPROX",
+                             f"{layer.layerType()}: a trim in this unit is not applied.", base)
+            trims.append(None if resolved is None else (end[0], end[2]) + resolved)
+            screen |= resolved is not None and resolved[2] is not None
+        blank_unit = None
+        if blank:
+            unit = layer.blankSegmentsUnit() if hasattr(layer, "blankSegmentsUnit") \
+                else Qgis.RenderUnit.MapUnits
+            blank_unit = self._templated_length_unit(unit)
+            if blank_unit is None or blank_unit[1]:
+                self._report("Q2VT_MARKER_PLACEMENT_APPROX",
+                             f"{layer.layerType()}: blank segments in this unit are not applied.",
+                             base)
+                blank_unit = None
+            else:
+                screen |= blank_unit[2] is not None
+        if base.get_attr("g") == 2 and abs(layer.offset()) > 1e-9 and (any(trims) or blank_unit):
+            # QGIS buffers the trimmed (open) ring as a polygon.
+            self._report("Q2VT_MARKER_PLACEMENT_APPROX",
+                         f"{layer.layerType()}: an offset polygon outline is drawn untrimmed and "
+                         "without blank segments.", base)
+            trims, blank_unit = [None, None], None
+        if not any(trims) and blank_unit is None:
+            placed = self.materialize(base, base.rule.symbol().symbolLayer(0))
+            return placed if placed is not None else [base]
+        bands = [(base, None)]
+        if screen:
+            bands = []
+            for rule in self._per_zoom(base):
+                last = rule.visibility is not None and rule.visibility.max_zoom is None
+                bands.extend((band, self._map_units_per_mm(base, zoom))
+                             for band, zoom in self._sub_zoom_bands(rule, self.TRIM_BAND_STEPS, last))
+        rules, native = [], False
+        for band, per_mm in bands:
+            def factor(resolved):
+                return resolved[0] if resolved[2] is None else resolved[2] * per_mm
+            params = []
+            if any(trims):
+                params.append(("trim", tuple(
+                    None if trim is None else (trim[0], factor(trim[2:]), trim[3], trim[1])
+                    for trim in trims)))
+            if blank_unit is not None:
+                params.append(("blank", (blank, factor(blank_unit))))
+            placed = self.materialize(band, band.rule.symbol().symbolLayer(0))
+            for rule in placed if placed is not None else [band]:
+                if rule.recipe is not None and rule.recipe.kind == "marker_points":
+                    rule.recipe = mat.Recipe(rule.recipe.kind, rule.recipe.placements,
+                                             rule.recipe.params + tuple(params))
+                else:
+                    native = True
+                rules.append(rule)
+        if native:
+            self._report("Q2VT_MARKER_PLACEMENT_APPROX",
+                         f"{layer.layerType()}: where the browser places these markers (data-defined "
+                         "interval, too dense, beyond the last tiles), they are drawn untrimmed and "
+                         "without blank segments.", base)
+        if screen:
+            self.distinguish(rules)
+        return rules
+
+    def _extra_items_rule(self, flat_rule: FlattenedRule, layer, expression: str,
+                          crs: str) -> Optional[FlattenedRule]:
+        """The extra items of a marker / hash line (QGIS 4.2): the sub-symbol
+        drawn at every "x y angle" of the evaluated string, a point rule of
+        their own. QGIS draws them with no offset, trim or blank segment,
+        their angle (clockwise) set as the line angle: hashes always turn
+        with it (QgsHashedLineSymbolLayer::renderSymbol), markers only when
+        they follow the line (otherwise the sub-symbol is prepared without
+        DynamicRotation and keeps its own angle, checked against QGIS
+        renders). The coordinates are the map's (renderPolyline maps them to
+        the screen with mapToPixel alone)."""
+        converted = self._hash_as_marker_line(layer, flat_rule) \
+            if layer.layerType() == "HashLine" else layer  # (kept alive: owns the sub-symbol)
+        sub = converted.subSymbol()
+        if sub is None:
+            return None
+        rotate = layer.layerType() == "HashLine" or layer.rotateSymbols()
+        symbol = self._marker_points_symbol(sub, rotate, 0.0, 0.0, layer.offsetUnit(), flat_rule)
+        recipe = mat.Recipe("marker_points", ("ExtraItems",), (
+            ("extra", expression), ("crs", crs), ("ring_filter", _ring_filter(layer))))
+        return self._with_symbol(flat_rule, symbol, 0, 5, recipe)
 
     def _hash_as_marker_line(self, layer, flat_rule: FlattenedRule) -> QgsMarkerLineSymbolLayer:
         """Equivalent marker line: a short line marker perpendicular to the line."""
