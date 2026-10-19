@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from qgis.PyQt.QtGui import QColor, QFont, QFontInfo, QFontMetricsF
 from ..utils.config import Qt
-from ..utils.qt_compat import symbol_layer_key
+from ..utils.qt_compat import (CURVED_AT_VERTICES, CURVED_STRETCH_CHARS, CURVED_STRETCH_WORDS,
+                               MULTIPART_SPLIT, symbol_layer_key)
 from qgis.core import (
     QgsVectorTileLayer,
     QgsVectorTileBasicRenderer,
@@ -2103,6 +2104,7 @@ class QgisMapLibreStyleExporter:
         view_max_zoom: Optional[int] = None,
         layer_zooms: Optional[Dict[str, Tuple[int, int]]] = None,
         diagrams: Optional[Dict[str, dict]] = None,
+        label_modes: Optional[Dict[str, dict]] = None,
     ):
         """Initialise the exporter.
 
@@ -2133,8 +2135,11 @@ class QgisMapLibreStyleExporter:
                              with screen-unit lengths get one per zoom up to it.
             layer_zooms:     The tile zoom range of each dataset (source
                              layer), noted for bridge_zoom_bands.
+            label_modes:     Style name -> the label's QGIS 4 placement modes
+                             (RulesExporter._label_modes).
         """
         self.visible_polygons = visible_polygons or {}
+        self.label_modes = label_modes or {}
         # Style name -> heatmap spec (fidelity.heatmap): drawn as a heatmap layer.
         self.heatmaps = heatmaps or {}
         # Style name -> (x, y, unit): shifted on screen (viewport translate).
@@ -5463,6 +5468,13 @@ class QgisMapLibreStyleExporter:
             "visibility": "visible",
         })
 
+        modes = self.label_modes.get(style_name) or {}
+        if modes.get("multipart") == MULTIPART_SPLIT:
+            # Lines split over the parts: each part's text is one line,
+            # wrapped already (RulesExporter._label_lines_over_parts).
+            layer_def["layout"]["text-max-width"] = 999
+        self._report_label_modes(modes)
+
         # Emit only the placement properties that apply to this placement
         # mode; MapLibre lets some of them override each other.
         variable_anchor = TextPropertyExtractor.get_text_variable_anchor(label_settings)
@@ -5527,8 +5539,26 @@ class QgisMapLibreStyleExporter:
             # anchors along it, half a label + 2 em from its start).
             layer_def["layout"]["symbol-placement"] = "line-center"
             layer_def["layout"].pop("symbol-spacing", None)
+        vertex_chars = modes.get("curved") == CURVED_AT_VERTICES and placement == "OverPoint" and not pinned
+        if vertex_chars:
+            # A character at each vertex (RulesExporter._label_chars_at_vertices):
+            # its box's bottom-left corner on the vertex, turned to the line
+            # (never flipped upright), the label distance to its left - a
+            # text-offset, turned with the character. Drawn whatever overlaps
+            # it: MapLibre would hide characters one by one.
+            layer_def["layout"].update({
+                "text-anchor": "bottom-left", "text-rotation-alignment": "map",
+                "text-keep-upright": False, "text-allow-overlap": True})
+            layer_def["layout"].pop("text-offset", None)
+            translate = None
+            distance = float(label_settings.dist or 0)
+            if distance:
+                pixels = PropertyExtractor.length(distance, label_settings.distUnits)
+                layer_def["layout"]["text-offset"] = self._layer_zoom_step(
+                    layer_def, TextPropertyExtractor.label_ems([0, ex.mul(pixels, -1)], em_size,
+                                                               limit=True))
         if layer_def["layout"]["symbol-placement"] == "point" and not line_midpoint and \
-                TextPropertyExtractor.flips_upside_down(label_settings):
+                not vertex_chars and TextPropertyExtractor.flips_upside_down(label_settings):
             # Line labels at a line's middle come upright already. Before the
             # background takes the text's angle (icon-rotate).
             TextPropertyExtractor.keep_upright(layer_def["layout"])
@@ -5621,6 +5651,12 @@ class QgisMapLibreStyleExporter:
                     # Curved placement: the viewer lays the label along the
                     # line's piece under it, bent with the line.
                     layer_def["metadata"]["q2vt:line-curved"] = True
+                    stretch = {CURVED_STRETCH_CHARS: "characters", CURVED_STRETCH_WORDS: "words"}.get(
+                        modes.get("curved"))
+                    if stretch:
+                        # QGIS 4 "Stretch character / word spacing to fit
+                        # line": the viewer spreads the text over the line.
+                        layer_def["metadata"]["q2vt:curved-stretch"] = stretch
             around = self._label_around(label_settings, placement)
             if around:
                 layer_def["metadata"]["q2vt:label-around"] = around
@@ -5636,6 +5672,42 @@ class QgisMapLibreStyleExporter:
                 layer_def["metadata"]["q2vt:font"] = font
         defs = self._line_label_zoom_split(layer_def)
         self.style["layers"].extend(self._label_shadows(defs, text_format) + defs)
+
+    def _report_label_modes(self, modes: dict) -> None:
+        """QGIS 4 label placement modes the web map draws only approximately
+        (RulesExporter._label_modes)."""
+        if not modes:
+            return
+        curved = modes.get("curved")
+        if curved == CURVED_AT_VERTICES:
+            self.context.report(
+                "Q2VT_LABEL_APPROXIMATE",
+                "Curved label \"Place characters at vertices\": each character is drawn at its "
+                "vertex whatever it overlaps (QGIS drops the whole label where it collides), "
+                "never repeated along the line.")
+        elif curved in (CURVED_STRETCH_CHARS, CURVED_STRETCH_WORDS):
+            what = "word" if curved == CURVED_STRETCH_WORDS else "character"
+            message = (f"Curved label \"Stretch {what} spacing to fit line\": the web viewer "
+                       "stretches it over the visible line; other clients, and repeated labels "
+                       "MapLibre places itself, draw it unstretched.")
+            if curved == CURVED_STRETCH_WORDS:
+                message += " Word spacing grows in whole spaces (MapLibre has no word spacing)."
+            self.context.report("Q2VT_LABEL_APPROXIMATE", message)
+        if modes.get("whitespace"):
+            self.context.report(
+                "Q2VT_LABEL_APPROXIMATE",
+                "\"Ignore whitespace collisions\": the blanks of the label still keep other "
+                "labels away (MapLibre collides the whole text).")
+        if modes.get("split_html"):
+            self.context.report(
+                "Q2VT_LABEL_APPROXIMATE",
+                "\"Split label text lines over parts\" with HTML formatting: the whole label is "
+                "drawn on every part.")
+        if modes.get("per_feature"):
+            self.context.report(
+                "Q2VT_LABEL_APPROXIMATE",
+                f"Data-defined {', '.join(modes['per_feature'])}: the layer's own setting is used "
+                "for every feature.")
 
     # A label shadow is a copy of the label under it (same id + this suffix).
     SHADOW_SUFFIX = "_q2vt_shadow"

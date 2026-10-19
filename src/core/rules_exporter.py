@@ -124,7 +124,9 @@ from qgis.core import (
 from ..utils import crash_log, main_thread
 from ..utils.config import _DATA_SIMPLIFICATION_TOLERANCE, _EPSG_CRS, _FIELD_PREFIX
 from ..utils.flattened_rule import FlattenedRule
-from ..utils.qt_compat import enum_int
+from ..utils.qt_compat import (CURVED_AT_VERTICES, MULTIPART_EVERY, MULTIPART_LARGEST, MULTIPART_SPLIT,
+                               curved_label_mode, enum_int, ignores_whitespace_collisions,
+                               label_mode_data_defined, label_multipart_mode)
 from .ddp_fetcher import DataDefinedPropertiesFetcher
 from . import export_cache
 from .datasets import DatasetInfo, ExportedDataset, gpkg_info
@@ -374,6 +376,9 @@ class _RuleGroupSnapshot:
     # Only each feature's biggest part (from flat_rules; set for a worker
     # process, which has no rules: RulesExporter._keep_biggest_part).
     keep_biggest_part: Optional[bool] = None
+    # QGIS 4 "Split label text lines over parts": each part of a feature
+    # labelled with its own line of the text (_label_lines_over_parts).
+    split_label_lines: bool = False
 
 
 _RING_FIELD = f"{_FIELD_PREFIX}_ring_cw"
@@ -715,7 +720,10 @@ class RulesExporter:
             primary = next((r for r in flat_rules if not r.shares_dataset), flat_rules[0])
 
             if primary.get_attr("t") == 1:
-                self._single_line_label_as_point(primary)
+                for rule in flat_rules:  # read before the export changes the settings
+                    rule.label_modes = self._label_modes(rule)
+                if not self._label_chars_at_vertices(primary):
+                    self._single_line_label_as_point(primary)
             # Compute expression fields (data-defined properties, optional
             # label field) — these read from the rule symbol/settings.
             expr_fields = self._create_expression_fields(flat_rules)
@@ -799,6 +807,8 @@ class RulesExporter:
                 data_max_zoom=None if primary.get_attr("i") is None else int(primary.get_attr("i")),
                 pattern_anchor=self._pattern_anchor(primary, geom_target),
                 anchor_crs=self._map_crs if self._pattern_anchor(primary, geom_target) else "",
+                split_label_lines=primary.get_attr("t") == 1 and getattr(
+                    primary, "label_modes", {}).get("multipart") == MULTIPART_SPLIT,
             ))
             if self._labels_visible_polygon(primary, geom_target):
                 rule_groups.append(self._visible_polygon_group(rule_groups[-1], primary))
@@ -820,6 +830,13 @@ class RulesExporter:
         @geometry_part_num))`` = the length of one generated segment), not on
         the source feature. They are computed again on every exported part
         (_split_parts)."""
+        if getattr(flat_rule, "vertex_chars", None) and not generated:
+            # One point per character (_label_chars_at_vertices): its text and
+            # angle read the point's number.
+            label = f"{_FIELD_PREFIX}_label"
+            return [(10, f"substr({self._VERTEX_CHARS}, @geometry_part_num, 1)", label)] + [
+                (ftype, expr, name) for ftype, expr, name in fields
+                if expr and name != label and "@geometry_part_num" in expr]
         symbol = flat_rule.rule.symbol() if flat_rule.get_attr("t") == 0 else None
         if symbol is None or not symbol.symbolLayerCount() or (
                 not generated and symbol.symbolLayer(0).layerType() != "GeometryGenerator"):
@@ -1126,6 +1143,8 @@ class RulesExporter:
         keep = set()
         for rule in self.flattened_rules or []:
             recipe = getattr(rule, "recipe", None)
+            if getattr(rule, "vertex_chars", False):  # a character at each vertex
+                keep.add(rule.layer.id())
             if recipe is None:
                 continue
             if recipe.kind == "arrow_polygons" or (recipe.kind == "marker_points" and (any(
@@ -1616,7 +1635,7 @@ class RulesExporter:
             return False  # every window is a label (_label_windows keeps the longest part)
         if grp.rule_type == 1 and not grp.visible_polygons:
             settings = grp.flat_rules[0].rule.settings()
-            if settings and not settings.labelPerPart:
+            if settings and label_multipart_mode(settings) == MULTIPART_LARGEST:
                 return True
         if grp.rule_type == 0:
             symbol_layer = grp.flat_rules[0].rule.symbol().symbolLayers()[0]
@@ -1923,6 +1942,9 @@ class RulesExporter:
             FIELDS_MAPPING=field_mapping,
         )
 
+        if grp.split_label_lines:
+            refactored = self._label_lines_over_parts(refactored)
+
         # Geometry transformation.
         self._check_cancel()
         transbase = refactored
@@ -2100,6 +2122,51 @@ class RulesExporter:
                 piece.setGeometry(part)
                 writer.addFeature(piece)
             scope.removeGeometry()
+        del writer
+        return out
+
+    def _label_lines_over_parts(self, source: str) -> str:
+        """Worker: QGIS 4 "Split label text lines over parts"
+        (Qgis.MultiPartLabelingBehavior.SplitLabelTextLinesOverParts,
+        QgsPalLayerSettings::registerFeatureWithDetails): part i of a
+        feature (asGeometryCollection) is labelled with line i of its text
+        (QgsTextDocument::splitBlocksToDocuments: the lines after the wrap
+        character, new lines and automatic wrapping); parts beyond the last
+        line have no label, lines beyond the last part are not drawn (a
+        single-part feature shows its first line only).
+
+        The base layer holds each part as a feature, in the order of its
+        feature's parts (multiparttosingleparts), the parts of a feature
+        next to each other: the label of the i-th one keeps line i."""
+        from qgis.core import QgsFeature, QgsVectorFileWriter  # pylint: disable=import-outside-toplevel
+        self._check_cancel()
+        layer = self._open(source, "split_lines")
+        fields = layer.fields()
+        label = fields.indexFromName(f"{_FIELD_PREFIX}_label")
+        orig = fields.indexFromName(f"{_FIELD_PREFIX}_orig_id")
+        if label < 0 or orig < 0:
+            return source
+        out = self._temp_path("lines")[:-len(_TEMP_RULE_FORMAT)] + "fgb"
+        with self._temp_files_lock:
+            self._temp_files.add(out)
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = "FlatGeobuf"
+        options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
+        writer = QgsVectorFileWriter.create(out, fields, layer.wkbType(), layer.crs(),
+                                            QgsProject.instance().transformContext(), options)
+        previous, number = None, 0
+        for feature in layer.getFeatures():
+            self._check_cancel()
+            key = feature[orig]
+            number = number + 1 if key == previous else 0
+            previous = key
+            text = feature[label]
+            lines = text.split("\n") if isinstance(text, str) else []  # (QGIS 3: NULL a QVariant)
+            if number >= len(lines) or not lines[number]:
+                continue  # QGIS draws nothing for an empty text
+            piece = QgsFeature(feature)
+            piece.setAttribute(label, lines[number])
+            writer.addFeature(piece)
         del writer
         return out
 
@@ -4307,9 +4374,20 @@ class RulesExporter:
         )
         if settings.useSubstitutions:
             filter_exp = self._substituted(filter_exp, settings.substitutions)
+        modes = getattr(flat_rule, "label_modes", {})
+        split = modes.get("multipart") == MULTIPART_SPLIT
         wrap = settings.wrapChar
-        if wrap:  # QGIS breaks the line at every wrap character
+        if wrap and (split or modes.get("curved") != CURVED_AT_VERTICES):
+            # QGIS breaks the line at every wrap character (a curved label
+            # only to split its lines over the parts: QgsPalLayerSettings::
+            # registerFeatureWithDetails allowMultipleLines).
             filter_exp = f"replace({filter_exp}, {QgsExpression.quotedString(wrap)}, '\n')"
+        if split and settings.autoWrapLength > 0:
+            # The lines shared out over the parts are the wrapped ones
+            # (QgsTextDocument::splitLines): wrapped here, not by MapLibre.
+            length = int(settings.autoWrapLength)
+            filter_exp = (f"wordwrap({filter_exp}, "
+                          f"{length if settings.useMaxLineLengthForAutoWrap else -length})")
         if not settings.format().allowHtmlFormatting():
             from .maplibre_converter import TextPropertyExtractor  # pylint: disable=import-outside-toplevel
             spaces = TextPropertyExtractor.word_spacing_spaces(settings.format())
@@ -4391,6 +4469,9 @@ class RulesExporter:
             return None
         if rule_type == 0 and getattr(flat_rule, "shift", None):
             transformation[1] = self._shifted(transformation[1], *flat_rule.shift)
+        # Characters at vertices: all of a line's points, numbered as its
+        # vertices (QGIS does not clip such a line).
+        cut = cut and not getattr(flat_rule, "vertex_chars", False)
         transformation[1] = self._clip_to_extent(transformation[1], cut)
         return tuple(transformation)
 
@@ -4438,6 +4519,74 @@ class RulesExporter:
         "length(geometry_n(@geometry, @element))), array_max(array_foreach("
         "generate_series(1, num_geometries(@geometry)), length(geometry_n(@geometry, "
         "@element))))) + 1), @geometry)")
+
+    @staticmethod
+    def _label_modes(flat_rule: FlattenedRule) -> dict:
+        """The label's QGIS 4 placement modes (utils.qt_compat), read before
+        the export changes its settings: "multipart" (largest / every /
+        split), "curved" (the curved label mode), "whitespace" (blanks do
+        not collide) and "per_feature" (the modes set by a field or an
+        expression: one value is kept). Split lines of an HTML label: its
+        whole text on every part (its sections are not split)."""
+        settings = flat_rule.rule.settings()
+        multipart = label_multipart_mode(settings)
+        html = settings is not None and settings.format().allowHtmlFormatting()
+        return {
+            "multipart": MULTIPART_EVERY if multipart == MULTIPART_SPLIT and html else multipart,
+            "split_html": multipart == MULTIPART_SPLIT and html,
+            "curved": curved_label_mode(settings),
+            # Only curved labels have blanks of their own (pal curvedPlacementAtOffset).
+            "whitespace": ignores_whitespace_collisions(settings) and settings is not None
+            and enum_int(settings.placement) in (enum_int(Qgis.LabelPlacement.Curved),
+                                                 enum_int(Qgis.LabelPlacement.PerimeterCurved)),
+            "per_feature": tuple(name for name in ("LabelAllParts", "CurvedLabelMode",
+                                                   "WhitespaceCollisionHandling")
+                                 if label_mode_data_defined(settings, name)),
+        }
+
+    # The label's characters without its blanks (QGIS skips them at vertices).
+    _VERTEX_CHARS = f"regexp_replace(\"{_FIELD_PREFIX}_label\", '\\\\s', '')"
+
+    def _label_chars_at_vertices(self, flat_rule: FlattenedRule) -> bool:
+        """QGIS 4 curved labels with "Place characters at vertices"
+        (Qgis.CurvedLabelMode.PlaceCharactersAtVertices, pal
+        FeaturePart::createCurvedCandidateWithCharactersAtVertices): the
+        characters of the text, blanks skipped, one at each vertex of the
+        line from its first one (characters beyond the last vertex are left
+        out), each turned to the segment starting at its vertex (the last
+        vertex: the segment ending there) and moved the label distance to
+        its left. The line is neither simplified nor clipped
+        (QgsPalLayerSettings::evaluateLabelGeometry, generateLabelFeature).
+
+        Exported as one point per character, the character and its angle
+        evaluated per point (_split_parts, _part_fields); each is drawn as an
+        over-point label with its box's bottom-left corner on the vertex, as
+        QGIS draws a character from its label position. The converter lays
+        them out (QgisMapLibreStyleExporter, label_modes "vertices")."""
+        settings = flat_rule.rule.settings()
+        if settings is None or getattr(flat_rule, "label_modes", {}).get("curved") != CURVED_AT_VERTICES:
+            return False
+        if flat_rule.get_attr("g") not in (1, 2) or settings.geometryGeneratorEnabled or \
+                self._pinned_position(settings):
+            return False
+        line = "geometry($currentfeature)"
+        if flat_rule.get_attr("g") == 2:
+            line = f"exterior_ring({line})"
+        # Clockwise degrees (QGIS's angle is counter-clockwise, y up).
+        rotation = (
+            f"with_variable('q2vt_vl', {line}, with_variable('q2vt_j', "
+            f"if(@geometry_part_num < num_points(@q2vt_vl), @geometry_part_num, @geometry_part_num - 1), "
+            f"-degrees(atan2(y(point_n(@q2vt_vl, @q2vt_j + 1)) - y(point_n(@q2vt_vl, @q2vt_j)), "
+            f"x(point_n(@q2vt_vl, @q2vt_j + 1)) - x(point_n(@q2vt_vl, @q2vt_j))))))")
+        settings.placement = Qgis.LabelPlacement.OverPoint
+        settings.quadOffset = Qgis.LabelQuadrantPosition.AboveRight
+        settings.xOffset = settings.yOffset = 0.0
+        settings.angleOffset = 0.0
+        settings.repeatDistance = 0.0
+        settings.dataDefinedProperties().setProperty(
+            QgsPalLayerSettings.Property.LabelRotation, QgsProperty.fromExpression(rotation))
+        flat_rule.vertex_chars = True
+        return True
 
     def _single_line_label_as_point(self, flat_rule: FlattenedRule) -> None:
         """A line label drawn once per line (no repeat distance), as QGIS
@@ -4535,6 +4684,15 @@ class RulesExporter:
         settings = flat_rule.rule.settings()
         target_geom = flat_rule.get_attr("g")
         transform_expr = "@geometry"
+        if getattr(flat_rule, "vertex_chars", False):
+            # A point at each vertex that gets a character
+            # (_label_chars_at_vertices), numbered as the vertices.
+            flat_rule.set_attr("c", 0)
+            line = "exterior_ring(@geometry)" if target_geom == 2 else "@geometry"
+            return [0, f"with_variable('q2vt_vl', {line}, with_variable('q2vt_vn', "
+                       f"min(num_points(@q2vt_vl), length({self._VERTEX_CHARS})), "
+                       f"if(@q2vt_vn > 0, collect_geometries(array_foreach(generate_series(1, @q2vt_vn), "
+                       f"point_n(@q2vt_vl, @element))), NULL)))"]
         if getattr(flat_rule, "line_label_midpoint", False):
             flat_rule.set_attr("c", 0)
             return [0, f"with_variable('q2vt_l', {self._label_line(flat_rule)}, "
@@ -4558,7 +4716,8 @@ class RulesExporter:
             # lines (a centroid has no line for MapLibre's line placement).
             flat_rule.set_attr("c", 1)
             target_geom = 1
-            transform_expr = self._EXTERIOR_RINGS if settings.labelPerPart else self._LARGEST_RING
+            transform_expr = self._LARGEST_RING if label_multipart_mode(settings) == MULTIPART_LARGEST \
+                else self._EXTERIOR_RINGS
         elif target_geom == 2:
             # A label on the visible part: the static point (for clients
             # without the viewer's visible-polygon labels) lies in the part
@@ -4708,6 +4867,8 @@ class RulesExporter:
             return False
         if getattr(flat_rule, "label_generated", False) or settings.geometryGeneratorEnabled:
             return False  # placed on the generated geometry (exported), not the polygon
+        if getattr(flat_rule, "vertex_chars", False):
+            return False  # characters at the ring's vertices
         if self.cent_source == 0:
             return False
         if self.cent_source == 1:
@@ -4727,7 +4888,8 @@ class RulesExporter:
         name = label.output_dataset + self.VISIBLE_POLYGONS_SUFFIX
         for rule in label.flat_rules:
             rule.visible_polygons = name
-            rule.label_per_part = bool(flat_rule.rule.settings().labelPerPart)
+            # Split lines: each part labelled (with its own line).
+            rule.label_per_part = label_multipart_mode(flat_rule.rule.settings()) != MULTIPART_LARGEST
         return dataclasses.replace(
             label, output_dataset=name, geometry_target=2,
             geometry_expression=self._clip_to_extent("@geometry"),
@@ -4742,7 +4904,8 @@ class RulesExporter:
         name = label.output_dataset + self.VISIBLE_LINES_SUFFIX
         for rule in label.flat_rules:
             rule.visible_polygons = name
-            rule.label_per_part = bool(flat_rule.rule.settings().labelPerPart)
+            # Split lines: each part labelled (with its own line).
+            rule.label_per_part = label_multipart_mode(flat_rule.rule.settings()) != MULTIPART_LARGEST
             rule.visible_kind = "line"
             rule.line_curved = bool(getattr(flat_rule, "line_label_curved", False))
             # "Merge connected lines" (line layers; not with direction

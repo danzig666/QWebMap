@@ -41,7 +41,9 @@ from qgis.PyQt.QtCore import QPointF
 from qgis.PyQt.QtGui import QFont
 
 from ..utils.config import Qt
-from ..utils.qt_compat import enum_int, symbol_layer_key
+from ..utils.qt_compat import (CURVED_AT_VERTICES, CURVED_DEFAULT, MULTIPART_LARGEST,
+                               MULTIPART_SPLIT, curved_label_mode, enum_int,
+                               label_multipart_mode, symbol_layer_key)
 from ..utils.config import QDomDocument
 from ..utils.flattened_rule import FlattenedRule
 from ..utils.zoom_levels import ZoomLevels
@@ -2180,7 +2182,7 @@ class RulesFlattener:
                    "FontLetterSpacing", "FontWordSpacing", "FontStretchFactor", "RepeatDistance",
                    "RepeatDistanceUnit", "CurvedCharAngleInOut", "LabelAllParts",
                    "MultiLineWrapChar", "LineAnchorPercent", "LineAnchorType",
-                   "LineAnchorTextPoint", "OverrunDistance")
+                   "LineAnchorTextPoint", "OverrunDistance", "CurvedLabelMode")
 
     # A repeated line label's repeat distance from which the web viewer lays
     # it out on the visible part of the line (CSS px, a tile): QGIS chops the
@@ -2203,6 +2205,10 @@ class RulesFlattener:
         fixed on the whole line), the web viewer places the labels on the
         visible part of the line instead (_visible_repeat_rules)."""
         if label_rule.get_attr("t") != 1:
+            return [label_rule]
+        if curved_label_mode(label_rule.rule.settings()) == CURVED_AT_VERTICES:
+            # One character at each vertex, no repeat (RulesExporter.
+            # _label_chars_at_vertices).
             return [label_rule]
         visible_from = self._visible_repeat_zoom(label_rule)
         if not self._lays_out_windows(label_rule):
@@ -2327,6 +2333,11 @@ class RulesFlattener:
             return False  # merged lines, a strict anchor
         if settings.wrapChar or settings.format().allowHtmlFormatting():
             return False
+        # QGIS 4: lines split over the parts (one text per part), text
+        # stretched to fill the line.
+        if label_multipart_mode(settings) == MULTIPART_SPLIT or \
+                curved_label_mode(settings) != CURVED_DEFAULT:
+            return False
         P = QgsPalLayerSettings.Property
         props = settings.dataDefinedProperties()
         x_prop, y_prop = props.property(P.PositionX), props.property(P.PositionY)
@@ -2400,7 +2411,7 @@ class RulesFlattener:
             ("max_out", -abs(float(settings.maxCurvedCharAngleOut))),
             ("max_angle", float(TextPropertyExtractor.get_text_max_angle(settings))),
             ("anchor", float(settings.lineSettings().lineAnchorPercent())),
-            ("per_part", bool(settings.labelPerPart)),
+            ("per_part", label_multipart_mode(settings) != MULTIPART_LARGEST),
             ("candidates_per_cm", float(engine.maximumLineCandidatesPerCm())),
         ))
 
