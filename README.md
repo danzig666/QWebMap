@@ -518,9 +518,10 @@ qgis_process-qgis.bat run QGIS2VectorTilesFork:publish_web_map --PROJECT_PATH="C
   stops with `Q2VT_PUB_REVIEW_NEEDED`: approve it on the window's Review tab, or add
   `--APPROVE=true`. `--SAVE_PROJECT=true` writes the approval (and the settings) into the
   project file, so later runs need no approval.
-- **Credentials:** the QGIS authentication configuration saved with the settings (it needs the
-  master password, which QGIS keeps in the Windows credential store when you tick *Store/update
-  the master password in your Windows Wallet*), or the environment variables
+- **Credentials:** the QGIS authentication configuration saved with the settings (unlocking it
+  needs the master password without a prompt: QGIS reads it from the system's password manager
+  after *Settings → Options → Authentication → Utilities → Integrate Master Password with the …*),
+  or the environment variables
   `QWEBMAP_ACCESS_KEY_ID` and `QWEBMAP_SECRET_ACCESS_KEY` (SSH: `QWEBMAP_SSH_PASSWORD`, or a key
   / ssh-agent with none). They are never written into the project or the output.
 - The results (local folder, `index.html`, public address) are printed; `--json` gives them as
