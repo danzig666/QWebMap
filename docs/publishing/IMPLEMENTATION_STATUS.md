@@ -2099,3 +2099,18 @@ grapheme; split lines over generated parts; static LabelAllParts read as
 mask markers and ones masking only unexported layers no longer knocked out; hash-line DDP
 emitter family. No Qt6 incompatibilities found; projects without the new options export
 identically to 4.50.2, and export time is unchanged.
+
+## 4.52.0 — publish from the command line
+
+`processing/publish_algorithm.py` (`QGIS2VectorTilesFork:publish_web_map`, NoThreading) over
+`publishing/headless.py`, which does what the window's Export locally / Publish do with the
+saved settings and nothing asked: `find_profile` (active, or by title / address / id),
+`extent_3857` (parameter, else the extent layer's current extent, else the saved extent; error
+when there is none), `run` (validate, review gate: `Q2VT_PUB_REVIEW_NEEDED` unless APPROVE, which
+records the fingerprint; credentials from `QWEBMAP_*` environment variables or the saved auth
+configuration, resolved before the export; `export_local`, then `deployments.publish` /
+`folder_publish.publish_folder`). SAVE_PROJECT writes the settings (approval) and the project
+file. The window now takes its live-layer review fingerprint from `headless` too. Tested through
+the Processing registry (local export, settings by name, extent, R2 with a fake S3 client:
+refused before approval, published after, approval saved, no secret in the project) and through
+the real `qgis_process` (QGIS 4 image; skipped where it is not installed).

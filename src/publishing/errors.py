@@ -37,6 +37,7 @@ CODES = {
     "Q2VT_PUB_IDENTITY": "Feature keys are missing, NULL or not unique.",
     "Q2VT_PUB_DEPENDENCY": "A required library is not available.",
     "Q2VT_PUB_BASEMAP": "The vector basemap could not be prepared.",
+    "Q2VT_PUB_REVIEW_NEEDED": "What becomes public has not been approved (review).",
 }
 
 

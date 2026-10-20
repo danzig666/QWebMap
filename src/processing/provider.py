@@ -2,6 +2,7 @@
 
 from qgis.core import QgsProcessingProvider
 from .algorithms import QGIS2VectorTilesAlgorithm, _ICON
+from .publish_algorithm import PublishWebMapAlgorithm
 
 
 # Create a proper temporary provider class
@@ -29,3 +30,4 @@ class QGIS2VectorTilesPorvider(QgsProcessingProvider):
     def loadAlgorithms(self):
         """Loads the algorithms provided by this provider."""
         self.addAlgorithm(QGIS2VectorTilesAlgorithm())
+        self.addAlgorithm(PublishWebMapAlgorithm())

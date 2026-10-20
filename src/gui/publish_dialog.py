@@ -3499,22 +3499,15 @@ class PublishDialog(QDialog):
     def _live_layers(self, profile):
         """[(layer name, tile or WMS address)] of the included raster layers
         the visitors' browsers load live from their own server."""
-        from ..publishing import live_raster  # pylint: disable=import-outside-toplevel
-        out = []
-        for config in profile.layers:
-            layer = self.project.mapLayer(config.layer_id) if config.included and config.raster_live else None
-            if layer is None or not hasattr(layer, "providerType") or layer.providerType() != "wms":
-                continue
-            source, _ = live_raster.live_source(layer)
-            if source is not None:
-                out.append((layer.name(), source["tiles"][0]))
-        return out
+        from ..publishing.headless import live_layers  # pylint: disable=import-outside-toplevel
+        return live_layers(self.project, profile)
 
     def _live_review_extra(self, profile):
         """The live layers' addresses in the disclosure fingerprint (None
-        without any: the fingerprint of earlier approvals stays)."""
-        urls = sorted(url for _, url in self._live_layers(profile))
-        return {"live": urls} if urls else None
+        without any: the fingerprint of earlier approvals stays; the same
+        as a command-line publication's, publishing.headless)."""
+        from ..publishing.headless import live_review_extra  # pylint: disable=import-outside-toplevel
+        return live_review_extra(self.project, profile)
 
     @staticmethod
     def _target_url(profile):
