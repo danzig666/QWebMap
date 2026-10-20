@@ -491,6 +491,41 @@ viewer and the fidelity report. Its options include *Fidelity Mode*, *Beyond Max
 static XYZ web package. Big exports use the helper QGIS processes on their own; the *Parallel
 export* option is an older thread mode, off by default, that can crash QGIS.
 
+### Publish from the command line
+
+*Processing Toolbox → QWebMap → Publish web map (saved settings)* exports the web map of the
+publication settings saved in the project (set them up once in *Web → Publish Web Map*) and
+publishes it to their destination, exactly as the window's *Publish* button does; nothing is
+asked, so it runs from a command line or a scheduled task with QGIS's own `qgis_process`. On
+Windows it is `qgis_process-qgis.bat` in the QGIS `bin` folder (OSGeo4W: the *OSGeo4W Shell*):
+
+```bat
+rem once: let qgis_process load the plugin
+qgis_process-qgis.bat plugins enable QWebMap
+
+rem export locally only (ACTION=1), into another folder
+qgis_process-qgis.bat run QGIS2VectorTilesFork:publish_web_map --PROJECT_PATH="C:\maps\city.qgz" --ACTION=1 --OUTPUT_DIR="C:\web\city"
+
+rem publish to the settings' destination (R2, S3, SSH or a folder)
+qgis_process-qgis.bat run QGIS2VectorTilesFork:publish_web_map --PROJECT_PATH="C:\maps\city.qgz"
+```
+
+- **Which settings:** the active ones (the ones the window opens with), or `--SETTINGS="title or
+  web address"` when the project has several.
+- **Extent:** the settings' (their layer's current extent, or the area last exported), or
+  `--EXTENT="xmin,xmax,ymin,ymax [EPSG:23700]"`.
+- **Review:** a publication whose review is due (the first one, or what becomes public changed)
+  stops with `Q2VT_PUB_REVIEW_NEEDED`: approve it on the window's Review tab, or add
+  `--APPROVE=true`. `--SAVE_PROJECT=true` writes the approval (and the settings) into the
+  project file, so later runs need no approval.
+- **Credentials:** the QGIS authentication configuration saved with the settings (it needs the
+  master password, which QGIS keeps in the Windows credential store when you tick *Store/update
+  the master password in your Windows Wallet*), or the environment variables
+  `QWEBMAP_ACCESS_KEY_ID` and `QWEBMAP_SECRET_ACCESS_KEY` (SSH: `QWEBMAP_SSH_PASSWORD`, or a key
+  / ssh-agent with none). They are never written into the project or the output.
+- The results (local folder, `index.html`, public address) are printed; `--json` gives them as
+  JSON. `qgis_process-qgis.bat help QGIS2VectorTilesFork:publish_web_map` lists every option.
+
 ## Documentation
 
 Documentation: [`docs/publishing/`](docs/publishing/), covering
@@ -513,7 +548,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.51.1**. Newest first:
+This README describes QWebMap **4.52.0**. Newest first:
+
+**4.52.0** — publish from the command line
+- New *Publish web map (saved settings)* Processing tool: the web map of the project's saved publication settings, exported or published without the window, so `qgis_process` (Windows: `qgis_process-qgis.bat`) runs it from a command line or a scheduled task. See *Publish from the command line*.
 
 **4.51.1** — fixes to the QGIS 4 symbology of 4.51.0
 - Marker/hash line trims and blank segments are measured in the project's units for every placement; their data-defined expressions see the layer's coordinates, variables and whole feature.
