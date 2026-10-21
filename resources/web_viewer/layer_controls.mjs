@@ -7,6 +7,21 @@
 import { t } from "./i18n.mjs";
 import { button, el, icon, toggle } from "./icons.mjs";
 
+// "Zoom to layer" (an option of the map): the layer's extent within the
+// map's. In the layer list, or in the legend when there is no Layers tab.
+export function canZoomToLayer(manifest, layer) {
+  return manifest.interaction?.zoomToLayer === true && Array.isArray(layer.bounds) && layer.bounds.length === 4;
+}
+
+export function zoomToLayerButton(map, layer) {
+  const zoom = button("q2vt-icon-btn q2vt-zoom-layer", `${t("layer.zoomTo")}: ${layer.title}`, "zoomin");
+  zoom.addEventListener("click", () => {
+    const [w, s, e, n] = layer.bounds;
+    map.fitBounds([[w, s], [e, n]], { padding: 40, maxZoom: Math.min(18, map.getMaxZoom()) });
+  });
+  return zoom;
+}
+
 export class LayerControls {
   constructor({ map, manifest, state, control, container, releaseBase }) {
     Object.assign(this, { map, manifest, state, control, container, releaseBase });
@@ -149,15 +164,7 @@ export class LayerControls {
         });
         actions.push(more);
       }
-      // "Zoom to layer" (an option of the map): the layer's extent within the map's.
-      if (this.manifest.interaction?.zoomToLayer && Array.isArray(layer.bounds) && layer.bounds.length === 4) {
-        const zoom = button("q2vt-icon-btn q2vt-zoom-layer", `${t("layer.zoomTo")}: ${layer.title}`, "zoomin");
-        zoom.addEventListener("click", () => {
-          const [w, s, e, n] = layer.bounds;
-          this.map.fitBounds([[w, s], [e, n]], { padding: 40, maxZoom: Math.min(18, this.map.getMaxZoom()) });
-        });
-        actions.unshift(zoom);
-      }
+      if (canZoomToLayer(this.manifest, layer)) actions.unshift(zoomToLayerButton(this.map, layer));
       const expander = rules.length > 1 ? this.expander(item, layer.title, false) : null;
       const row = this.row("layers", layer.id, layer.title, { swatch, locked, kind: "layer", expander, actions });
       item.append(row);

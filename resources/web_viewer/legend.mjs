@@ -5,6 +5,7 @@
 // entries actually drawn in the current view are listed.
 import { t } from "./i18n.mjs";
 import { el, icon, toggle } from "./icons.mjs";
+import { canZoomToLayer, zoomToLayerButton } from "./layer_controls.mjs";
 
 const QUERY_ROLES = new Set(["geometry", "decoration"]);
 
@@ -98,6 +99,13 @@ export class Legend {
       wrap.classList.add("q2vt-legend-switch");
       return wrap;
     };
+    // Its zoom-to-layer button too (the Layers tab has it otherwise).
+    const zoomTo = (layer) => {
+      if (!switches || !canZoomToLayer(this.manifest, layer)) return [];
+      const zoom = zoomToLayerButton(this.map, layer);
+      zoom.classList.add("q2vt-legend-zoom");
+      return [zoom];
+    };
     for (const layer of layers) {
       if (layer.legend === false) continue;
       const canSwitch = switches && layer.toggleable !== false;
@@ -106,7 +114,7 @@ export class Legend {
         const block = el("section", "q2vt-legend-layer q2vt-legend-single q2vt-legend-off");
         const list = el("ul", "q2vt-legend-items");
         const item = el("li", "q2vt-legend-item");
-        item.append(layerSwitch(layer), el("span", "", layer.title));
+        item.append(layerSwitch(layer), el("span", "", layer.title), ...zoomTo(layer));
         list.append(item);
         block.append(list);
         node.append(block);
@@ -125,7 +133,8 @@ export class Legend {
       if (!single) {
         const heading = el("h3", canSwitch ? "q2vt-legend-heading" : "");
         if (canSwitch) heading.append(layerSwitch(layer));
-        heading.append(el("span", "", layer.title));
+        heading.append(el("span", "", layer.title), ...(print ? [] : zoomTo(layer)));
+        if (!canSwitch && heading.childElementCount > 1) heading.className = "q2vt-legend-heading";
         block.append(heading);
       }
       const list = el("ul", "q2vt-legend-items");
@@ -142,7 +151,7 @@ export class Legend {
         } else {
           item.append(el("span", "q2vt-legend-blank"));  // labels only: aligned with the others
         }
-        item.append(el("span", "", single ? layer.title : rule.title));
+        item.append(el("span", "", single ? layer.title : rule.title), ...(single ? zoomTo(layer) : []));
         if (!print && !this.control.availableAt(rule.componentIds, zoom)) {
           item.classList.add("q2vt-muted");
           item.title = t("app.outOfScale");

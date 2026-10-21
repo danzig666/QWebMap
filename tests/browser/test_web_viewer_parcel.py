@@ -166,6 +166,17 @@ def legend_only_site(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def legend_only_zoom_site(tmp_path_factory):
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "integration"))
+    from test_publishing_parcel_report import build_site  # pylint: disable=import-error
+    built = build_site(tmp_path_factory.mktemp("legendzoom"), layers_panel=False, zoom_to_layer=True)
+    publication = os.path.dirname(os.path.dirname(built["rel"]))
+    with PreviewServer(os.path.dirname(publication)) as server:
+        built["url"] = server.url(f"{os.path.basename(publication)}/index.html")
+        yield built
+
+
+@pytest.fixture(scope="module")
 def no_labels_switch_site(tmp_path_factory):
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), "integration"))
     from test_publishing_parcel_report import build_site  # pylint: disable=import-error
@@ -219,6 +230,41 @@ def test_without_the_layers_tab_the_legend_switches_layers(legend_only_site, tmp
     parcels = next(r for r in after if r["title"] == "Földrészletek")
     assert parcels["on"] is False and parcels["off"]
     assert len(after) == len(before)
+
+
+def test_without_the_layers_tab_the_legend_zooms_to_layers(legend_only_zoom_site, tmp_path):
+    """Zoom-to-layer buttons (an option) are in the Layers tab; without the
+    tab the legend has them, beside its layer switches, also on a layer
+    switched off. Printing leaves them out."""
+    results = _run(legend_only_zoom_site["url"], [
+        {"eval": "document.getElementById('q2vt-tab-legend').click(); q2vtViewer.map.jumpTo({ center: [0, 0], zoom: 3 }); return 1;"},
+        {"idle": True}, {"wait": 300},
+        {"eval": """const rows = [...document.querySelectorAll('#q2vt-pane-legend .q2vt-legend-layer')];
+          const parcels = rows.find((b) => b.textContent.includes('Földrészletek'));
+          const zoom = parcels.querySelector('.q2vt-legend-zoom');
+          const label = zoom && zoom.getAttribute('aria-label');
+          zoom.click();
+          const m = q2vtViewer.map;
+          for (let i = 0; i < 60 && m.isMoving(); i++) await new Promise((r) => setTimeout(r, 100));
+          const bounds = q2vtViewer.manifest.layers.find((l) => l.title === 'Földrészletek').bounds;
+          const c = m.getCenter();
+          const result = { label, zoom: m.getZoom(), inside: c.lng >= bounds[0] && c.lng <= bounds[2] && c.lat >= bounds[1] && c.lat <= bounds[3],
+                   buttons: document.querySelectorAll('#q2vt-pane-legend .q2vt-legend-zoom').length,
+                   printed: q2vtViewer.controls.legend.printList().querySelectorAll('.q2vt-legend-zoom').length };
+          return result;"""},
+        {"idle": True}, {"wait": 300},
+        {"eval": """[...document.querySelectorAll('#q2vt-pane-legend .q2vt-legend-layer')]
+            .find((b) => b.textContent.includes('Földrészletek')).querySelector('input[role=switch]').click();
+          return 1;"""},
+        {"idle": True}, {"wait": 300},
+        {"eval": """const off = [...document.querySelectorAll('#q2vt-pane-legend .q2vt-legend-off')]
+            .find((b) => b.textContent.includes('Földrészletek'));
+          return !!(off && off.querySelector('.q2vt-legend-zoom'));"""},
+    ], tmp_path)
+    r = dict(results[1], offZoom=results[3])
+    assert r["label"] and "Földrészletek" in r["label"]
+    assert r["zoom"] > 12 and r["inside"]
+    assert r["buttons"] >= 1 and r["offZoom"] and r["printed"] == 0
 
 
 # Opened full regulation texts, as the report shows them (the test site has
