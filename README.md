@@ -549,7 +549,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.52.0**. Newest first:
+This README describes QWebMap **4.52.1**. Newest first:
+
+**4.52.1** — zoom to layer from the legend
+- Without the Layers tab (legend only), the legend has the *Zoom to layer* buttons too, beside its layer switches (also for a layer switched off).
 
 **4.52.0** — publish from the command line
 - New *Publish web map (saved settings)* Processing tool: the web map of the project's saved publication settings, exported or published without the window, so `qgis_process` (Windows: `qgis_process-qgis.bat`) runs it from a command line or a scheduled task. See *Publish from the command line*.

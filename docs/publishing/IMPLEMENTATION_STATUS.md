@@ -2114,3 +2114,9 @@ file. The window now takes its live-layer review fingerprint from `headless` too
 the Processing registry (local export, settings by name, extent, R2 with a fake S3 client:
 refused before approval, published after, approval saved, no secret in the project) and through
 the real `qgis_process` (QGIS 4 image; skipped where it is not installed).
+
+## 4.52.1 — zoom to layer in the legend
+
+With `interaction.layersPanel` off the legend already carried the layer switches; it now carries
+the zoom-to-layer buttons too (`layer_controls.canZoomToLayer` / `zoomToLayerButton`, shared
+with the Layers tab), on single rows, multi-rule headings and switched-off rows; never in print.
