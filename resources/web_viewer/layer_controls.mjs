@@ -89,7 +89,9 @@ export class LayerControls {
   render() {
     const top = el("div", "q2vt-pane-head");
     // Interaction -> Viewer -> Labels switch: without it, labels stay on.
-    this.labelsAllowed = this.manifest.interaction?.labelsToggle !== false;
+    // A map without labels (raster layers only) has nothing to switch.
+    this.labelsAllowed = this.manifest.interaction?.labelsToggle !== false
+      && this.manifest.components.some((c) => c.role === "label" || c.role === "callout");
     if (this.labelsAllowed) {
       const labels = el("div", "q2vt-row q2vt-row-labels");
       const { wrap, input } = toggle(t("app.labels"), (checked) => this.state.set({ labels: checked }));

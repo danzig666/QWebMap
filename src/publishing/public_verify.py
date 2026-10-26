@@ -149,8 +149,10 @@ def verify_release(public_release_url: str, release_dir: str, viewer_origin: Opt
     except (ValueError, OSError, EOFError):  # not JSON, or a cut / broken gzip body
         ok = False
     result.add("manifest", ok, f"status {status}")
-    # The archive: ranges, no outer encoding, a decodable tile.
-    source = next((s for s in manifest["sources"] if s["kind"] == "pmtiles"), None)
+    # The archive: ranges, no outer encoding, a decodable tile. The vector
+    # map's; without vector layers, the first raster layer's image archive.
+    pmtiles = [s for s in manifest["sources"] if s["kind"] == "pmtiles"]
+    source = next((s for s in pmtiles if s.get("tileType") == "mvt"), pmtiles[0] if pmtiles else None)
     if source:
         url = join_url(public_release_url, source["href"])
         local_path = os.path.join(release_dir, *source["href"].split("/"))
@@ -168,7 +170,7 @@ def verify_release(public_release_url: str, release_dir: str, viewer_origin: Opt
                 handle.seek(start)
                 _range(http, url, start, end, size, handle.read(end - start + 1), result)
         if header_ok:
-            _remote_tile(http, url, size, result)
+            _remote_tile(http, url, size, result, image=source.get("tileType") != "mvt")
         if viewer_origin:
             _cors(http, url, viewer_origin, result)
     glyphs = [p for p in inventory if p.startswith("glyphs/") and p.endswith("0-255.pbf")]
@@ -194,8 +196,9 @@ def _cors(http: Http, url: str, origin: str, result: VerifyResult) -> None:
                            f"expose {exposed!r}")
 
 
-def _remote_tile(http: Http, url: str, size: int, result: VerifyResult) -> None:
-    """Read the header, the root directory and one tile through ranges."""
+def _remote_tile(http: Http, url: str, size: int, result: VerifyResult, image: bool = False) -> None:
+    """Read the header, the root directory and one tile through ranges
+    (``image``: a raster layer's archive, its tile an image, not MVT)."""
     from .vendor.pmtiles.tile import deserialize_directory, deserialize_header  # pylint: disable=import-outside-toplevel
 
     def fetch(offset, length):
@@ -214,6 +217,9 @@ def _remote_tile(http: Http, url: str, size: int, result: VerifyResult) -> None:
             depth += 1
         first = entries[0]
         tile = fetch(header["tile_data_offset"] + first.offset, first.length)
+        if image:
+            result.add("tile", len(tile) == first.length > 0, f"tile id {first.tile_id}: {len(tile)} bytes")
+            return
         layers = mvt.layer_names(tile)
         result.add("tile", bool(layers), f"tile id {first.tile_id}: {len(layers)} vector layer(s)")
     except (PublishingError, mvt.MvtDecodeError, IndexError, ValueError) as error:

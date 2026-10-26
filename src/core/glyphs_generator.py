@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Set
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt
 
 try:
     import cv2
@@ -50,11 +49,44 @@ def _edt(mask: np.ndarray) -> np.ndarray:
     """Distance from each True pixel to the nearest False pixel.
     DIST_MASK_PRECISE is required for true circular (not octagonal) iso-
     distance contours — an approximate mask mode produces visibly square
-    halos at larger radii. Falls back to scipy if cv2 is unavailable."""
+    halos at larger radii. Without cv2: scipy, else exact numpy (QGIS builds
+    without scipy, e.g. the QGIS 4 Ubuntu 26.04 image, must still load the
+    plugin: scipy was imported with the module)."""
     if _HAS_CV2:
         src = (mask.astype(np.uint8)) * 255
         return cv2.distanceTransform(src, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+    try:
+        from scipy.ndimage import distance_transform_edt  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return _edt_numpy(mask)
     return distance_transform_edt(mask)
+
+
+def _edt_numpy(mask: np.ndarray, chunk_cells: int = 4_000_000) -> np.ndarray:
+    """Exact Euclidean distance transform (as scipy's distance_transform_edt):
+    per column the distance to the nearest False pixel (two scans), then per
+    row the exact minimum of (column offset)^2 + that distance^2 over the row
+    (computed for a few rows at a time: W^2 cells per row). A mask without
+    False pixels gives infinite distances (scipy: to the array's edge; the
+    glyph masks always have their empty border)."""
+    mask = np.asarray(mask, dtype=bool)
+    height, width = mask.shape
+    big = float(height + width + 1)
+    column = np.where(mask, big, 0.0)
+    for row in range(1, height):  # downwards
+        column[row] = np.minimum(column[row], column[row - 1] + 1.0)
+    for row in range(height - 2, -1, -1):  # upwards
+        column[row] = np.minimum(column[row], column[row + 1] + 1.0)
+    column[column >= big] = np.inf
+    squared = column * column
+    offsets = np.arange(width, dtype=np.float64)
+    gaps = (offsets[None, :] - offsets[:, None]) ** 2  # [target column, source column]
+    out = np.empty((height, width), dtype=np.float64)
+    rows = max(1, chunk_cells // max(1, width * width))
+    for start in range(0, height, rows):
+        block = squared[start:start + rows]  # (r, W) sources
+        out[start:start + rows] = np.min(block[:, None, :] + gaps[None, :, :], axis=2)
+    return np.sqrt(out)
 
 
 class GlyphGenerator:
@@ -107,7 +139,7 @@ class GlyphGenerator:
                 self.buffer, self.sdf_radius
             )
         if not _HAS_CV2:
-            logger.info("cv2 not found — using slower scipy distance transform "
+            logger.info("cv2 not found — using slower scipy (or numpy) distance transform "
                         "and numpy downsampling. Install opencv-python-headless "
                         "for a significant speed boost.")
 

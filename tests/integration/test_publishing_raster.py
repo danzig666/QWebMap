@@ -297,7 +297,9 @@ def test_webp_falls_back_to_png_where_qgis_cannot_write_it(tmp_path, monkeypatch
 def test_matching_the_image_resolution_sets_the_maximum_zoom(tmp_path):
     """Ground resolution of the image (one pixel measured on the ellipsoid:
     10 Web Mercator m at 47.5° N are 6.76 m) and of the tiles; matching picks
-    the lowest zoom as sharp as the image, one less with 512 px tiles."""
+    one zoom finer than the lowest as fine as the image (sharp_zoom: as sharp
+    as QGIS zoomed in), one less with 512 px tiles; an online service's own
+    finest zoom."""
     import math
     from q2vt_plugin.src.publishing import raster_tiles  # pylint: disable=import-error
     assert raster_tiles.native_zoom(0.4, 47.97) == 18 and raster_tiles.native_zoom(0.4, 47.97, True) == 17
@@ -310,11 +312,12 @@ def test_matching_the_image_resolution_sets_the_maximum_zoom(tmp_path):
     plan = raster_tiles.plan_layer(project, ortho, config, profile, EXTENT)
     assert plan.native_m == pytest.approx(10 * math.cos(math.radians(plan.latitude)), rel=0.01)
     assert plan.max_zoom == profile.view.max_zoom == 13
-    config.raster_match_native = True  # like the image (the default)
+    config.raster_match_native = True  # like the image (the default): one zoom finer than it
     plan = raster_tiles.plan_layer(project, ortho, config, profile, EXTENT)
-    assert plan.max_zoom == 14 and plan.resolution(14) <= plan.native_m * 1.04 < plan.resolution(13)
+    assert plan.max_zoom == 15 and plan.resolution(14) <= plan.native_m * 1.04 < plan.resolution(13)
+    assert raster_tiles.sharp_zoom(0.4, 47.97) == 19 and raster_tiles.sharp_zoom(0.4, 47.97, online=True) == 18
     config.raster_hidpi = True
-    assert raster_tiles.plan_layer(project, ortho, config, profile, EXTENT).max_zoom == 13
+    assert raster_tiles.plan_layer(project, ortho, config, profile, EXTENT).max_zoom == 14
 
 
 def test_tiled_online_layer_is_as_sharp_as_its_finest_tiles(tmp_path):

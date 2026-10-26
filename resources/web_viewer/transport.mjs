@@ -110,9 +110,22 @@ export async function openArchives(manifest, manifestUrl, maplibregl) {
   return archives;
 }
 
+// The tile size a raster archive's source declares to MapLibre: it only
+// picks which tile zoom is loaded (round(zoom + log2(512 / tileSize))), the
+// tiles are drawn on their own area. Smaller by the screen's pixel ratio and
+// by ~1.4 (just under half a zoom level), the loaded tiles are never
+// enlarged: never coarser than the screen's pixels between zoom levels and on
+// scaled screens, where QGIS draws the image at the screen's resolution
+// (at most two times finer, shrunk).
+export function sharpTileSize(tileSize, pixelRatio) {
+  const ratio = Math.max(1, Number(pixelRatio) || 1);
+  return Math.max(32, Math.floor((tileSize || 256) / (ratio * 1.4)));
+}
+
 // Bind the manifest's sources into the style object (in place) and resolve
-// sprite/glyph URLs. Returns the style.
-export function bindStyle(style, manifest, manifestUrl, styleUrl) {
+// sprite/glyph URLs. Returns the style. ``pixelRatio``: the map's (see
+// sharpTileSize).
+export function bindStyle(style, manifest, manifestUrl, styleUrl, { pixelRatio = 1 } = {}) {
   if (!style || style.version !== 8 || typeof style.sources !== "object") {
     throw new ViewerError("Q2VT_PUB_STYLE", "The map style is not a valid MapLibre style.");
   }
@@ -144,6 +157,7 @@ export function bindStyle(style, manifest, manifestUrl, styleUrl) {
     source.minzoom = binding.minTileZoom;
     source.maxzoom = binding.maxTileZoom;
     if (binding.bounds) source.bounds = binding.bounds;
+    if (type === "raster") source.tileSize = sharpTileSize(source.tileSize, pixelRatio);
   }
   // Raster layers loaded live from their own tile / WMS server.
   for (const live of manifest.liveRasters || []) {

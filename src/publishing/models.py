@@ -419,7 +419,11 @@ class PublicationProfile:
 @dataclass
 class ExportBundle:
     """A validated local export, consumed by packaging. Private: absolute
-    paths are fine here and never written to public files."""
+    paths are fine here and never written to public files.
+
+    A publication of raster layers only (QGIS-rendered or live, a basemap,
+    terrain) has no vector tiles: ``mbtiles_path`` and ``source_name`` are
+    "" and ``style`` has no vector source (``has_vector_tiles`` False)."""
 
     export_dir: str
     mbtiles_path: str
@@ -454,6 +458,10 @@ class ExportBundle:
     live_rasters: List[dict] = field(default_factory=list)  # {layerId, sourceId, styleLayerId, source, paint}
     basemap: Optional[dict] = None                            # extract + style templates (private)
     themes: List[dict] = field(default_factory=list)          # viewer presets
+
+    @property
+    def has_vector_tiles(self) -> bool:
+        return bool(self.mbtiles_path)
 
 
 # --- serialization helpers ----------------------------------------------------------

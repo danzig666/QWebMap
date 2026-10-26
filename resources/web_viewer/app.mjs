@@ -37,11 +37,16 @@ function validateManifest(manifest) {
   }
   if (manifest.vectorOnly !== true) throw new ViewerError("Q2VT_PUB_RASTER_SOURCE", "manifest is not vector-only");
   if (!RELEASE_ID.test(manifest.releaseId || "")) throw new ViewerError("Q2VT_PUB_MANIFEST", "bad releaseId");
-  if (!Array.isArray(manifest.sources) || !manifest.sources.length) throw new ViewerError("Q2VT_PUB_MANIFEST", "no sources");
+  // A map of raster layers only has no vector source: its sources are the
+  // raster layers' image archives (none when they are all live).
+  if (!Array.isArray(manifest.sources)) throw new ViewerError("Q2VT_PUB_MANIFEST", "no sources");
+  if (!manifest.sources.length && !(Array.isArray(manifest.liveRasters) && manifest.liveRasters.length)) {
+    throw new ViewerError("Q2VT_PUB_MANIFEST", "no sources");
+  }
   for (const [index, source] of manifest.sources.entries()) {
     // The map data is MVT; QGIS raster layers have their own image archives.
     const raster = source.role === "raster";
-    if (index === 0 && raster) throw new ViewerError("Q2VT_PUB_NOT_MVT", "the first source must be the vector map");
+    if (index > 0 && !raster) throw new ViewerError("Q2VT_PUB_NOT_MVT", "the vector map must be the first source");
     if (raster ? !RASTER_TILE_TYPES.includes(source.tileType) || source.kind !== "pmtiles"
         || !String(source.id).startsWith("q2vt_raster_") : source.tileType !== "mvt") {
       throw new ViewerError("Q2VT_PUB_NOT_MVT", `source ${source.id} tileType ${source.tileType}`);
@@ -222,7 +227,8 @@ async function start() {
     if (!webglAvailable()) throw new ViewerError("Q2VT_PUB_WEBGL", "WebGL unavailable");
     viewer.archives = await openArchives(manifest, manifestUrl, maplibregl);
     const styleUrl = resolveUrl(manifest.style, manifestUrl);
-    const style = bindStyle(await fetchChecked(styleUrl), manifest, manifestUrl, styleUrl);
+    const style = bindStyle(await fetchChecked(styleUrl), manifest, manifestUrl, styleUrl, {
+      pixelRatio: manifest.view?.lowMemory ? cappedPixelRatio(MAX_PIXEL_RATIO) : window.devicePixelRatio || 1 });
     viewer.style = style;
     prepareShadows(style);  // feature ids for point label shadows
     const view = manifest.view;
@@ -289,7 +295,8 @@ async function start() {
       viewer.releaseTiles = releaseIdleTiles(map, IDLE_RELEASE_MS);
     }
     screenHairlines(map);
-    const sourceId = manifest.sources[0].id;
+    // The vector map's labels (none on a map of raster layers only).
+    const vector = manifest.sources.find((source) => source.role !== "raster");
     // Layers whose every feature keeps its label (shrunk where it does not fit).
     const always = new Set();
     for (const layer of manifest.layers || []) {
@@ -298,11 +305,11 @@ async function start() {
         if (component.layerId === layer.id) for (const id of component.styleLayerIds || []) always.add(id);
       }
     }
-    viewer.labels = enableVisibleLabels(map, maplibregl, sourceId, {
+    viewer.labels = vector ? enableVisibleLabels(map, maplibregl, vector.id, {
       always,
       minTextPx: Number(manifest.view.minLabelPx) || 0,
       onUnsupported: (reason) => warn("error.labels", reason),
-    });
+    }) : null;
     // Interactive controls (layer tree, legend, popups, search, filters,
     // permalinks, tools) live in their own modules.
     const controls = await import("./controls.mjs").catch((error) => {

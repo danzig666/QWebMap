@@ -127,7 +127,7 @@ def test_group_lock_raster_and_basemap_settings_round_trip(setup):
     dialog.i_layers.setCurrentRow(rows.index(ortho.id()))
     assert dialog.i_stack.currentIndex() == 1  # raster settings page
     dialog.r_format.setCurrentIndex(dialog.r_format.findData("webp"))
-    dialog.r_detail.setCurrentIndex(dialog.r_detail.findData(15))
+    dialog.r_detail.setCurrentIndex(dialog.r_detail.findData(14))
     dialog.i_layers.setCurrentRow(rows.index(parcels.id()))
     assert dialog.i_stack.currentIndex() == 0
     dialog.b_kind.setCurrentIndex(dialog.b_kind.findData("protomaps"))
@@ -145,7 +145,7 @@ def test_group_lock_raster_and_basemap_settings_round_trip(setup):
     profile, _ = active_profile(project)
     assert profile.group(["Szabályozás"]).toggleable is False
     raster = profile.layer(ortho_id)
-    assert (raster.raster_format, raster.raster_max_zoom, raster.raster_hidpi) == ("webp", 15, False)
+    assert (raster.raster_format, raster.raster_max_zoom, raster.raster_hidpi) == ("webp", 14, False)
     assert profile.basemap.kind == "protomaps" and profile.basemap.initial == "dark"
     assert "dark" in profile.basemap.flavors and profile.basemap.source == "/data/hungary.pmtiles"
     assert QgsProject.instance().layerTreeRoot().findLayer(zones_id) is not None
@@ -188,8 +188,9 @@ def test_publish_the_visible_layers(setup):
 def test_raster_sharpest_detail_in_metres(setup):
     """Raster detail is one choice in ground metres per pixel: like the image
     (the default; make_raster: 10 Web Mercator m = 6.76 ground m per pixel at
-    47.5° N, zoom 14), like the map, or a pixel size. The estimate compares it
-    with the image. The removed "sharp on high-resolution screens" option
+    47.5° N, zoom 14, published to zoom 15: one step finer, as sharp as QGIS
+    zoomed in), like the map, or a pixel size. The estimate compares it with
+    the image. The removed "sharp on high-resolution screens" option
     (512 px tiles) becomes the same detail one zoom further."""
     dialog, project, parcels, zones, ortho = setup
     _items(dialog)[ortho.id()].setCheckState(1, CHECKED)
@@ -200,19 +201,18 @@ def test_raster_sharpest_detail_in_metres(setup):
     assert dialog.r_detail.currentData() == "image"
     assert dialog.r_detail.currentText() == "Like the image: 6.76 m per pixel (recommended)"
     text = dialog.r_estimate.text()
-    assert "Image: 6.76 m per pixel" in text and "as sharp as the image" in text and "zooms" in text, text
+    assert "Image: 6.76 m per pixel" in text and "as sharp as in QGIS" in text and "zooms" in text, text
     dialog.r_detail.setCurrentIndex(dialog.r_detail.findData("map"))
     assert "4× coarser than the image" in dialog.r_estimate.text()
-    # Pixel sizes down from one step finer than the image (6.76 m: zoom 15).
+    # Pixel sizes down from "Like the image" (zoom 15, listed as that choice).
     assert [dialog.r_detail.itemData(i) for i in range(dialog.r_detail.count())][:4] == [
-        "image", "map", 15, 13]
-    dialog.r_detail.setCurrentIndex(dialog.r_detail.findData(15))
-    assert "finer than the image" in dialog.r_detail.currentText()
-    assert "finer than the image" in dialog.r_estimate.text()
+        "image", "map", 14, 13]
+    dialog.r_detail.setCurrentIndex(dialog.r_detail.findData(14))  # as fine as the image
+    assert "softer than in QGIS" in dialog.r_estimate.text()
     dialog.i_layers.setCurrentRow(rows.index(parcels.id()))
     assert dialog.save_settings()
     saved = dialog.profile.layer(ortho.id())
-    assert (saved.raster_max_zoom, saved.raster_match_native, saved.raster_hidpi) == (15, False, False)
+    assert (saved.raster_max_zoom, saved.raster_match_native, saved.raster_hidpi) == (14, False, False)
     # An older setting with 512 px tiles: the same detail, one zoom further.
     dialog.layer_configs[ortho.id()].raster_max_zoom = 16
     dialog.layer_configs[ortho.id()].raster_hidpi = True
