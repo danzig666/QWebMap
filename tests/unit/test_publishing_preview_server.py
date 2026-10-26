@@ -115,3 +115,21 @@ def test_requests_are_recorded(site):
     _request(site, "/data/map.pmtiles", headers={"Range": "bytes=0-9"})
     assert site.requests[-1] == {"path": "/data/map.pmtiles", "method": "GET", "status": 206,
                                  "bytes": 10, "range": "bytes=0-9"}
+
+
+def test_strong_etag_changes_with_the_file(site):
+    """An export rewrites data/map.pmtiles in place: a page left open read the
+    new archive at the old one's offsets (tiles of a zoom or an area went
+    missing). The ETag lets the PMTiles reader see the change."""
+    first, _ = _request(site, "/data/map.pmtiles", headers={"Range": "bytes=0-126"})
+    again, _ = _request(site, "/data/map.pmtiles")
+    etag = first.getheader("ETag")
+    assert etag and not etag.startswith("W/") and etag == again.getheader("ETag")
+    assert first.getheader("Last-Modified")
+    path = os.path.join(site.root, "data", "map.pmtiles")
+    with open(path, "wb") as handle:
+        handle.write(bytes(reversed(range(256))) * 40)  # same size, other bytes
+    stat = os.stat(path)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    changed, _ = _request(site, "/data/map.pmtiles", headers={"Range": "bytes=0-126"})
+    assert changed.getheader("ETag") not in (None, etag)

@@ -549,7 +549,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.53.0**. Newest first:
+This README describes QWebMap **4.53.1**. Newest first:
+
+**4.53.1** — preview after a new export
+- A preview page left open while the map is exported again draws the new export whole: it read the new tiles file at the old one's positions, and tiles of a zoom or an area went missing (lines vanished at one zoom and came back further in).
 
 **4.53.0** — rasters as sharp as in QGIS; maps of raster layers only
 - Raster layers are as sharp as QGIS draws them: *Like the image* publishes one zoom finer than the image, and the web map never enlarges image tiles (between zoom levels, on scaled screens) nor draws them from blurred copies. Measured against QGIS's own render: 87–100 % of its edge sharpness (was 70–85 %). Raster archives are about 2.7× larger; a coarser pixel size can still be chosen per layer.
