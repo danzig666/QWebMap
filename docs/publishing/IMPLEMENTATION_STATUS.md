@@ -2156,3 +2156,8 @@ and `Last-Modified`; the PMTiles reader compares the ETag of every range and rel
 when it changes (tests/browser/test_preview_rewritten_archive.py fails without it). Also: client
 aborts on Windows (`ConnectionAbortedError`) end the response quietly, and the accept queue is 64
 deep (socketserver's default 5) for tile bursts.
+
+## 4.53.2 — no views heading
+
+The view bar (`controls.themeBar`) has no visible "Views" label (icon and text) any more: it took a
+chip's room and pushed the bar into its drop-down sooner. The bar keeps `aria-label` (app.themes).
