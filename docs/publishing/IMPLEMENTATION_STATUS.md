@@ -2120,3 +2120,23 @@ the real `qgis_process` (QGIS 4 image; skipped where it is not installed).
 With `interaction.layersPanel` off the legend already carried the layer switches; it now carries
 the zoom-to-layer buttons too (`layer_controls.canZoomToLayer` / `zoomToLayerButton`, shared
 with the Layers tab), on single rows, multi-rule headings and switched-off rows; never in print.
+
+## 4.53.0 — sharp rasters; raster-only maps
+
+Rasters measured against QGIS's own render (bilinear, transparent white, WebP 85, mean edge
+contrast in the middle of the view; tests/browser/test_raster_sharpness.py): 70-85 % before,
+87-100 % after, at zooms between levels, past the image's resolution and at pixel ratios 1, 1.25
+and 2. Three causes: `raster_tiles.sharp_zoom` (Like the image = native_zoom + 1 for an image of
+its own; zoomed in past native the browser enlarged tiles already resampled from the image: two
+bilinear passes); `transport.sharpTileSize` (raster archive sources declare
+`tileSize / (pixelRatio * 1.4)`: MapLibre's rounded tile zoom then never enlarges tiles); MapLibre
+patch 11 (shrunk raster tiles sampled from the tile, not LINEAR_MIPMAP_NEAREST's half-size level).
+Live XYZ / WMS sources keep their tile size (no extra load on third-party servers).
+
+Raster-only publications: `export_local` skips the MVT export when no vector layer is included
+(`_raster_only_bundle`: no vector archive, empty style sources); `ExportBundle.has_vector_tiles`;
+web_builder writes no `data/map.pmtiles` and no vector source (manifest `sources` may be empty:
+schema minItems 0); public verification ranges a raster archive; the viewer starts without a
+vector source (no visible-labels helper, no labels switch without label components). Refused:
+nothing included, rasters drawing nothing in the extent, a parcel report without a published
+vector parcel layer.
