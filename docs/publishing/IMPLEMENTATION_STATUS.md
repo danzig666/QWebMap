@@ -2140,3 +2140,8 @@ schema minItems 0); public verification ranges a raster archive; the viewer star
 vector source (no visible-labels helper, no labels switch without label components). Refused:
 nothing included, rasters drawing nothing in the extent, a parcel report without a published
 vector parcel layer.
+
+SciPy is optional: `glyphs_generator._edt` uses OpenCV, else SciPy (imported lazily), else
+`_edt_numpy` (exact Euclidean distance: column scans, then a chunked exact row pass). The QGIS
+4.2.3 image was rebuilt on Ubuntu 26.04 without SciPy and the plugin failed to import; the Qt6
+CI image is pinned to the last good digest (tests/integration/test_optional_dependencies.py).

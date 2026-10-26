@@ -63,7 +63,7 @@ def _export(layer, tmp_path, min_zoom=14):
 def _compare(plugin, tmp_path, fill_layer, scale=1.0, min_zoom=14):
     """QGIS against the exported bands, the house scaled by ``scale`` (and
     the view with it)."""
-    from scipy import ndimage
+    ndimage = pytest.importorskip("scipy.ndimage")  # test-only (the plugin needs no scipy)
     house = QgsGeometry.fromWkt(HOUSE)
     house.transform(QTransform.fromScale(scale, scale))
     extent = QgsRectangle(EXTENT)
@@ -143,7 +143,7 @@ def test_shapeburst_fill_bands_match_qgis(plugin, tmp_path, whole):
 
 def _inside_house():
     """The house's pixels in the test view, away from its edge."""
-    from scipy import ndimage
+    ndimage = pytest.importorskip("scipy.ndimage")  # test-only (the plugin needs no scipy)
     from qgis.core import QgsSimpleFillSymbolLayer
     import tempfile
     with tempfile.TemporaryDirectory() as folder:

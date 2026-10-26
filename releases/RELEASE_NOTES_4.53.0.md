@@ -15,4 +15,7 @@ Result: 87–100 % of QGIS's sharpness (mostly 90–100 %) between zoom levels, 
 ### New: maps of raster layers only
 A web map can now have only raster layers — local images, live XYZ or WMS layers, with or without a basemap. Before, the export stopped with "Select at least one vector layer to publish". Layer list, legend, themes, zoom to layer, print and publishing work as usual.
 
+### Fixed: the plugin loads on QGIS builds without SciPy
+The plugin no longer needs the SciPy Python package (it failed to load on QGIS installs without it, such as some new QGIS 4 builds). It uses OpenCV or SciPy when present, else an exact built-in replacement.
+
 Re-export the map to get the changes.

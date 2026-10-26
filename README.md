@@ -554,6 +554,7 @@ This README describes QWebMap **4.53.0**. Newest first:
 **4.53.0** — rasters as sharp as in QGIS; maps of raster layers only
 - Raster layers are as sharp as QGIS draws them: *Like the image* publishes one zoom finer than the image, and the web map never enlarges image tiles (between zoom levels, on scaled screens) nor draws them from blurred copies. Measured against QGIS's own render: 87–100 % of its edge sharpness (was 70–85 %). Raster archives are about 2.7× larger; a coarser pixel size can still be chosen per layer.
 - A web map can have only raster layers (local images, live XYZ / WMS layers): it exported only with at least one vector layer.
+- The plugin loads on QGIS builds without SciPy.
 
 **4.52.1** — zoom to layer from the legend
 - Without the Layers tab (legend only), the legend has the *Zoom to layer* buttons too, beside its layer switches (also for a layer switched off).

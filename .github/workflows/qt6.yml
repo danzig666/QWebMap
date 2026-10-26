@@ -18,7 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     container:
-      image: qgis/qgis:4.2.3
+      # Pinned: the 4.2.3 tag was rebuilt on Ubuntu 26.04 (no scipy, no
+      # Playwright Chromium); this digest is the last build the tests ran on.
+      image: qgis/qgis:4.2.3@sha256:8996496c15887a8fae0da05fa38103093ddbf104525bcbd67bf733a914fb1444
     env:
       QT_QPA_PLATFORM: offscreen
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -58,7 +60,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     container:
-      image: qgis/qgis:4.2.3
+      # Pinned: the 4.2.3 tag was rebuilt on Ubuntu 26.04 (no scipy, no
+      # Playwright Chromium); this digest is the last build the tests ran on.
+      image: qgis/qgis:4.2.3@sha256:8996496c15887a8fae0da05fa38103093ddbf104525bcbd67bf733a914fb1444
     env:
       QT_QPA_PLATFORM: offscreen
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
