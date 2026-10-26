@@ -60,8 +60,9 @@ STATE = """const v = q2vtViewer, s = v.controls.state, bar = document.getElement
     select: shown(select), value: select.value, options: select.options.length,
     overflow: bar.scrollWidth > bar.clientWidth + 1,
     right: Math.round(Math.max(...[...bar.children].filter(shown).map((c) => c.getBoundingClientRect().right))),
+    text: [...bar.children].filter((c) => !c.matches('.q2vt-chip, .q2vt-theme-select')).length,
     width: innerWidth, panel: !document.getElementById('q2vt-panel').hidden,
-    parcels: s.value.layers['%s'] });"""
+    label: bar.getAttribute('aria-label'), parcels: s.value.layers['%s'] });"""
 
 
 def test_many_views_become_a_drop_down_and_the_panel_starts_closed(site, tmp_path):
@@ -78,6 +79,7 @@ def test_many_views_become_a_drop_down_and_the_panel_starts_closed(site, tmp_pat
         assert start["select"] and start["chips"] == 0, (width, start)  # eight views do not fit
         assert start["options"] == len(VIEWS) + 1 and not start["overflow"]
         assert start["right"] <= start["width"]                         # nothing off the screen
+        assert start["text"] == 0 and start["label"] == "Nézetek"       # no heading taking room
         assert not start["panel"] and start["parcels"] is True          # closed panel at start
         presets = picked["value"]
         assert presets and picked["parcels"] is False                   # view 2: parcels off

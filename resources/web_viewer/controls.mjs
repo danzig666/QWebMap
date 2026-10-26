@@ -308,10 +308,9 @@ function themeBar(manifest, state) {
   const list = presets(manifest);
   // One view only: nothing to choose, no bar (its layers are the start view).
   if (!bar || list.length < 2) return null;
-  const label = el("span", "q2vt-themes-label");
-  label.append(icon("sparkle", 16), el("span", "", t("app.themes")));
+  // No visible "Views" heading: the buttons speak for themselves and the
+  // row has room for one more (screen readers get the bar's name).
   bar.setAttribute("aria-label", t("app.themes"));
-  bar.append(label);
   const chips = list.map((preset) => {
     const chip = button("q2vt-chip", null, null, { text: preset.title });
     chip.addEventListener("click", () => state.applyTheme(preset.id));

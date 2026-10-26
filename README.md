@@ -549,7 +549,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.53.1**. Newest first:
+This README describes QWebMap **4.53.2**. Newest first:
+
+**4.53.2** — no "Views" heading
+- The view buttons (or drop-down) of a web map with several views no longer have a *Views* heading beside them: it only took room.
 
 **4.53.1** — preview after a new export
 - A preview page left open while the map is exported again draws the new export whole: it read the new tiles file at the old one's positions, and tiles of a zoom or an area went missing (lines vanished at one zoom and came back further in).
