@@ -32,9 +32,12 @@ export function applyPreset(manifest, value, preset) {
     rules: { ...Object.fromEntries(manifest.rules.map((r) => [r.id, true])), ...pick("rules") }, theme: preset.id };
 }
 
+// Whether the layers shown are a view's: its layers, groups (a view turns
+// every group on, so a group switched off no longer matches) and legend items.
 export function presetMatches(manifest, value, preset) {
-  const same = (section) => Object.entries(preset[section] || {}).every(([id, on]) => !(id in value[section]) || value[section][id] === on);
-  return same("layers") && same("rules");
+  const same = (section) => Object.entries(preset[section] || {}).every(([id, on]) =>
+    !(id in (value[section] || {})) || value[section][id] === on);
+  return same("layers") && same("groups") && same("rules");
 }
 
 export function defaults(manifest) {
