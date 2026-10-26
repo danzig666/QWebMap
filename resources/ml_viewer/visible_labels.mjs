@@ -95,6 +95,12 @@ const GUARD_PX = 48; // ... but not so close that their text reaches the screen
 // line (4 px at z22 from z15 tiles).
 const POINT_MAXZOOM = 15;
 const KEEP_ROOM = 0.8;  // a kept "pole" label keeps >= 80 % of the best room
+// A kept Horizontal label costs at most this more than the best candidate
+// (QGIS's polygon candidate costs span 0.003: room 0.002, centroid 0.001).
+const KEEP_COST = 0.0003;
+// QGIS's polygon candidates: at most 2.5 per cm² of the map (labeling
+// engine default), a grid 1 / sqrt(2.5) cm apart: 24 CSS px.
+const POLYGON_CANDIDATE_PX = (96 / 2.54) / Math.sqrt(2.5);
 const KEEP_PX = 24;     // a kept centroid label stays this close to the centroid
 // A kept point from coarser tile data than is loaded now, this close (tile
 // units of its data, plus twice the precision of its search) to the new
@@ -876,9 +882,18 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         if (scale < 1) properties[LABEL_SCALE] = scale;
         else delete properties[LABEL_SCALE];
       } else {
-        const keep = old && within(inner, old.point) && (unchecked(old.point)
-          || Math.min(roomAt(rings, old.point), score(...old.point)) >= KEEP_ROOM * best.room);
-        point = keep ? refined(best.point) : best.point;
+        // Horizontal (QGIS): its candidates' costs - room from the polygon's
+        // edges and the map's, then nearness to the centroid - not the
+        // roomiest point alone (a long strip: in its middle, not at one end).
+        const spot = polygonSpot(rings, view, options.precision, (x, y) => score(x, y) >= 0);
+        const target = spot ? spot.point : best.point;
+        // Kept while panning (at the same zoom: QGIS's candidates are as
+        // far apart on the screen at every zoom), if still nearly the best.
+        const keep = old && within(inner, old.point) && (unchecked(old.point) || (spot
+          ? old.prec === options.precision && score(...old.point) >= 0 && inside(rings, old.point)
+            && spot.cost(old.point) <= spot.best + KEEP_COST
+          : Math.min(roomAt(rings, old.point), score(...old.point)) >= KEEP_ROOM * best.room));
+        point = keep ? refined(target) : target;
       }
     } else if (options.around && half) {
       // "Around point" (QGIS): beside the point at the label distance, the
@@ -1508,6 +1523,131 @@ function signedRoom(rings, edges, x, y) {
   let min = Infinity;
   for (const edge of edges) min = Math.min(min, segmentDistance(x, y, edge[0], edge[1]));
   return inside(rings, [x, y]) ? min : -min;
+}
+
+// The oriented bounding box pal lays its polygon candidates on (QGIS
+// PointSet::computeConvexHullOrientedBoundingBox): of the convex hull, the
+// smallest of the boxes turned 0, 1, ... 89 degrees, in map coordinates
+// (y up: the world's y negated). {x, y (its corners), alpha, width, length}.
+function palBox(rings) {
+  const points = rings.flat().map(([x, y]) => [x, -y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (x1, y1, x2, y2, x3, y3) => (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1);
+  const half = (list) => {
+    const out = [];
+    for (const p of list) {
+      while (out.length >= 2 && cross(...out[out.length - 2], ...out[out.length - 1], ...p) <= 0) out.pop();
+      out.push(p);
+    }
+    out.pop();
+    return out;
+  };
+  const hull = [...half(points), ...half([...points].reverse())];
+  if (hull.length < 3) return null;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of hull) {
+    x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+  }
+  const dref = x1 - x0;
+  if (!(Math.abs(dref) > 0)) return null;
+  let best = null;
+  for (let degrees = 0; degrees < 90; degrees++) {
+    const alpha = degrees * Math.PI / 180;
+    const d1 = Math.cos(alpha) * dref, d2 = Math.sin(alpha) * dref;
+    const bb = [x0, y1, x0 + d1, y1 + d2, x0, y0, x0 - d2, y0 + d1,
+                x1, y0, x1 - d1, y0 - d2, x1, y1, x1 + d2, y1 - d1];
+    for (let i = 0; i < 16; i += 4) {
+      const side = ((i / 4 > 0 ? i / 4 - 1 : 3)) * Math.PI / 2 + alpha;
+      let nearest = Infinity;
+      for (const [x, y] of hull) nearest = Math.min(nearest, cross(bb[i + 2], bb[i + 3], bb[i], bb[i + 1], x, y));
+      const shift = nearest / dref;
+      const e1 = Math.cos(side) * shift, e2 = Math.sin(side) * shift;
+      bb[i] += e1; bb[i + 1] += e2; bb[i + 2] += e1; bb[i + 3] += e2;
+    }
+    const width = cross(bb[6], bb[7], bb[4], bb[5], bb[12], bb[13]) / dref;
+    const length = cross(bb[2], bb[3], bb[0], bb[1], bb[8], bb[9]) / dref;
+    const area = Math.abs(width * length);
+    if (!best || best.area - area > 1e-9 * best.area) best = { area, bb, alpha, width, length };
+  }
+  const { bb } = best;
+  const corner = (i) => {  // the intersection of side i/4 and the next side
+    const [ax, ay, bx, by] = [bb[i], bb[i + 1], bb[i + 2], bb[i + 3]];
+    const [cx, cy, dx, dy] = [bb[(i + 4) % 16], bb[(i + 5) % 16], bb[(i + 6) % 16], bb[(i + 7) % 16]];
+    const a1 = by - ay, b1 = ax - bx, c1 = bx * ay - ax * by;
+    const a2 = dy - cy, b2 = cx - dx, c2 = dx * cy - cx * dy;
+    const denom = a1 * b2 - a2 * b1;
+    return denom ? [(b1 * c2 - b2 * c1) / denom, (a2 * c1 - a1 * c2) / denom] : [ax, ay];
+  };
+  return { corner: corner(0), alpha: best.alpha, width: best.width, length: best.length };
+}
+
+// Area centroid of rings (holes subtract), inside the polygon or not.
+function areaCentroid(rings) {
+  let area = 0, cx = 0, cy = 0;
+  const [ox, oy] = (rings.find((ring) => ring.length) || [[0, 0]])[0];
+  for (const ring of rings) {
+    for (let i = 0, n = ring.length; i < n; i++) {
+      const [x1, y1] = ring[i], [x2, y2] = ring[(i + 1) % n];
+      const cross = (x1 - ox) * (y2 - oy) - (x2 - ox) * (y1 - oy);
+      area += cross; cx += (x1 + x2 - 2 * ox) * cross; cy += (y1 + y2 - 2 * oy) * cross;
+    }
+  }
+  return Math.abs(area) < 1e-22 ? null : [ox + cx / (3 * area), oy + cy / (3 * area)];
+}
+
+// A Horizontal polygon label's spot as QGIS picks it (pal FeaturePart::
+// createCandidatesForPolygon, CostCalculator::finalizeCandidatesCosts):
+// candidates on a grid along the convex hull's oriented bounding box
+// (palBox), POLYGON_CANDIDATE_PX apart, each costing 0.002 for the least room (distance of its centre
+// from the polygon's edges and from the map's edge, ``view``) down to 0 for
+// the most, plus 0.001 for the farthest from the polygon's centroid down to
+// 0 for the nearest. The cheapest candidate ``ok`` accepts (on the screen,
+// clear of other labels) wins. Returns {point, best, cost(point)} or null.
+// pal first splits a concave polygon at its deepest notches and lays a grid
+// on each piece: not here (the polygon is in tile pieces), so a concave
+// polygon's label can sit a grid step or so from QGIS's.
+export function polygonSpot(rings, view, perPx, ok = null) {
+  const box = palBox(rings);
+  const centroid = areaCentroid(rings);
+  if (!box || !centroid || !(perPx > 0)) return null;
+  const edges = realEdges(rings);
+  const room = (x, y) => {
+    let min = Math.min(x - view[0], view[2] - x, y - view[1], view[3] - y);
+    for (const edge of edges) min = Math.min(min, segmentDistance(x, y, edge[0], edge[1]));
+    return min;
+  };
+  const [x0, y0, x1, y1] = bounds(rings);
+  const { corner: [bx, by], alpha, width, length } = box;
+  let candidates = [];
+  // (pal halves the spacing only with a candidate limit set: never by
+  // default; here when a polygon smaller than the spacing got none)
+  for (let step = POLYGON_CANDIDATE_PX * perPx, tries = 0; !candidates.length && tries < 10; step /= 2, tries++) {
+    if (Math.abs(width) / step * Math.abs(length) / step > 40000) break;
+    const px0 = width / 2 - Math.ceil(width / 2 / step) * step;
+    const py0 = length / 2 - Math.ceil(length / 2 / step) * step;
+    for (let px = px0; px <= width; px += step) {
+      for (let py = py0; py <= length; py += step) {
+        const x = Math.cos(alpha) * px + Math.cos(alpha - Math.PI / 2) * py + bx;
+        const y = -(Math.sin(alpha) * px + Math.sin(alpha - Math.PI / 2) * py + by);
+        if (x < x0 || x > x1 || y < y0 || y > y1 || !inside(rings, [x, y])) continue;
+        candidates.push({ x, y, d: room(x, y), c: Math.hypot(x - centroid[0], y - centroid[1]) });
+      }
+    }
+  }
+  if (!candidates.length) return null;
+  const range = (key) => {
+    let lo = Infinity, hi = -Infinity;
+    for (const k of candidates) { lo = Math.min(lo, k[key]); hi = Math.max(hi, k[key]); }
+    return [lo, hi - lo > 1e-12 ? hi - lo : 0];
+  };
+  const [dMin, dRange] = range("d"), [cMin, cRange] = range("c");
+  const costOf = (d, c) => (dRange ? 0.002 - (d - dMin) * 0.002 / dRange : 0)
+    + (cRange ? (c - cMin) * 0.001 / cRange : 0);
+  for (const k of candidates) k.cost = costOf(k.d, k.c);
+  candidates.sort((a, b) => a.cost - b.cost);
+  const pick = candidates.find((k) => !ok || ok(k.x, k.y));
+  if (!pick) return null;
+  return { point: [pick.x, pick.y], best: pick.cost,
+           cost: ([x, y]) => costOf(room(x, y), Math.hypot(x - centroid[0], y - centroid[1])) };
 }
 
 // Room (distance to the nearest real polygon edge; negative outside) at a point.
