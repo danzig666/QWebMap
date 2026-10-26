@@ -2167,3 +2167,18 @@ chip's room and pushed the bar into its drop-down sooner. The bar keeps `aria-la
 `state.presetMatches` compares the view's groups too (a view turns every group on): a group
 switched off left the view marked active; only layers and legend items were compared
 (tests/browser/test_view_match_groups.py).
+
+## 4.53.4 — Horizontal polygon labels at QGIS's candidate
+
+`visible_labels.polygonSpot` places Horizontal ("pole") polygon labels as pal does
+(FeaturePart::createCandidatesForPolygon, CostCalculator::finalizeCandidatesCosts): candidates on
+a grid of the convex hull's oriented bounding box (`palBox`: the smallest of the boxes turned 0..89
+degrees, in y-up map coordinates), 2.5 per cm² (24 CSS px apart), centre inside the polygon; cost
+0.002 for the least room (centre distance from the polygon's edges and the map's edge) down to 0,
+plus 0.001 for the farthest from the clipped polygon's centroid down to 0; the cheapest on screen
+and clear of other labels wins. It was the roomiest point (pole of inaccessibility) alone: a long
+strip labelled at its wider end, moving with the zoom. A label is kept while panning only at the
+same zoom and within 0.0003 of the best cost. Not done: pal's splitPolygons (a concave polygon cut
+at its deepest notches, a grid per piece) - the viewer has the polygon in tile pieces; such a label
+can be a grid step or more off. Measured against QGIS's labelling results on a plan layer:
+convex polygons within a few px at zooms 13-17 (tests/browser/test_horizontal_polygon_spot.py).
