@@ -549,7 +549,10 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.53.2**. Newest first:
+This README describes QWebMap **4.53.3**. Newest first:
+
+**4.53.3** — active view after switching a group off
+- Switching a whole group off no longer leaves the view marked as active in the view bar (switching one layer off already did).
 
 **4.53.2** — no "Views" heading
 - The view buttons (or drop-down) of a web map with several views no longer have a *Views* heading beside them: it only took room.

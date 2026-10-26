@@ -2161,3 +2161,9 @@ deep (socketserver's default 5) for tile bursts.
 
 The view bar (`controls.themeBar`) has no visible "Views" label (icon and text) any more: it took a
 chip's room and pushed the bar into its drop-down sooner. The bar keeps `aria-label` (app.themes).
+
+## 4.53.3 — active view and groups
+
+`state.presetMatches` compares the view's groups too (a view turns every group on): a group
+switched off left the view marked active; only layers and legend items were compared
+(tests/browser/test_view_match_groups.py).
