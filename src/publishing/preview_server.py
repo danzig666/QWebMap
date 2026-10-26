@@ -10,7 +10,12 @@ servers are not enough. This server:
   several ranges in one request: ignored, 200 with the whole file (RFC 9110
   permits ignoring Range; PMTiles clients never send multiple ranges);
 * never adds a Content-Encoding (PMTiles offsets must stay valid);
-* sends the content types of ``content_types.py`` and ``no-cache``;
+* sends the content types of ``content_types.py``, ``no-cache`` and a
+  strong ETag of the file's size and modification time: an export
+  rewrites ``data/map.pmtiles`` in place, and a preview page left open
+  (or the browser cache) would read the new file at the old file's
+  offsets: tiles of a zoom or an area went missing. With the ETag the
+  PMTiles reader sees the change and reloads the archive's header;
 * refuses paths outside the served folder (``..``, absolute, symlinks
   leading out) and never serves directory listings;
 * answers only requests addressed to it (Host 127.0.0.1 / localhost) and
@@ -25,6 +30,7 @@ import os
 import re
 import threading
 import urllib.parse
+from email.utils import formatdate
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import List, Optional, Tuple
@@ -132,7 +138,7 @@ class _Handler(BaseHTTPRequestHandler):
                         break
                     try:
                         self.wfile.write(block)
-                    except (BrokenPipeError, ConnectionResetError):
+                    except ConnectionError:  # the client went away (Windows: aborted)
                         break
                     sent += len(block)
                     remaining -= len(block)
@@ -142,6 +148,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type(rel))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", "no-cache")
+        stat = os.stat(target)
+        self.send_header("ETag", f'"{stat.st_size:x}-{stat.st_mtime_ns:x}"')
+        self.send_header("Last-Modified", formatdate(stat.st_mtime, usegmt=True))
         self.send_header("X-Content-Type-Options", "nosniff")
         if self.server.cors:  # type: ignore[attr-defined]
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -183,6 +192,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
+class _Server(ThreadingHTTPServer):
+    request_queue_size = 64
+
+
 class PreviewServer:
     """``with PreviewServer(folder) as server: open(server.url("index.html"))``."""
 
@@ -199,7 +212,9 @@ class PreviewServer:
         self.thread: Optional[threading.Thread] = None
 
     def start(self) -> "PreviewServer":
-        httpd = ThreadingHTTPServer((self.host, self.port), _Handler)
+        # A deeper accept queue than socketserver's 5: tiles are fetched in
+        # bursts (zoom animations abort and reopen connections).
+        httpd = _Server((self.host, self.port), _Handler)
         httpd.daemon_threads = True
         httpd.root = self.root  # type: ignore[attr-defined]
         httpd.cors = self.cors  # type: ignore[attr-defined]

@@ -2145,3 +2145,14 @@ SciPy is optional: `glyphs_generator._edt` uses OpenCV, else SciPy (imported laz
 `_edt_numpy` (exact Euclidean distance: column scans, then a chunked exact row pass). The QGIS
 4.2.3 image was rebuilt on Ubuntu 26.04 without SciPy and the plugin failed to import; the Qt6
 CI image is pinned to the last good digest (tests/integration/test_optional_dependencies.py).
+
+## 4.53.1 — preview after a new export
+
+A local export rewrites `data/map.pmtiles` in place and the Publish window's preview server keeps
+its URL, so a preview page left open read the new archive with the old archive's header and
+directories: tiles at the old offsets were missing or garbage (416 past the end), a zoom or an
+area without features. The preview server sends a strong `ETag` (size and modification time)
+and `Last-Modified`; the PMTiles reader compares the ETag of every range and reloads the header
+when it changes (tests/browser/test_preview_rewritten_archive.py fails without it). Also: client
+aborts on Windows (`ConnectionAbortedError`) end the response quietly, and the accept queue is 64
+deep (socketserver's default 5) for tile bursts.
