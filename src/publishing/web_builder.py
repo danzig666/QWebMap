@@ -9,7 +9,8 @@ Publication folder layout::
       current.json               small mutable pointer, replaced atomically
       releases/<release-id>/     immutable, directly openable release
         index.html manifest.json style.json release.json
-        data/map.pmtiles  (or data/tiles/{z}/{x}/{y}.pbf for the XYZ transport)
+        data/map.pmtiles  (or data/tiles/{z}/{x}/{y}.pbf for the XYZ transport;
+                           none in a publication of raster layers only)
         assets/...  sprite/...  glyphs/...  legend/...  search/...  features/...
         public-diagnostics.json  licenses/...
 
@@ -299,8 +300,11 @@ def _interaction(profile: PublicationProfile) -> dict:
 
 
 def build_manifest(bundle: ExportBundle, profile: PublicationProfile, release_id: str,
-                   source: dict, extra: Optional[dict] = None) -> dict:
+                   source: Optional[dict], extra: Optional[dict] = None) -> dict:
+    """``source``: the vector tiles' source, None without vector layers (the
+    manifest's sources are then the raster layers' archives only)."""
     view = dict(bundle.view or {})
+    min_tile_zoom = source["minTileZoom"] if source else bundle.tile_zooms[0]
     manifest = {
         "schemaVersion": PUBLISHING_SCHEMA_VERSION,
         "publicationId": profile.publication_id,
@@ -312,10 +316,10 @@ def build_manifest(bundle: ExportBundle, profile: PublicationProfile, release_id
         "logo": None,
         "vectorOnly": True,
         "style": "style.json",
-        "sources": [source],
+        "sources": [source] if source else [],
         "view": {
             "center": [round(float(c), 7) for c in view.get("center", [0, 0])],
-            "zoom": float(view.get("zoom", source["minTileZoom"])),
+            "zoom": float(view.get("zoom", min_tile_zoom)),
             "bearing": 0, "pitch": 0,
             "minZoom": float(max(0, profile.view.min_zoom if profile.view else 0)),
             "maxZoom": float(profile.view.max_view_zoom),
@@ -498,10 +502,11 @@ def build_release(bundle: ExportBundle, profile: PublicationProfile, publication
 def _assemble(bundle, profile, staging, release_id, transport, progress, extra_files,
               extra_builders, manifest_extra, connect_origins, pmtiles_path):
     source_name = bundle.source_name
-    # 1. Tiles: the same MVT payloads as the validated MBTiles.
+    # 1. Tiles: the same MVT payloads as the validated MBTiles (none for
+    # raster layers only).
     progress.update(0.02, "Packaging vector tiles...", force=True)
-    archive = None
-    if transport == "pmtiles":
+    archive = source = None
+    if bundle.has_vector_tiles and transport == "pmtiles":
         target = os.path.join(staging, "data", "map.pmtiles")
         os.makedirs(os.path.dirname(target))
         if pmtiles_path:
@@ -515,7 +520,7 @@ def _assemble(bundle, profile, staging, release_id, transport, progress, extra_f
                   "minTileZoom": archive.min_zoom, "maxTileZoom": archive.max_zoom,
                   "bounds": [round(v, 7) for v in archive.bounds],
                   "sha256": archive.sha256, "sizeBytes": archive.size_bytes}
-    else:
+    elif bundle.has_vector_tiles:
         from .pmtiles_builder import preflight_mbtiles  # pylint: disable=import-outside-toplevel
         info = preflight_mbtiles(bundle.mbtiles_path)
         write_xyz_tiles(bundle.mbtiles_path, os.path.join(staging, "data", "tiles"), progress)
@@ -527,10 +532,11 @@ def _assemble(bundle, profile, staging, release_id, transport, progress, extra_f
     progress.check()
     # 2. Style: transport-only changes (source bound by the viewer).
     style = portable_style(bundle.style, source_name, tiles_template=None, vector_only=True)
-    source_def = style["sources"].get(source_name)
-    if source_def is None:
-        raise PublishingError("Q2VT_PUB_BUNDLE_INVALID", f"Style has no source {source_name}.")
-    source_def["minzoom"], source_def["maxzoom"] = source["minTileZoom"], source["maxTileZoom"]
+    if source is not None:
+        source_def = style["sources"].get(source_name)
+        if source_def is None:
+            raise PublishingError("Q2VT_PUB_BUNDLE_INVALID", f"Style has no source {source_name}.")
+        source_def["minzoom"], source_def["maxzoom"] = source["minTileZoom"], source["maxTileZoom"]
     problems = style_semantic_diff(bundle.style, style, source_name)
     if problems:
         raise PublishingError("Q2VT_PUB_BUNDLE_INVALID",

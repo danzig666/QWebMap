@@ -187,3 +187,44 @@ def test_qgis_process_runs_it(plugin, tmp_path):
     assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-3000:]
     results = json.loads(run.stdout[run.stdout.index("{"):])["results"]
     assert os.path.exists(results["ENTRY"]) and results["ENTRY"].startswith(str(tmp_path / "cli"))
+
+
+def test_raster_only_settings_are_exported_and_published(plugin, tmp_path, monkeypatch):
+    """Settings of raster layers only (a rendered image and a live web
+    layer, no vector layer): exported locally, then uploaded, verified
+    (ranges of the image archive) and activated."""
+    from publishing_fake_s3 import FakeS3Client  # pylint: disable=import-error
+    from test_publishing_raster_only import raster_only_project  # pylint: disable=import-error
+    from q2vt_plugin.src.gui import publication_profiles as store  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing import providers  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.preview_server import PreviewServer  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.providers.r2 import R2Provider  # pylint: disable=import-error
+    project, profile, _ = raster_only_project(tmp_path)
+    profile.view.extent_mode, profile.view.extent = "fixed", list(EXTENT_3857)
+    store.save_profile(project, profile)
+    results, error = _run({"ACTION": 1}, project)  # export locally only
+    assert results, error
+    with open(os.path.join(results["OUTPUT_FOLDER"], "manifest.json"), encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    assert [s.get("role") for s in manifest["sources"]] == ["raster"] and manifest["liveRasters"]
+    root = tmp_path / "bucket"
+    client = FakeS3Client(str(root))
+    public = PreviewServer(str(root / "maps")).start()
+    profile.destination.kind = "r2"
+    profile.destination.account_id, profile.destination.bucket = "abc123", "maps"
+    profile.destination.public_base_url = public.url("").rstrip("/")
+    store.save_profile(project, profile)
+    monkeypatch.setattr(providers, "provider_for", lambda destination, credentials, prefix, **kwargs: R2Provider(
+        destination, credentials, prefix, client=client, sleep=lambda s: None))
+    monkeypatch.setenv("QWEBMAP_ACCESS_KEY_ID", "AKIATEST")
+    monkeypatch.setenv("QWEBMAP_SECRET_ACCESS_KEY", "env-secret-value")
+    try:
+        results, error = _run({"APPROVE": True}, project)
+        assert results and results["PUBLISHED"], error
+        keys = client.keys()
+        assert any("/data/raster-" in k and k.endswith(".pmtiles") for k in keys)
+        assert not any(k.endswith("/data/map.pmtiles") for k in keys)
+        with open(root / "maps" / "maps" / "ortofoto" / "current.json", encoding="utf-8") as handle:
+            assert json.load(handle)["releaseId"]
+    finally:
+        public.stop()

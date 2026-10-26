@@ -218,6 +218,62 @@ def test_r2_publish_needs_approval_and_runs_in_a_task(project, messages, tmp_pat
         dialog.close()
 
 
+def test_raster_only_map_is_exported_reviewed_and_published(plugin, messages, tmp_path, monkeypatch):
+    """Only a raster layer ticked in the window: exported, reviewed and
+    published to (fake) R2 like any other map."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from test_publishing_raster import make_raster  # pylint: disable=import-error
+    from publishing_fake_s3 import FakeS3Client
+    from publishing.preview_server import PreviewServer
+    from publishing.providers.base import Credentials
+    from publishing.providers.r2 import R2Provider
+    from qgis.core import QgsRasterLayer
+    project = reset_project()
+    ortho = QgsRasterLayer(make_raster(tmp_path / "ortho.tif"), "Ortofotó")
+    project.addMapLayer(ortho)
+    project.setFileName(str(tmp_path / "orto.qgz"))
+    dialog = _dialog()
+    dialog.e_title.setText("Ortofotó")
+    dialog.e_slug.setText("ortofoto")
+    dialog.e_min_zoom.setValue(11)
+    dialog.e_max_zoom.setValue(13)
+    dialog.profile.view.extent = [2119000, 6019000, 2123000, 6023000]
+    item = next(dialog._tree_items())  # pylint: disable=protected-access
+    item.setCheckState(1, CHECKED)
+    item.setCheckState(2, CHECKED)
+    dialog.o_dir.setText(str(tmp_path / "web maps"))
+    root = tmp_path / "bucket"
+    client = FakeS3Client(str(root))
+    public = PreviewServer(str(root / "maps")).start()
+    try:
+        assert dialog.export_locally(), messages
+        with open(os.path.join(dialog.local_result.publication_dir, "manifest.json"), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        assert [s.get("role") for s in manifest["sources"]] == ["raster"]
+        dialog.d_kind.setCurrentIndex(dialog.d_kind.findData("r2"))
+        dialog.d_account.setText("abc123")
+        dialog.d_bucket.setText("maps")
+        dialog.d_public.setText(public.url("").rstrip("/"))
+        dialog.d_session_key.setText("AKIATEST")
+        dialog.d_session_secret.setText("session-secret-value")
+        profile = dialog.collect()
+        monkeypatch.setattr(dialog, "_provider", lambda: R2Provider(
+            profile.destination, Credentials("AKIATEST", "session-secret-value"), "maps/ortofoto",
+            client=client, sleep=lambda s: None))
+        dialog.refresh_review()
+        assert dialog.review.toPlainText()
+        dialog.approve.setChecked(True)
+        dialog.publish()
+        _wait_task(dialog)
+        assert dialog.public_url.endswith("/maps/ortofoto/index.html"), messages
+        keys = client.keys()
+        assert any("/data/raster-" in k for k in keys) and not any(k.endswith("/data/map.pmtiles") for k in keys)
+    finally:
+        public.stop()
+        dialog.close()
+
+
 def test_copy_embed_code(project, messages, tmp_path):
     from qgis.PyQt.QtGui import QGuiApplication
     project, parcels = project

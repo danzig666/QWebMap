@@ -4,6 +4,9 @@ Publishing controller: one publication run as named stages.
     PLAN -> EXPORT_MVT -> RECORDS -> LEGEND -> BUILD_RELEASE (PMTiles, viewer,
     indexes, validation, disclosure) -> [UPLOAD -> VERIFY_PUBLIC -> ACTIVATE]
 
+A publication of raster layers only skips the vector tiles (EXPORT_MVT,
+TILES): its release has no vector archive, the rest is the same.
+
 The QGIS stages (PLAN .. LEGEND) read the live project and must run on
 QGIS's main thread (the exporter keeps its NoThreading guarantees). The
 release build and uploads only touch closed local files.
@@ -252,14 +255,16 @@ def _staged_feedback(parent):
     return StagedFeedback()
 
 
-def _stage_weights(profile: PublicationProfile, raster_plans) -> Dict[str, float]:
-    """Rough shares of the export time: the vector tiles take most of it."""
+def _stage_weights(profile: PublicationProfile, raster_plans, vectors: bool = True) -> Dict[str, float]:
+    """Rough shares of the export time: the vector tiles take most of it
+    (none without vector layers)."""
     raster_tiles = sum(getattr(plan, "tiles", 0) for plan in (raster_plans or {}).values())
     # The vector tiles' own share (TILES): they are made while the stages
     # after the datasets run, waited for before BUILD_RELEASE.
     background = os.environ.get("Q2VT_FOREGROUND_TILES") != "1"
+    mvt, tiles = (30.0, 45.0) if background else (75.0, 0.0)
     return {
-        "PLAN": 1.0, "EXPORT_MVT": 30.0 if background else 75.0, "TILES": 45.0 if background else 0.0,
+        "PLAN": 1.0, "EXPORT_MVT": mvt if vectors else 0.0, "TILES": tiles if vectors else 0.0,
         "RECORDS": 2.0, "LEGEND": 1.0,
         "PARCELS": 2.0 if profile.parcel_info.enabled else 0.0,
         "RASTER": (min(25.0, 2.0 + raster_tiles / 150.0) if raster_plans else 0.0)
@@ -308,6 +313,10 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         if config is None or not config.included:
             raise PublishingError("Q2VT_PUB_PROFILE_INVALID",
                                   "Parcel report: publish the parcel layer (Map tab).")
+        from qgis.core import QgsVectorLayer  # pylint: disable=import-outside-toplevel
+        if not isinstance(project.mapLayer(info.parcel_layer_id), QgsVectorLayer):
+            raise PublishingError("Q2VT_PUB_PROFILE_INVALID",
+                                  "Parcel report: the parcel layer must be a vector layer (Parcel report tab).")
         config.key_fields = [info.key_field]
         from .parcel_report import resolve_layers  # pylint: disable=import-outside-toplevel
         resolve_layers(project, info)  # layers and fields exist: fail now, not after tiling
@@ -320,12 +329,14 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
     street_area = _street_area(project, profile, extent_3857) \
         if profile.interaction.search and (profile.interaction.street_search
                                            or profile.interaction.address_layer_id) else None
-    # Vector layers: MVT compiler; QGIS raster layers: their own raster archives.
+    # Vector layers: MVT compiler; QGIS raster layers: their own raster
+    # archives. Raster layers alone are a web map too (no vector tiles).
     vector_profile, raster_configs = qgis_model.split_profile(profile, project)
-    if not vector_profile.included_layer_ids():
+    has_vectors = bool(vector_profile.included_layer_ids())
+    if not has_vectors and not raster_configs:
         raise PublishingError("Q2VT_PUB_PROFILE_INVALID",
-                              "Select at least one vector layer to publish (raster layers and the "
-                              "basemap are drawn under the vector map).")
+                              "Select at least one layer to publish (Map tab); the basemap and the "
+                              "terrain are drawn under the published layers.")
     publication_dir, work_dir = publication_dirs(profile, base_dir)
     os.makedirs(work_dir, exist_ok=True)
     if _local_root(os.path.abspath(base_dir or profile.output.local_directory)):
@@ -333,7 +344,7 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
     live_rasters, raster_configs = _live_rasters(project, raster_configs, extent_3857, progress)
     raster_plans = _plan_rasters(project, profile, raster_configs, extent_3857)
     if staged is not None:
-        staged.weigh(_stage_weights(profile, raster_plans))
+        staged.weigh(_stage_weights(profile, raster_plans, has_vectors))
     keys, _ = qgis_model.feature_keys(vector_profile)
 
     cache = None
@@ -341,54 +352,61 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         from ..core.export_cache import ExportCache  # pylint: disable=import-outside-toplevel
         cache = ExportCache(cache_dir(profile, base_dir))
 
-    stage("EXPORT_MVT")
-    exporter = QGIS2VectorTiles(
-        min_zoom=profile.view.min_zoom, max_zoom=profile.view.max_zoom, extent=extent_3857,
-        output_dir=work_dir, include_required_fields_only=1 if profile.output.include_all_fields else 0,
-        cpu_percent=profile.output.cpu_percent, cent_source=profile.output.polygon_labels_base,
-        background_type=2,  # vector-only: never the OSM / Blue Marble raster backgrounds
-        viewer=0, feedback=processing_feedback, fidelity_mode=profile.output.fidelity_mode,
-        overzoom=profile.output.overzoom, serve=False,
-        static_package=profile.output.xyz_package, parallel=False,
-        layer_ids=vector_profile.included_layer_ids(), archive_format="mbtiles",
-        add_result_layer=False, feature_keys=keys,
-        extra_tile_fields=qgis_model.tile_fields(vector_profile), cache=cache,
-        scale_limits={c.layer_id: (c.min_scale, c.max_scale, c.labels_min_scale)
-                      for c in vector_profile.layers
-                      if c.included and (c.min_scale or c.max_scale or c.labels_min_scale)},
-        background_tiles=os.environ.get("Q2VT_FOREGROUND_TILES") != "1",
-        fast_markers=profile.output.fast_markers, thin_hairlines=profile.output.thin_hairlines,
-        view_max_zoom=profile.view.max_view_zoom,
-        min_label_px=profile.output.min_label_px,
-        min_feature_px=profile.output.min_feature_px,
-        cap_tiles=True)
+    exporter = None
+    if has_vectors:
+        stage("EXPORT_MVT")
+        exporter = QGIS2VectorTiles(
+            min_zoom=profile.view.min_zoom, max_zoom=profile.view.max_zoom, extent=extent_3857,
+            output_dir=work_dir, include_required_fields_only=1 if profile.output.include_all_fields else 0,
+            cpu_percent=profile.output.cpu_percent, cent_source=profile.output.polygon_labels_base,
+            background_type=2,  # vector-only: never the OSM / Blue Marble raster backgrounds
+            viewer=0, feedback=processing_feedback, fidelity_mode=profile.output.fidelity_mode,
+            overzoom=profile.output.overzoom, serve=False,
+            static_package=profile.output.xyz_package, parallel=False,
+            layer_ids=vector_profile.included_layer_ids(), archive_format="mbtiles",
+            add_result_layer=False, feature_keys=keys,
+            extra_tile_fields=qgis_model.tile_fields(vector_profile), cache=cache,
+            scale_limits={c.layer_id: (c.min_scale, c.max_scale, c.labels_min_scale)
+                          for c in vector_profile.layers
+                          if c.included and (c.min_scale or c.max_scale or c.labels_min_scale)},
+            background_tiles=os.environ.get("Q2VT_FOREGROUND_TILES") != "1",
+            fast_markers=profile.output.fast_markers, thin_hairlines=profile.output.thin_hairlines,
+            view_max_zoom=profile.view.max_view_zoom,
+            min_label_px=profile.output.min_label_px,
+            min_feature_px=profile.output.min_feature_px,
+            cap_tiles=True)
     progress.check()
     # The tiles are made in the background (ogr2ogr processes) while the
     # stages after the datasets run: finish_tiles() before BUILD_RELEASE.
     try:
-        if not exporter.convert_project_to_vector_tiles():
-            raise PublishingError("Q2VT_PUB_BUNDLE_INVALID",
-                                  "The vector tile export produced no tiles (see the export log).")
-        if exporter.diagnostics.by_code("Q2VT_EXPORT_EMPTY"):
-            # Nothing drawn: stop here with the cause (the next stages ran on
-            # and failed on the missing tiles, "No MBTiles file").
-            raise PublishingError("Q2VT_PUB_EMPTY_ARCHIVE", *_nothing_to_publish(exporter.diagnostics))
-        bundle = exporter.export_bundle(profile.publication_id)
+        if exporter is None:  # raster layers only: no vector tiles, no records
+            bundle = _raster_only_bundle(profile, extent_3857, work_dir)
+            rules, export_path = [], bundle.export_dir
+        else:
+            if not exporter.convert_project_to_vector_tiles():
+                raise PublishingError("Q2VT_PUB_BUNDLE_INVALID",
+                                      "The vector tile export produced no tiles (see the export log).")
+            if exporter.diagnostics.by_code("Q2VT_EXPORT_EMPTY"):
+                # Nothing drawn: stop here with the cause (the next stages ran on
+                # and failed on the missing tiles, "No MBTiles file").
+                raise PublishingError("Q2VT_PUB_EMPTY_ARCHIVE", *_nothing_to_publish(exporter.diagnostics))
+            bundle = exporter.export_bundle(profile.publication_id)
+            rules, export_path = exporter.rules, exporter.output_path
         bundle.crs = crs_info
         progress.check()
 
         stage("RECORDS")
         records = qgis_model.collect_records(
-            project, vector_profile, exporter.rules, extent_3857,
-            os.path.join(exporter.output_path, "q2vt_records.jsonl"), progress,
+            project, vector_profile, rules, extent_3857,
+            os.path.join(export_path, "q2vt_records.jsonl"), progress,
             max_zoom=profile.view.max_view_zoom)
         qgis_model.raise_identity_problems(records)
         progress.check()
 
         stage("LEGEND")
-        legend_dir = os.path.join(exporter.output_path, "legend")
+        legend_dir = os.path.join(export_path, "legend")
         swatches = qgis_model.render_swatches(project, vector_profile, legend_dir)
-        model = qgis_model.logical_model(project, profile, exporter.rules, bundle.style, swatches, extent_3857)
+        model = qgis_model.logical_model(project, profile, rules, bundle.style, swatches, extent_3857)
         bundle.groups, bundle.layers = model["groups"], model["layers"]
         bundle.rules, bundle.components = model["rules"], model["components"]
         _filter_fields(bundle.layers, profile, records.filter_domains)
@@ -400,8 +418,9 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         from .provenance import layer_logical_id  # pylint: disable=import-outside-toplevel
         searchable = {layer_logical_id(c.layer_id): list(c.search_fields)
                       for c in profile.layers if c.included and c.search_fields}
+        # Features of the vector layers (raster layers have none to look up).
         lookup = {layer_logical_id(c.layer_id): {"popup": [p.field for p in c.popup_fields]}
-                  for c in profile.layers if c.included and (c.popup_fields or c.deep_links)}
+                  for c in vector_profile.layers if c.included and (c.popup_fields or c.deep_links)}
 
         streets: List[dict] = []  # street name and house number records (STREETS stage)
 
@@ -435,14 +454,16 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
                     approved.setdefault(source_layer, set()).update(names)
 
         def disclosure(staging: str, manifest: dict) -> None:
-            archive = os.path.join(staging, "data", "map.pmtiles")
-            assert_disclosure(archive, approved, allow_all=profile.output.include_all_fields)
+            # The vector tiles' attributes (raster images carry none).
+            if bundle.has_vector_tiles:
+                archive = os.path.join(staging, "data", "map.pmtiles")
+                assert_disclosure(archive, approved, allow_all=profile.output.include_all_fields)
 
         parcel_manifest = None
         if info.enabled:
             stage("PARCELS")
             from .parcel_report import cached_parcel_report  # pylint: disable=import-outside-toplevel
-            parcel_dir = os.path.join(exporter.output_path, "parcels")
+            parcel_dir = os.path.join(export_path, "parcels")
             report = cached_parcel_report(cache, project, profile, extent_3857, parcel_dir, legend_dir,
                                           progress.sub(0.0, 1.0))
             bundle.warnings.extend(report.warnings)
@@ -473,6 +494,10 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
             bundle.components = [c for c in bundle.components if c["layerId"] not in dropped]
             for preset in themes["presets"]:
                 preset["layers"] = {k: v for k, v in preset["layers"].items() if k not in dropped}
+        if not has_vectors and not published:
+            raise PublishingError("Q2VT_PUB_EMPTY_ARCHIVE",
+                                  "Nothing to publish: no published raster layer draws anything in the "
+                                  "extent. Check the extent and the layers' data.")
 
         if profile.basemap.kind == "protomaps":
             stage("BASEMAP")
@@ -493,15 +518,16 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
                 streets.extend(_address_records(project, profile, street_area, pieces, progress, bundle.warnings))
             progress.check()
 
-        stage("TILES")
-        if not exporter.finish_tiles():
-            raise PublishingError("Q2VT_PUB_BUNDLE_INVALID",
-                                  "The vector tile export produced no tiles (see the export log).")
-        bundle.diagnostics_summary = exporter.diagnostics.counts()
-        # Rules that could not be exported are missing from the map: said in
-        # the Publish window too, not only in the fidelity report.
-        bundle.warnings.extend(f"Not published (rule failed): {d.message}"
-                               for d in exporter.diagnostics.by_code("Q2VT_RULE_EXPORT_FAILED")[:10])
+        if exporter is not None:
+            stage("TILES")
+            if not exporter.finish_tiles():
+                raise PublishingError("Q2VT_PUB_BUNDLE_INVALID",
+                                      "The vector tile export produced no tiles (see the export log).")
+            bundle.diagnostics_summary = exporter.diagnostics.counts()
+            # Rules that could not be exported are missing from the map: said in
+            # the Publish window too, not only in the fidelity report.
+            bundle.warnings.extend(f"Not published (rule failed): {d.message}"
+                                   for d in exporter.diagnostics.by_code("Q2VT_RULE_EXPORT_FAILED")[:10])
         if cache is not None:
             cache.prune()
         progress.check()
@@ -515,9 +541,9 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
             feedback=progress, canaries=canaries, extra_files=extra_files, extra_builders=[indexes],
             extra_validators=[disclosure], stable_entry=not flat, manifest_extra={
                 "themes": themes, "ui": {"accent": profile.accent_color}, "parcelInfo": parcel_manifest})
-        result = LocalResult(ReleaseState.LOCAL_READY, release, publication_dir, exporter.output_path,
+        result = LocalResult(ReleaseState.LOCAL_READY, release, publication_dir, export_path,
                              records.path, dict(records.counts), list(release.warnings))
-        if profile.output.archive == "both":
+        if profile.output.archive == "both" and bundle.has_vector_tiles:
             result.mbtiles_copy = os.path.join(os.path.dirname(publication_dir),
                                                f"{profile.slug}-{release.release_id}.mbtiles")
             shutil.copyfile(bundle.mbtiles_path, result.mbtiles_copy)
@@ -530,8 +556,41 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
             result.warnings.append(warning)
         return result
     finally:
-        exporter.abort_tiles()  # cancelled or failed before the tiles were finished
-        _copy_logs(exporter.export_folder, profile, base_dir)
+        if exporter is not None:
+            exporter.abort_tiles()  # cancelled or failed before the tiles were finished
+            _copy_logs(exporter.export_folder, profile, base_dir)
+
+
+def _raster_only_bundle(profile: PublicationProfile, extent_3857, work_dir: str):
+    """The ExportBundle of a publication without vector layers: no vector
+    archive, a style without sources (the raster layers, live layers, basemap
+    and terrain are added to it when the release is built). Its work folder
+    (records, legend, parcels) is ``<work>/raster-only``, emptied each time."""
+    from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform,  # pylint: disable=import-outside-toplevel
+                           QgsProject, QgsRectangle)
+    from ..core.fidelity.zoom import fit_zoom  # pylint: disable=import-outside-toplevel
+    from ..qgis2vectortiles import QGIS2VectorTiles  # pylint: disable=import-outside-toplevel
+    from .models import ExportBundle  # pylint: disable=import-outside-toplevel
+    folder = os.path.join(work_dir, "raster-only")
+    if os.path.isdir(folder):
+        shutil.rmtree(folder)
+    os.makedirs(folder)
+    box = extent_3857 if isinstance(extent_3857, QgsRectangle) else QgsRectangle(*extent_3857)
+    transform = QgsCoordinateTransform(QgsCoordinateReferenceSystem("EPSG:3857"),
+                                       QgsCoordinateReferenceSystem("EPSG:4326"),
+                                       QgsProject.instance().transformContext())
+    lonlat = transform.transformBoundingBox(box)
+    center = transform.transform(box.center())
+    low, high = max(0, profile.view.min_zoom), profile.view.max_zoom
+    return ExportBundle(
+        export_dir=folder, mbtiles_path="", style_path="", source_name="",
+        style={"version": 8, "name": profile.title, "sources": {}, "layers": []},
+        publication_id=profile.publication_id,
+        runtime_versions=QGIS2VectorTiles._environment(),  # pylint: disable=protected-access
+        bounds_wgs84=(lonlat.xMinimum(), lonlat.yMinimum(), lonlat.xMaximum(), lonlat.yMaximum()),
+        view={"center": [center.x(), center.y()], "zoom": fit_zoom(box.width(), box.height(), low, high),
+              "minZoom": low, "maxZoom": high},
+        tile_zooms=(low, high))
 
 
 FLAT_STATE = ".q2vt-files.json"

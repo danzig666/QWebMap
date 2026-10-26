@@ -189,3 +189,41 @@ def test_tampered_pointer_is_rejected(tmp_path, bundle, profile):
                    "entry": "../../etc/index.html", "manifest": "x"}, handle)
     with pytest.raises(PublishingError):
         read_current(pub)
+
+
+@pytest.mark.parametrize("transport", ["pmtiles", "xyz"])
+def test_a_map_without_vector_layers_has_no_vector_source(tmp_path, profile, transport):
+    """Raster layers only (here one live web layer): no vector archive, no
+    vector source in the style or the manifest; the release validates."""
+    from publishing.models import ExportBundle  # pylint: disable=import-outside-toplevel
+    jsonschema = pytest.importorskip("jsonschema")
+    lid = "l-web"
+    bundle = ExportBundle(
+        export_dir=str(tmp_path / "export"), mbtiles_path="", style_path="", source_name="",
+        style={"version": 8, "sources": {}, "layers": []}, bounds_wgs84=(19.0, 47.4, 19.1, 47.5),
+        view={"center": [19.05, 47.45], "zoom": 12, "minZoom": 11, "maxZoom": 13}, tile_zooms=(11, 13),
+        layers=[{"id": lid, "groupId": None, "title": "Web", "order": 0, "geometry": "raster",
+                 "initialVisibility": True, "toggleable": True, "opacity": 1.0, "legend": True,
+                 "popupFields": [], "filterFields": [], "searchable": False, "deepLinks": False,
+                 "ruleIds": [], "componentIds": [f"c-raster-{lid}"], "swatch": None}],
+        components=[{"id": f"c-raster-{lid}", "role": "raster", "layerId": lid, "ruleIds": [],
+                     "styleLayerIds": [f"q2vt-raster-{lid}"], "sourceId": f"q2vt_raster_{lid}",
+                     "sourceLayer": None, "dependsOnSourceLayers": [], "interactive": False}],
+        live_rasters=[{"layerId": lid, "sourceId": f"q2vt_raster_{lid}", "styleLayerId": f"q2vt-raster-{lid}",
+                       "source": {"kind": "xyz", "tiles": ["https://tiles.example.test/{z}/{x}/{y}.png"],
+                                  "minzoom": 0, "maxzoom": 19},
+                       "paint": {"raster-opacity": 1}, "bounds": [19.0, 47.4, 19.1, 47.5]}])
+    assert not bundle.has_vector_tiles
+    result = build_release(bundle, profile, _pub(tmp_path), transport=transport)
+    assert result.archive is None
+    assert not [item for item in result.files if item["path"].startswith("data/")]
+    with open(os.path.join(result.release_dir, "manifest.json"), encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    with open(os.path.join(ROOT, "schemas", "publishing", "manifest-v1.schema.json"), encoding="utf-8") as handle:
+        jsonschema.validate(manifest, json.load(handle))
+    assert manifest["sources"] == [] and manifest["liveRasters"][0]["layerId"] == lid
+    assert manifest["view"]["zoom"] == 12
+    with open(os.path.join(result.release_dir, "style.json"), encoding="utf-8") as handle:
+        style = json.load(handle)
+    assert list(style["sources"]) == [f"q2vt_raster_{lid}"] and style["sources"][f"q2vt_raster_{lid}"]["type"] == "raster"
+    assert [layer["id"] for layer in style["layers"]] == [f"q2vt-raster-{lid}"]
