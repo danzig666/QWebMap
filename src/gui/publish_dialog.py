@@ -79,20 +79,23 @@ def _metres(value: float) -> str:
 
 def raster_resolution_text(plan) -> str:
     """The image's own pixel size and the sharpest detail the web map shows."""
-    from ..publishing.raster_tiles import native_zoom  # pylint: disable=import-outside-toplevel
+    from ..publishing.raster_tiles import sharp_zoom  # pylint: disable=import-outside-toplevel
     published = plan.resolution(plan.max_zoom)
     if not plan.native_m:
         return tr("Sharpest detail on the web map: {} per pixel (the image's own resolution is "
                   "unknown, e.g. an online service).").format(_metres(published))
     text = tr("Image: {} per pixel. Sharpest detail on the web map: {} per pixel").format(
         _metres(plan.native_m), _metres(published))
-    best = native_zoom(plan.native_m, plan.latitude, plan.hidpi)
+    best = sharp_zoom(plan.native_m, plan.latitude, plan.hidpi, plan.online)
+    if plan.max_zoom == best - 1 and not plan.online:
+        return text + tr(" – as fine as the image, but zoomed in further it is softer than in QGIS "
+                         "(“Like the image” is one step finer).")
     if plan.max_zoom < best:
         return text + tr(" – {}× coarser than the image (choose “Like the image” to show all "
-                         "of it).").format(round(2 ** (best - plan.max_zoom)))
+                         "of it).").format(round(2 ** (best - plan.max_zoom - (0 if plan.online else 1))))
     if plan.max_zoom > best:
-        return text + tr(" – finer than the image: a larger export, no more detail.")
-    return text + tr(" – as sharp as the image.")
+        return text + tr(" – finer than needed: a larger export, no sharper.")
+    return text + tr(" – as sharp as in QGIS.")
 
 
 def tr(text: str) -> str:
@@ -1462,9 +1465,9 @@ class PublishDialog(QDialog):
     def _fill_raster_detail(self, plan):
         """The "Sharpest detail" choices for this layer: like the image (when
         its resolution is known), like the map, or a pixel size per zoom."""
-        from ..publishing.raster_tiles import ground_resolution, native_zoom  # pylint: disable=import-outside-toplevel
+        from ..publishing.raster_tiles import ground_resolution, sharp_zoom  # pylint: disable=import-outside-toplevel
         lat = plan.latitude
-        best = native_zoom(plan.native_m, lat) if plan.native_m else None
+        best = sharp_zoom(plan.native_m, lat, online=plan.online) if plan.native_m else None
         choice = self.r_detail.currentData() if self.r_detail.count() else self._raster_choice
         self.r_detail.blockSignals(True)
         self.r_detail.clear()
@@ -1478,9 +1481,9 @@ class PublishDialog(QDialog):
         self.r_detail.addItem(tr("Like the map: {} per pixel").format(
             _metres(ground_resolution(map_zoom, lat))) + (finer if best is not None and map_zoom > best
                                                           else ""), "map")
-        # Pixel sizes from one step finer than the image (beyond it only the
-        # export grows) down to the zoom the layer is shown from.
-        top = 21 if best is None else min(22, best + 1)
+        # Pixel sizes from "Like the image" (one step finer than the image:
+        # beyond it only the export grows) down to the zoom the layer is shown from.
+        top = 21 if best is None else best
         low = self.r_min.value() if self.r_min.value() >= 0 else self.e_min_zoom.value()
         zooms = set(range(max(low, 8), top + 1))
         if isinstance(choice, int):

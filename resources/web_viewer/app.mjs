@@ -222,7 +222,8 @@ async function start() {
     if (!webglAvailable()) throw new ViewerError("Q2VT_PUB_WEBGL", "WebGL unavailable");
     viewer.archives = await openArchives(manifest, manifestUrl, maplibregl);
     const styleUrl = resolveUrl(manifest.style, manifestUrl);
-    const style = bindStyle(await fetchChecked(styleUrl), manifest, manifestUrl, styleUrl);
+    const style = bindStyle(await fetchChecked(styleUrl), manifest, manifestUrl, styleUrl, {
+      pixelRatio: manifest.view?.lowMemory ? cappedPixelRatio(MAX_PIXEL_RATIO) : window.devicePixelRatio || 1 });
     viewer.style = style;
     prepareShadows(style);  // feature ids for point label shadows
     const view = manifest.view;

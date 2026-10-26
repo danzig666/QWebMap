@@ -80,6 +80,19 @@ def native_zoom(native_m: float, latitude: float, hidpi: bool = False) -> int:
     return max(0, min(22, int(math.ceil(exact - 0.05))))
 
 
+def sharp_zoom(native_m: float, latitude: float, hidpi: bool = False, online: bool = False) -> int:
+    """The maximum zoom of "Like the image": one deeper than native_zoom
+    for an image of its own. At native_zoom the tiles are as fine as the
+    image but resampled from it on another pixel grid, and zoomed in past
+    them the browser enlarges those already resampled tiles: two bilinear
+    passes, where QGIS draws from the image itself (measured: 78-85 % of
+    QGIS's edge sharpness one to two zooms in, 91-99 % with one zoom more,
+    no gain with two). An online tiled service keeps native_zoom: its tiles
+    are on the same grid, copied as they are."""
+    zoom = native_zoom(native_m, latitude, hidpi)
+    return zoom if online else min(22, zoom + 1)
+
+
 def native_resolution(layer, transform_context=None) -> Optional[float]:
     """Ground metres per pixel of the layer's own image (the mean of x and y,
     one pixel measured on the WGS 84 ellipsoid at the image's centre, so any
@@ -181,7 +194,7 @@ def plan_layer(project, layer, config: LayerConfig, profile: PublicationProfile,
                extent_3857: QgsRectangle) -> RasterPlan:
     """Zooms, area (export extent ∩ layer extent) and an upper bound of tiles.
     Without a maximum zoom, "like the image" (``raster_match_native``): the
-    lowest zoom as sharp as the image (native_zoom); else the map's."""
+    zoom past which the image has no more detail (sharp_zoom); else the map's."""
     web = QgsCoordinateReferenceSystem(WEB_MERCATOR)
     area = QgsRectangle(extent_3857)
     warnings = []
@@ -201,8 +214,9 @@ def plan_layer(project, layer, config: LayerConfig, profile: PublicationProfile,
         native_m = service_resolution(layer, project.transformContext(), centre)
     hidpi = bool(getattr(config, "raster_hidpi", False))
     low, high = zoom_range(config, profile)
+    online = (layer.providerType() or "").lower() in ONLINE_PROVIDERS
     if config.raster_max_zoom is None and getattr(config, "raster_match_native", False) and native_m:
-        high = max(low, native_zoom(native_m, latitude, hidpi))
+        high = max(low, sharp_zoom(native_m, latitude, hidpi, online))
     # Not rendered where the layer is hidden on the web (its scale range).
     from .qgis_model import _zoom_of_scale, layer_scale_range  # pylint: disable=import-outside-toplevel
     out_scale, in_scale = layer_scale_range(layer, config)
@@ -210,7 +224,6 @@ def plan_layer(project, layer, config: LayerConfig, profile: PublicationProfile,
         low = min(high, max(low, int(math.floor(_zoom_of_scale(out_scale)))))
     if in_scale and _zoom_of_scale(in_scale) is not None:
         high = max(low, min(high, int(math.ceil(_zoom_of_scale(in_scale)))))
-    online = (layer.providerType() or "").lower() in ONLINE_PROVIDERS
     if online:
         warnings.append(f'"{layer.name()}" is an online map service: check that its licence allows '
                         "republishing its images.")
