@@ -434,7 +434,11 @@ def _window_on_a_canvas():
         assert not dialog.isVisible()
         wait()
         # (A busy machine runs the timer late: give it a little longer.)
-        assert dialog.isVisible() or QTest.qWaitFor(dialog.isVisible, 3000)
+        for _ in range(30):
+            if dialog.isVisible():
+                break
+            QTest.qWait(100)
+        assert dialog.isVisible()
 
     def map_extent(x0, y0, x1, y1):
         """The rectangle between two pixels, rounded, as the profile keeps it (EPSG:3857)."""
