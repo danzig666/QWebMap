@@ -40,7 +40,19 @@ def test_round_trip_is_stable():
 def test_defaults_publish_pmtiles_vector_only():
     profile = PublicationProfile()
     assert profile.output.archive == "pmtiles" and profile.vector_only is True
-    assert profile.destination.kind == "local" and profile.locale == "hu"
+    assert profile.destination.kind == "local"
+    # English, unless the edition's preset sets its own (the Hungarian edition: Hungarian).
+    from publishing import presets
+    preset_locales = [getattr(m, "DEFAULT_LOCALE", None) for m in presets.available()]
+    expected = next((locale for locale in preset_locales if locale), "en")
+    assert profile.locale == presets.default_locale() == expected
+
+
+def test_saved_settings_keep_their_language():
+    """Settings saved by an older version (Hungarian default) stay Hungarian."""
+    profile = PublicationProfile()
+    profile.locale = "hu"
+    assert load_profile(dumps(profile)).locale == "hu"
 
 
 def test_profiles_never_hold_secrets():

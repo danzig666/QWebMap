@@ -147,7 +147,7 @@ PAGE = """<!doctype html>
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 a { color: var(--accent); }
-header { position: sticky; top: 0; z-index: 2; display: flex; gap: 16px; align-items: center; padding: 10px 20px;
+header { position: sticky; top: 0; z-index: 4; display: flex; gap: 16px; align-items: center; padding: 10px 20px;
   background: var(--panel); border-bottom: 1px solid var(--line); }
 header img { width: 30px; height: 30px; }
 header .name { font-weight: 700; }
@@ -163,6 +163,7 @@ nav a:hover { color: var(--accent); }
 main { padding: 8px 36px 80px; min-width: 0; }
 main > * { max-width: 820px; }
 h1 { font-size: 28px; margin: 24px 0 4px; }
+h2, h3, h4 { scroll-margin-top: var(--header-h, 70px); }
 h2 { font-size: 22px; margin: 40px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 h3 { font-size: 17px; margin: 24px 0 6px; }
 h4 { font-size: 15px; margin: 18px 0 4px; }
@@ -176,22 +177,50 @@ th, td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; vert
 th { background: var(--panel); }
 .hidden { display: none !important; }
 mark { background: #f6e27a; color: #1d2418; }
-@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } nav { display: none; } main { padding: 8px 16px 60px; } }
+#toc-button { display: none; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+  color: var(--fg); font: inherit; cursor: pointer; }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  header { flex-wrap: wrap; gap: 8px 12px; }
+  header input { order: 3; width: 100%; margin-left: 0; }
+  #toc-button { display: block; margin-left: auto; }
+  nav { display: none; position: fixed; z-index: 3; left: 0; right: 0; bottom: 0; top: var(--header-h, 100px);
+    max-height: none; background: var(--panel); border-right: 0; border-top: 1px solid var(--line); padding: 12px 20px 40px;
+    font-size: 15px; }
+  nav a { padding: 6px 0; }
+  nav.open { display: block; }
+  main { padding: 8px 16px 60px; }
+}
 </style>
 </head>
 <body>
 <header>
   <img src="icons/icon.png" alt="">
   <div><div class="name">QWebMap user guide</div><div class="ver">version {version} · <a href="https://github.com/danzig666/QWebMap">GitHub</a> · <a href="https://danzig666.github.io/QWebMap/">demo map</a></div></div>
+  <button id="toc-button" type="button" aria-expanded="false" aria-controls="toc">Contents</button>
   <input id="find" type="search" placeholder="Find an option…" aria-label="Find an option">
 </header>
 <div class="layout">
-<nav>{toc}</nav>
+<nav id="toc">{toc}</nav>
 <main>
 {body}
 </main>
 </div>
 <script>
+// Phones: the contents open from the header's Contents button, below the header.
+const toc = document.getElementById("toc"), button = document.getElementById("toc-button");
+const header = document.querySelector("header");
+const measure = () => document.documentElement.style.setProperty("--header-h", header.getBoundingClientRect().height + 8 + "px");
+measure();
+addEventListener("resize", measure);
+const setOpen = (open) => {
+  document.documentElement.style.setProperty("--header-h", header.getBoundingClientRect().height + "px");
+  toc.classList.toggle("open", open);
+  button.setAttribute("aria-expanded", String(open));
+  button.textContent = open ? "Close" : "Contents";
+};
+button.addEventListener("click", () => setOpen(!toc.classList.contains("open")));
+toc.addEventListener("click", (e) => { if (e.target.closest("a")) setOpen(false); });
 // "Find an option": show only the list items, rows and paragraphs that contain the text.
 const find = document.getElementById("find");
 const items = [...document.querySelectorAll("main li, main tr, main p, main .note")].filter((e) => !e.closest("li li"));

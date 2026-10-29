@@ -21,7 +21,7 @@ QWebMap publishes a QGIS project as a fast, accurate web map: vector tiles in on
 - **Title** — Map title shown in the viewer. Required. For new settings (never saved), editing it also updates the slug.
 - **Address name (slug)** — The map's address and folder name, e.g. `maps/<slug>`. Use lowercase ASCII letters, digits and `-`, 1–64 characters. If you leave it empty, it is made from the title.
 - **Description** — Short text about the map, shown in the viewer.
-- **Language of the viewer** — Language of the viewer's interface: Magyar (the default) or English.
+- **Language of the viewer** — Language of the viewer's interface: English (the default for new settings) or Magyar. Saved settings keep their language.
 - **Attribution** — Credit or copyright text shown on the web map.
 - **Logo (PNG/JPEG/WebP)** — Local image file shown in the viewer. Click **…** to browse.
 - **Minimum tile zoom** — Lowest zoom (0–22) that gets tiles. Default 0.
@@ -101,7 +101,7 @@ With several rows selected, a limit appears only if every row has the same value
 - Web-only scales add to the layer's own QGIS scale range; they cannot show a layer outside its QGIS range.
 - Zoomed-out load is an estimate from a sample of up to 2000 features per layer. It covers only published vector layers with features in the extent. If a "Labels from" zoom is not past the "Features from" zoom, it is dropped (the layer is hidden there anyway). A zoomed-out limit is not applied if it would conflict with an existing zoomed-in limit.
 - Before each export, the plugin checks the zoomed-out load. If some layers are heavy, it asks: **Make it faster…** opens the dialog and then exports, **Export as it is** exports unchanged, and Cancel stops. "Don't check this before exports (the Map tab's Zoomed-out load… button still does)" turns the check off for good (QGIS setting).
-- Raster tiles are capped at 400 000 per layer. "Like the image" on a sharp aerial photo over a large extent can exceed the cap.
+- A raster layer of more than 400 000 tiles takes hours to export and makes a very large web map. There is no limit, but before the export a "Very large raster layer" warning names the layer, the setting that makes it large (its *Sharpest detail*, or the Map tab's *Maximum tile zoom* for "Like the map") and what brings it down: each coarser *Sharpest detail* step is about a quarter of the tiles, or a smaller extent. **Export anyway** goes on, Cancel stops. The count is an upper bound (every tile of the area at every zoom): 400 000 is roughly 15 × 15 km at zoom 20 (about 0.1 m detail), 30 × 30 km at zoom 19. A higher *Shown from zoom* barely helps: the sharpest zoom holds three quarters of the tiles.
 - If QGIS cannot write WebP, the tiles are written as PNG (larger) and a warning is shown.
 
 **Errors**
@@ -114,7 +114,6 @@ With several rows selected, a limit appears only if every row has the same value
 - "This area is outside what a web map can show (web maps end short of the poles); the extent is unchanged.": the view or drawn area reaches past about ±85°. Zoom in and try again.
 - "Select at least one layer to publish (Map tab) …": nothing is ticked in Publish. Publish at least one layer.
 - "Layer … is not a vector or raster layer of this project." / 'Raster layer "…" cannot be read (invalid data source).': a published layer is missing or broken. Fix the layer, or unpublish it.
-- 'Raster layer "…": about N tiles at zooms a-b; lower its maximum zoom …': the raster exceeds 400 000 tiles. Choose a coarser "Sharpest detail", a higher "Shown from zoom", or a smaller extent.
 - "Nothing to publish: no published raster layer draws anything in the extent." (Q2VT_PUB_EMPTY_ARCHIVE): the extent does not cover the raster data. Check the extent.
 - "Select layers (or groups) in the list first.": you opened Visible scales… with nothing selected. Select rows first.
 - "The zoomed-out limit must be a smaller scale (larger number) than the zoomed-in limit.": the two limits in the scale dialog overlap. Fix one of them.
@@ -170,7 +169,7 @@ With several rows selected, a limit appears only if every row has the same value
 - **Type** — How the popup value is shown: string, integer, number, boolean, date or url (a safe link). Guessed from the field type.
 - **Search** — Makes the field searchable, and public.
 - **Feature key** — The field(s) that identify a feature for links. Values must be unique and never empty (e.g. a parcel number).
-- **Filter** — The visitor filter: no filter, values, range or text. Makes the field public.
+- **Filter** — Adds a filter on this field to the web map, so visitors can show only some features: *values* (a list of the field's values with counts, tick the ones to show), *range* (from–to, for numbers) or *text* (contains). Needs **Attribute filters** on. Makes the field public.
 
 ### Layer settings (raster layers)
 
@@ -205,7 +204,7 @@ With several rows selected, a limit appears only if every row has the same value
 - `Q2VT_PUB_PROFILE_INVALID` "Layer "…": display expression: …" — The *Feature title* expression does not parse. Correct it, or clear it.
 - `Q2VT_PUB_PROFILE_INVALID` "House numbers: the layer is not in the project (Interaction tab)." / "House numbers: field "…" does not exist in "…"." — The address layer or field is gone. Pick them again.
 - `Q2VT_PUB_IDENTITY` "Layer "…": N feature(s) have no key (… is NULL)." / "the key (…) is not unique, e.g. …" — Fix the data or choose another *Feature key* field.
-- `Q2VT_PUB_PROFILE_INVALID` "Raster layer "…": about N tiles at zooms a-b; lower its maximum zoom or the extent (limit 400000)." — Choose a coarser *Sharpest detail*, a higher *Shown from zoom* or a smaller extent.
+- Warning 'Raster layer "…": up to N tiles at zooms a-b; the export can take hours.' — Not an error; the export goes on. Choose a coarser *Sharpest detail* or a smaller extent to make it faster.
 - `Q2VT_PUB_PROFILE_INVALID` "…opacity: between 0 and 1" / "rasterQuality: 1-100" — Only happens with an edited settings file. Fix the value.
 - `Q2VT_PUB_BASEMAP` "Street search: the area needs N tiles (limit …)." — The street-search area is too large. Use a smaller extent layer.
 - Warning "Street search: the street names could not be read (…)" / "no named street was found in the area." — The map is published without street search. Check the internet connection, the basemap source and the extent layer.

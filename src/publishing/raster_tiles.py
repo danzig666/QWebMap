@@ -38,7 +38,7 @@ from .vendor.pmtiles.tile import Compression
 
 ORIGIN = 20037508.342789244          # half the Web Mercator world width (m)
 WEB_MERCATOR = "EPSG:3857"
-MAX_TILES_PER_LAYER = 400_000        # refuse runaway exports (estimate before rendering)
+LARGE_TILES_PER_LAYER = 400_000      # past this a layer takes hours: warned about (no limit)
 ONLINE_PROVIDERS = {"wms", "arcgismapserver", "arcgisfeatureserver", "xyz", "wcs"}
 
 
@@ -232,6 +232,52 @@ def plan_layer(project, layer, config: LayerConfig, profile: PublicationProfile,
     return RasterPlan(layer.id(), low, high, tiles, box, online, warnings, native_m, latitude, hidpi)
 
 
+def _metres(value: float) -> str:
+    return f"{value:.2f} m" if value < 10 else f"{value:.0f} m"
+
+
+def large_raster_advice(plan: RasterPlan, name: str, config: LayerConfig, map_max_zoom: int) -> str:
+    """Why a raster layer has more than LARGE_TILES_PER_LAYER tiles (the
+    setting that sets its sharpest zoom) and what brings it under that:
+    each zoom less is about a quarter of the tiles, a smaller extent fewer."""
+    def count(high):
+        return count_tiles(plan.extent_3857, plan.min_zoom, max(plan.min_zoom, high))
+
+    def number(value):
+        return f"{value:,}".replace(",", "\u202f")
+
+    top = plan.max_zoom
+    if config.raster_max_zoom is not None:
+        cause = f'"Sharpest detail" is {_metres(plan.resolution(top))} per pixel (zoom {top})'
+    elif config.raster_match_native and plan.native_m:
+        cause = (f'"Sharpest detail" is "Like the image" ({_metres(plan.native_m)} per pixel: '
+                 f"zoom {top})")
+    else:
+        cause = (f'"Sharpest detail" is "Like the map": the Map tab\'s Maximum tile zoom, {map_max_zoom} '
+                 f"({_metres(plan.resolution(top))} per pixel)")
+    lines = [f'"{name}": up to {number(plan.tiles)} tiles at zooms {plan.min_zoom}–{top}. '
+             f"Its {cause}.", "To go lower (Interaction tab, the layer's raster settings):"]
+    fits = next((z for z in range(top - 1, plan.min_zoom - 1, -1) if count(z) <= LARGE_TILES_PER_LAYER), None)
+    if top - 1 >= plan.min_zoom:
+        lines.append(f"• Sharpest detail {_metres(plan.resolution(top - 1))} per pixel (zoom {top - 1}): "
+                     f"about {number(count(top - 1))} tiles")
+    if fits is not None and fits != top - 1:
+        lines.append(f"• Sharpest detail {_metres(plan.resolution(fits))} per pixel (zoom {fits}): "
+                     f"about {number(count(fits))} tiles")
+    side = math.sqrt(plan.tiles / LARGE_TILES_PER_LAYER)
+    lines.append(f"• Or a smaller extent: about {side:.1f}× smaller on each side for "
+                 f"{number(LARGE_TILES_PER_LAYER)} tiles.")
+    lines.append('"Shown from zoom" barely helps: the sharpest zoom holds three quarters of the tiles.')
+    return "\n".join(lines)
+
+
+def large_raster_warning(plan: RasterPlan, name: str) -> str:
+    """One line for the export log."""
+    return (f'Raster layer "{name}": up to {plan.tiles} tiles at zooms {plan.min_zoom}-{plan.max_zoom}; '
+            "the export can take hours. A coarser \"Sharpest detail\" (Interaction tab) or a smaller "
+            "extent makes it much faster.")
+
+
 def _encoder(fmt: str) -> str:
     return {"png": "PNG", "jpeg": "JPEG", "webp": "WEBP"}[fmt]
 
@@ -282,12 +328,6 @@ def render_layer(project, layer, config: LayerConfig, plan: RasterPlan, output: 
     Results are written in a fixed order: the archive is the same for any
     number of threads."""
     progress = progress or Progress()
-    if plan.tiles > MAX_TILES_PER_LAYER:
-        raise PublishingError(
-            "Q2VT_PUB_PROFILE_INVALID",
-            f'Raster layer "{layer.name()}": about {plan.tiles} tiles at zooms '
-            f"{plan.min_zoom}-{plan.max_zoom}; lower its maximum zoom or the extent "
-            f"(limit {MAX_TILES_PER_LAYER}).")
     if plan.tiles == 0:
         return None
     from collections import deque  # pylint: disable=import-outside-toplevel

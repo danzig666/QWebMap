@@ -128,18 +128,37 @@ def test_raster_above_vectors_stays_under_labels(tmp_path):
     assert 0 < len(stored) < full
 
 
-def test_raster_outside_the_extent_is_dropped_and_runaway_sizes_refused(tmp_path):
+def test_raster_outside_the_extent_is_dropped(tmp_path):
     project, profile, parcels, ortho = _project(tmp_path, origin=(3000000, 7000000))
     result = export_local(project, profile, EXTENT)
     manifest = json.load(open(os.path.join(result.release.release_dir, "manifest.json"), encoding="utf-8"))
     assert all(s.get("role") != "raster" for s in manifest["sources"])
     assert layer_logical_id(ortho.id()) not in {layer["id"] for layer in manifest["layers"]}
     assert any("draws nothing" in w for w in result.warnings)
-    (tmp_path / "big").mkdir()
-    project, profile, parcels, ortho = _project(tmp_path / "big", size=20, pixel=2000)
-    profile.layers[-1].raster_max_zoom = 22
-    with pytest.raises(PublishingError, match="tiles"):
-        export_local(project, profile, QgsRectangle(2000000, 5900000, 2200000, 6100000))
+
+
+def test_a_very_large_raster_is_warned_about_not_refused(tmp_path):
+    """No tile limit: a raster of hours of rendering gets a warning, and the
+    advice names the setting that sets its size and what brings it down."""
+    from publishing.controller import _plan_rasters
+    from publishing.qgis_model import split_profile
+    from publishing.raster_tiles import LARGE_TILES_PER_LAYER, count_tiles, large_raster_advice
+    project, profile, parcels, ortho = _project(tmp_path, size=20, pixel=2000)
+    config = profile.layers[-1]
+    config.raster_max_zoom = 20
+    extent = QgsRectangle(2119000, 5983000, 2159000, 6023000)  # the raster: 40 × 40 km
+    plan = _plan_rasters(project, profile, split_profile(profile, project)[1], extent)[ortho.id()]
+    assert plan.tiles > LARGE_TILES_PER_LAYER
+    assert any("can take hours" in w and "Ortofotó" in w for w in plan.warnings)
+    advice = large_raster_advice(plan, ortho.name(), config, profile.view.max_zoom)
+    assert '"Sharpest detail"' in advice and "(zoom 20)" in advice
+    fits = max(z for z in range(plan.min_zoom, 20) if count_tiles(plan.extent_3857, plan.min_zoom, z)
+               <= LARGE_TILES_PER_LAYER)
+    assert f"(zoom {fits}):" in advice and "smaller extent" in advice
+    config.raster_max_zoom, config.raster_match_native = None, False
+    plan = _plan_rasters(project, profile, [config], extent)[ortho.id()]
+    if plan.tiles > LARGE_TILES_PER_LAYER:
+        assert "Maximum tile zoom" in large_raster_advice(plan, ortho.name(), config, profile.view.max_zoom)
 
 
 def _image(rgba):

@@ -368,12 +368,21 @@ class Approval:
     approved_at: str = ""
 
 
+def _default_locale() -> str:
+    """English, unless the edition's preset sets another (presets.default_locale)."""
+    try:
+        from .presets import default_locale  # pylint: disable=import-outside-toplevel
+        return default_locale()
+    except Exception:  # noqa: BLE001
+        return "en"
+
+
 @dataclass
 class PublicationProfile:
     title: str = "Web map"
     description: str = ""
     slug: str = "map"
-    locale: str = "hu"
+    locale: str = field(default_factory=lambda: _default_locale())
     attribution: str = ""
     logo_path: str = ""                # local file; copied into the bundle as a UI asset
     profile_id: str = field(default_factory=lambda: str(uuid.uuid4()))

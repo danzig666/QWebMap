@@ -383,8 +383,8 @@ class PublishDialog(QDialog):
         self.e_description = QPlainTextEdit()
         self.e_description.setMaximumHeight(70)
         self.e_locale = QComboBox()
-        self.e_locale.addItem("Magyar", "hu")
         self.e_locale.addItem("English", "en")
+        self.e_locale.addItem("Magyar", "hu")
         self.e_attribution = QLineEdit()
         logo_row = QHBoxLayout()
         self.e_logo = QLineEdit()
@@ -674,6 +674,55 @@ class PublishDialog(QDialog):
             self.analyse_zoom_load(estimate=estimate)
             return True
         return answer == "as-is"
+
+    def _large_rasters(self):
+        """[(layer name, advice)] of the rendered raster layers with more
+        than LARGE_TILES_PER_LAYER tiles in the extent."""
+        from ..publishing import live_raster, qgis_model  # pylint: disable=import-outside-toplevel
+        from ..publishing.raster_tiles import (LARGE_TILES_PER_LAYER, large_raster_advice,  # pylint: disable=import-outside-toplevel
+                                               plan_layer)
+        try:
+            extent = self._extent()
+        except PublishingError:
+            return []  # the export says what is wrong
+        profile = self.collect()
+        out = []
+        for config in qgis_model.split_profile(profile, self.project)[1]:
+            layer = self.project.mapLayer(config.layer_id)
+            if layer is None or (config.raster_live and live_raster.live_source(layer)[0]):
+                continue  # loaded live: nothing rendered
+            try:
+                plan = plan_layer(self.project, layer, config, profile, extent)
+            except Exception:  # noqa: BLE001 - a broken layer: the export reports it
+                continue
+            if plan.tiles > LARGE_TILES_PER_LAYER:
+                out.append((layer.name(), large_raster_advice(plan, layer.name(), config,
+                                                              profile.view.max_zoom)))
+        return out
+
+    def _check_large_rasters(self, ask=None) -> bool:
+        """Before an export: a raster layer of very many tiles (hours of
+        rendering) is pointed out, with what sets its size and how to make
+        it smaller. False: the export is cancelled. ``ask(text)`` (tests):
+        True to export anyway."""
+        large = self._large_rasters()
+        if not large:
+            return True
+        text = tr("This export will take a very long time (hours) and make a very large web map: "
+                  "{} raster layer(s) have far more tiles than usual.").format(len(large))
+        details = "\n\n".join(advice for _, advice in large)
+        if ask is not None:
+            return bool(ask(text + "\n\n" + details))
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr("Very large raster layer"))
+        box.setText(text)
+        box.setInformativeText(details)
+        anyway = box.addButton(tr("Export anyway"), QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        return box.clickedButton() is anyway
 
     def _ask_zoom_load(self, slow):
         """("faster" | "as-is" | "cancel", remind again)."""
@@ -1593,7 +1642,7 @@ class PublishDialog(QDialog):
     def _raster_estimate(self):
         if not self.current_layer_id or self.i_stack.currentIndex() != 1:
             return
-        from ..publishing.raster_tiles import plan_layer  # pylint: disable=import-outside-toplevel
+        from ..publishing.raster_tiles import LARGE_TILES_PER_LAYER, plan_layer  # pylint: disable=import-outside-toplevel
         layer = self.project.mapLayer(self.current_layer_id)
         high, match = self._raster_detail()
         config = LayerConfig(self.current_layer_id,
@@ -1609,7 +1658,10 @@ class PublishDialog(QDialog):
         self._fill_raster_detail(plan)
         self.r_estimate.setText(raster_resolution_text(plan) + "\n" + tr(
             "At most {} tiles at zooms {}–{} in the export extent.").format(
-            plan.tiles, plan.min_zoom, plan.max_zoom) + ("\n⚠ " + "; ".join(plan.warnings) if plan.warnings else ""))
+            plan.tiles, plan.min_zoom, plan.max_zoom) + ("\n⚠ " + "; ".join(plan.warnings) if plan.warnings else "")
+            + ("\n⚠ " + tr("Very many tiles: the export will take hours. A coarser “Sharpest detail” "
+                            "or a smaller extent makes it much faster.")
+               if plan.tiles > LARGE_TILES_PER_LAYER else ""))
 
     def _basemap_tab(self):
         from qgis.PyQt.QtWidgets import QScrollArea  # pylint: disable=import-outside-toplevel
@@ -3158,6 +3210,8 @@ class PublishDialog(QDialog):
         if not self._confirm_extent():
             return False
         if not self._check_zoom_load_before_export():
+            return False
+        if not self._check_large_rasters():
             return False
         if not self.save_settings():
             return False

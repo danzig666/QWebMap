@@ -551,7 +551,12 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.54.0**. Newest first:
+This README describes QWebMap **4.55.0**. Newest first:
+
+**4.55.0** — no raster tile limit; English by default; user guide on phones
+- A raster layer of more than 400 000 tiles is no longer refused. Before the export a warning says it will take hours and names the layer, the setting that makes it large (*Sharpest detail* or the Map tab's *Maximum tile zoom*) and what brings it down (tile counts one detail step coarser, and how much smaller the extent should be). *Export anyway* goes on.
+- New settings start with an English viewer (*Language of the viewer*); saved settings keep their language.
+- The [user guide](https://danzig666.github.io/QWebMap/usage/) has a *Contents* button on phones.
 
 **4.54.0** — views publish their layers; slow-map check before export
 - Ticking a map theme under *Map themes offered as views in the web map* publishes the layers it shows (additive: none are unpublished).
