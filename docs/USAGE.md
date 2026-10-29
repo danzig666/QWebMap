@@ -101,7 +101,7 @@ With several rows selected, a limit appears only if every row has the same value
 - Web-only scales add to the layer's own QGIS scale range; they cannot show a layer outside its QGIS range.
 - Zoomed-out load is an estimate from a sample of up to 2000 features per layer. It covers only published vector layers with features in the extent. If a "Labels from" zoom is not past the "Features from" zoom, it is dropped (the layer is hidden there anyway). A zoomed-out limit is not applied if it would conflict with an existing zoomed-in limit.
 - Before each export, the plugin checks the zoomed-out load. If some layers are heavy, it asks: **Make it faster…** opens the dialog and then exports, **Export as it is** exports unchanged, and Cancel stops. "Don't check this before exports (the Map tab's Zoomed-out load… button still does)" turns the check off for good (QGIS setting).
-- Raster tiles are capped at 400 000 per layer. "Like the image" on a sharp aerial photo over a large extent can exceed the cap.
+- A raster layer can have at most 400 000 tiles (a fixed limit, against runaway exports). It is checked before rendering, on an upper bound: every tile of the area at every zoom. That is roughly 15 × 15 km at zoom 20 (about 0.2 m detail), 30 × 30 km at zoom 19. "Like the image" on a sharp aerial photo over a large extent can exceed it.
 - If QGIS cannot write WebP, the tiles are written as PNG (larger) and a warning is shown.
 
 **Errors**
@@ -170,7 +170,7 @@ With several rows selected, a limit appears only if every row has the same value
 - **Type** — How the popup value is shown: string, integer, number, boolean, date or url (a safe link). Guessed from the field type.
 - **Search** — Makes the field searchable, and public.
 - **Feature key** — The field(s) that identify a feature for links. Values must be unique and never empty (e.g. a parcel number).
-- **Filter** — The visitor filter: no filter, values, range or text. Makes the field public.
+- **Filter** — Adds a filter on this field to the web map, so visitors can show only some features: *values* (a list of the field's values with counts, tick the ones to show), *range* (from–to, for numbers) or *text* (contains). Needs **Attribute filters** on. Makes the field public.
 
 ### Layer settings (raster layers)
 
