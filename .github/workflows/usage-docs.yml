@@ -1,0 +1,46 @@
+# Publishes the user guide (docs/usage.html, built from docs/USAGE.md by
+# tools/build_usage.py) to GitHub Pages: gh-pages/usage/index.html, i.e.
+# https://danzig666.github.io/QWebMap/usage/
+name: User guide on GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/USAGE.md", "docs/usage.html", "docs/icons/**", "tools/build_usage.py"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gh-pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the guide
+        run: python3 tools/build_usage.py
+      - uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: site
+      - name: Copy into gh-pages/usage
+        run: |
+          mkdir -p site/usage/icons
+          cp docs/usage.html site/usage/index.html
+          cp docs/icons/icon.png site/usage/icons/icon.png
+      - name: Commit and push
+        working-directory: site
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add usage
+          if git diff --cached --quiet; then echo "Guide unchanged"; exit 0; fi
+          git commit -m "User guide: ${GITHUB_SHA::7}"
+          git push
