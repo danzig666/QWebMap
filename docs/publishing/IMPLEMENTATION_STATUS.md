@@ -2195,3 +2195,15 @@ convex polygons within a few px at zooms 13-17 (tests/browser/test_horizontal_po
   (tests/integration/test_publish_scale_limits.py).
 * `icon.png` / `icon.svg` cropped to their artwork (the 7 % transparent margin made the icon look
   smaller than the toolbar's others).
+
+## 4.55.0 — no raster tile limit; English by default
+
+* `raster_tiles.LARGE_TILES_PER_LAYER` (400 000) replaces the refusal (`MAX_TILES_PER_LAYER`): past it,
+  `controller._plan_rasters` logs `large_raster_warning` and `PublishDialog._check_large_rasters`
+  (in `export_locally`, after the zoomed-out check) shows `large_raster_advice` per rendered raster
+  layer: the setting that sets its sharpest zoom, the tile count one zoom coarser and at the zoom
+  that fits, the extent reduction. *Export anyway* / Cancel. The Interaction tab's estimate flags it
+  (tests/integration/test_publishing_raster.py, test_publish_dialog.py).
+* `presets.default_locale()`: the first preset's `DEFAULT_LOCALE`, else "en"; `PublicationProfile.locale`
+  defaults to it (the HU edition's preset: "hu"). Saved settings keep their language.
+* User guide (`tools/build_usage.py`): a *Contents* button opens the table of contents on phones.
