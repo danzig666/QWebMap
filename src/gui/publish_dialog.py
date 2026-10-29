@@ -540,7 +540,7 @@ class PublishDialog(QDialog):
         themes_row = QHBoxLayout()
         self.themes_list = QListWidget()
         self.themes_list.setMaximumHeight(84)
-        self.themes_list.itemChanged.connect(lambda *_: self._refresh_initial_theme())
+        self.themes_list.itemChanged.connect(self._theme_item_changed)
         self.theme_initial = QComboBox()
         themes_box = QVBoxLayout()
         themes_box.addWidget(QLabel(tr("Map themes offered as views in the web map:")))
@@ -622,17 +622,100 @@ class PublishDialog(QDialog):
         values = list(item.data(COL_SCALES, SCALES_ROLE) or ()) + [0.0, 0.0, 0.0]
         return float(values[0] or 0), float(values[1] or 0), float(values[2] or 0)
 
-    def analyse_zoom_load(self, accept=None) -> bool:
+    def analyse_zoom_load(self, accept=None, estimate=None) -> bool:
         """Estimate the zoomed-out load of the published vector layers and
         offer per-layer limits (``accept``: a callable given the dialog,
-        returning whether it was accepted; for tests)."""
-        from ..publishing import zoom_load  # pylint: disable=import-outside-toplevel
+        returning whether it was accepted; for tests). ``estimate``: an
+        estimate already made ((profile, loads, factor))."""
         from .zoom_load_dialog import ZoomLoadDialog  # pylint: disable=import-outside-toplevel
+        if estimate is None:
+            estimate = self._estimate_zoom_load()
+        if estimate is None:
+            return False
+        profile, loads, factor = estimate
+        if not loads:
+            self.status.setText(tr("No published vector layer has features in the extent."))
+            return False
+        self.status.setText("")
+        dialog = ZoomLoadDialog(self, loads, factor, (profile.view.min_zoom, profile.view.max_zoom))
+        if not (accept(dialog) if accept is not None else dialog.exec()):
+            return False
+        self.apply_zoom_limits(dialog.chosen())
+        return True
+
+    # Before an export: a web map that will be slow zoomed out is pointed out
+    # (with the Zoomed-out load suggestions), unless switched off.
+    ZOOM_LOAD_CHECK_KEY = "QWebMap/checkZoomLoadBeforeExport"
+
+    def _check_zoom_load_before_export(self) -> bool:
+        """False: the export is cancelled."""
+        if str(QgsSettings().value(self.ZOOM_LOAD_CHECK_KEY, "true")).lower() in ("false", "0"):
+            return True
+        estimate = self._estimate_zoom_load()
+        if estimate is None:
+            return True  # cancelled or no extent: the export goes on (and says what is wrong)
+        profile, loads, factor = estimate
+        from ..publishing import zoom_load  # pylint: disable=import-outside-toplevel
+        from .zoom_load_dialog import SPEED_KEY  # pylint: disable=import-outside-toplevel
+        try:
+            speed = int(QgsSettings().value(SPEED_KEY, zoom_load.BALANCED))
+        except (TypeError, ValueError):
+            speed = zoom_load.BALANCED
+        if speed != zoom_load.BALANCED:
+            zoom_load.resuggest(loads, int(profile.view.max_zoom), speed)
+        slow = [load for load in loads
+                if load.suggested_from is not None or load.suggested_labels_from is not None]
+        if not slow:
+            return True
+        answer, remind = self._ask_zoom_load(slow)
+        if not remind:
+            QgsSettings().setValue(self.ZOOM_LOAD_CHECK_KEY, False)
+        if answer == "faster":
+            self.analyse_zoom_load(estimate=estimate)
+            return True
+        return answer == "as-is"
+
+    def _ask_zoom_load(self, slow):
+        """("faster" | "as-is" | "cancel", remind again)."""
+        from .zoom_load_dialog import short_name  # pylint: disable=import-outside-toplevel
+        lines = []
+        for load in slow[:5]:
+            parts = []
+            if load.suggested_from is not None:
+                parts.append(tr("features from zoom {} (now {})").format(load.suggested_from, load.shown_from))
+            if load.suggested_labels_from is not None:
+                parts.append(tr("labels from zoom {} (now {})").format(load.suggested_labels_from,
+                                                                       load.labels_from))
+            lines.append("• {}: {}".format(short_name(load.name, 40), ", ".join(parts)))
+        if len(slow) > 5:
+            lines.append(tr("… and {} more").format(len(slow) - 5))
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(tr("Zoomed-out load"))
+        box.setText(tr("The web map will be slow when zoomed out: {} layer(s) put more into a tile "
+                       "than is worth loading and drawing there. Hiding them when zoomed out beyond "
+                       "these zooms makes the map faster:").format(len(slow)) + "\n\n" + "\n".join(lines))
+        faster = box.addButton(tr("Make it faster…"), QMessageBox.ButtonRole.AcceptRole)
+        as_is = box.addButton(tr("Export as it is"), QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(faster)
+        check = QCheckBox(tr("Don't check this before exports (the Map tab's Zoomed-out load… button "
+                             "still does)"))
+        box.setCheckBox(check)
+        box.exec()
+        clicked = box.clickedButton()
+        answer = "faster" if clicked is faster else "as-is" if clicked is as_is else "cancel"
+        return answer, not check.isChecked()
+
+    def _estimate_zoom_load(self):
+        """(profile, loads, factor) of the published vector layers, or None
+        (no extent, or cancelled)."""
+        from ..publishing import zoom_load  # pylint: disable=import-outside-toplevel
         try:
             extent = self._extent()
         except PublishingError as error:
             self.status.setText(str(error))
-            return False
+            return None
         profile = self.collect()
         self.status.setText(tr("Estimating the zoomed-out load…"))
         from qgis.PyQt.QtWidgets import QProgressDialog  # pylint: disable=import-outside-toplevel
@@ -656,17 +739,9 @@ class PublishDialog(QDialog):
             waiting.close()
         if result is None:
             self.status.setText(tr("Zoomed-out load: cancelled."))
-            return False
-        loads, factor = result
-        if not loads:
-            self.status.setText(tr("No published vector layer has features in the extent."))
-            return False
+            return None
         self.status.setText("")
-        dialog = ZoomLoadDialog(self, loads, factor, (profile.view.min_zoom, profile.view.max_zoom))
-        if not (accept(dialog) if accept is not None else dialog.exec()):
-            return False
-        self.apply_zoom_limits(dialog.chosen())
-        return True
+        return (profile,) + tuple(result)
 
     def apply_zoom_limits(self, chosen) -> int:
         """Set {layer id: (min scale or None, labels min scale or None)} in
@@ -735,21 +810,39 @@ class PublishDialog(QDialog):
             if item.flags() & Qt.ItemFlag.ItemIsUserCheckable and item.data(column, Qt.ItemDataRole.CheckStateRole) is not None:
                 item.setCheckState(column, _check(value))
 
+    def _publish_theme_layers(self, name: str) -> int:
+        """The layers map theme ``name`` shows are published (visible at start).
+        Additive: none are unpublished (several themes can be combined).
+        Returns how many layers were not published before."""
+        visible = set(self.project.mapThemeCollection().mapThemeVisibleLayerIds(name))
+        added = 0
+        for item in self._tree_items():
+            if item.data(0, LAYER_ROLE) in visible:
+                added += item.checkState(COL_PUBLISH) != CHECKED
+                item.setCheckState(COL_PUBLISH, CHECKED)
+                item.setCheckState(COL_VISIBLE, CHECKED)
+        return added
+
+    def _theme_item_changed(self, item):
+        self._refresh_initial_theme()
+        # A theme ticked as a view of the web map: its layers are published
+        # too (a view showing unpublished layers would show nothing of them).
+        if item.checkState() == CHECKED:
+            added = self._publish_theme_layers(item.text())
+            if added:
+                self.status.setText(tr('Map theme "{}" is a view of the web map: its {} unpublished '
+                                       'layers were added to the published layers.').format(item.text(), added))
+
     def _apply_theme(self, publish: bool):
         name = self.theme_pick.currentText()
         if not name:
             return
-        visible = set(self.project.mapThemeCollection().mapThemeVisibleLayerIds(name))
-        for item in self._tree_items():
-            shown = item.data(0, LAYER_ROLE) in visible
-            if publish:
-                # Additive: the theme's layers are published too, none are
-                # unpublished (several themes can be combined).
-                if shown:
-                    item.setCheckState(COL_PUBLISH, CHECKED)
-                    item.setCheckState(COL_VISIBLE, CHECKED)
-            else:
-                item.setCheckState(COL_VISIBLE, _check(shown))
+        if publish:
+            self._publish_theme_layers(name)
+        else:
+            visible = set(self.project.mapThemeCollection().mapThemeVisibleLayerIds(name))
+            for item in self._tree_items():
+                item.setCheckState(COL_VISIBLE, _check(item.data(0, LAYER_ROLE) in visible))
         if publish:
             # ... and the theme becomes a view of the web map.
             for i in range(self.themes_list.count()):
@@ -3063,6 +3156,8 @@ class PublishDialog(QDialog):
 
     def export_locally(self) -> bool:
         if not self._confirm_extent():
+            return False
+        if not self._check_zoom_load_before_export():
             return False
         if not self.save_settings():
             return False

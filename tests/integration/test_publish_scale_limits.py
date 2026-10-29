@@ -294,3 +294,56 @@ def test_zoomed_out_load_dialog_applies_the_checked_limits(plugin, monkeypatch, 
     scales.labels_check.setChecked(False)
     assert scales.values() == (25000.0, 0.0, 0.0)
     dialog.close()
+
+
+def test_export_points_out_a_slow_zoomed_out_map(plugin, monkeypatch, tmp_path):
+    """Before an export, a map that will be slow zoomed out is pointed out:
+    "Make it faster…" opens the Zoomed-out load suggestions (applied before
+    the export), Cancel stops the export, and "Don't check this" stops the
+    check for later exports."""
+    for name in ("warning", "information", "critical"):
+        monkeypatch.setattr(QMessageBox, name, lambda *a, **k: None)
+    from qgis.core import QgsSettings
+    project = reset_project()
+    parcels = _parcels(str(tmp_path / "parcels.gpkg"))
+    project.addMapLayer(parcels)
+    from q2vt_plugin.src.gui import zoom_load_dialog  # pylint: disable=import-error
+    from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing import zoom_load  # pylint: disable=import-error
+    key = PublishDialog.ZOOM_LOAD_CHECK_KEY
+    QgsSettings().remove(key)
+    QgsSettings().remove(zoom_load_dialog.SPEED_KEY)
+    try:
+        dialog = PublishDialog(iface=None)
+        dialog.profile.view.extent = [EXTENT.xMinimum(), EXTENT.yMinimum(), EXTENT.xMaximum(), EXTENT.yMaximum()]
+        item = next(dialog._tree_items())  # pylint: disable=protected-access
+        item.setCheckState(1, Qt.CheckState.Checked)
+        load = zoom_load.LayerLoad(parcels.id(), parcels.name(), "polygon", 50000, 11,
+                                   tile_features={z: 50000 for z in range(11, 17)},
+                                   tile_bytes={z: 2_000_000 for z in range(11, 17)}, suggested_from=13)
+        runs = []
+        monkeypatch.setattr(zoom_load, "analyse", lambda *a: runs.append(1) or ([load], 1.1e8))
+        monkeypatch.setattr(dialog, "_confirm_extent", lambda: True)
+        exported = []
+        monkeypatch.setattr(dialog, "save_settings", lambda: exported.append(1) and False)
+        asked = []
+
+        def ask(answer, remind):
+            def _ask(slow):
+                asked.append([l.name for l in slow])
+                return answer, remind
+            return _ask
+        monkeypatch.setattr(dialog, "_ask_zoom_load", ask("cancel", True))
+        assert not dialog.export_locally() and asked == [[parcels.name()]] and not exported
+        monkeypatch.setattr(zoom_load_dialog.ZoomLoadDialog, "exec", lambda self: 1)
+        monkeypatch.setattr(dialog, "_ask_zoom_load", ask("faster", False))
+        dialog.export_locally()
+        assert exported  # the export goes on, with the suggested limit set
+        assert dialog._item_scales(item)[0] == zoom_load.scale_for_zoom(1.1e8, 13)  # pylint: disable=protected-access
+        assert str(QgsSettings().value(key)).lower() in ("false", "0")
+        before = len(runs)
+        dialog.export_locally()  # not checked again
+        assert len(runs) == before and len(asked) == 2
+        dialog.close()
+    finally:
+        QgsSettings().remove(key)

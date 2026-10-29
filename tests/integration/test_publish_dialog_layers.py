@@ -116,6 +116,25 @@ def test_map_theme_selects_layers_and_becomes_a_view(setup):
     assert profile.themes.names == ["Csak telkek"] and profile.themes.initial == "Csak telkek"
 
 
+def test_ticking_a_view_publishes_its_layers(setup):
+    """A map theme ticked under "Map themes offered as views" publishes the
+    layers it shows (additive); unticking it unpublishes nothing."""
+    dialog, project, parcels, zones, ortho = setup
+    items = _items(dialog)
+    dialog.tree.selectAll()
+    dialog.apply_to_selection(1, False)
+    dialog.tree.clearSelection()
+    view = dialog.themes_list.item(0)
+    assert view.text() == "Csak telkek" and view.checkState() == UNCHECKED
+    view.setCheckState(CHECKED)
+    assert items[parcels.id()].checkState(1) == CHECKED and items[ortho.id()].checkState(1) == CHECKED
+    assert items[parcels.id()].checkState(2) == CHECKED  # visible at start
+    assert items[zones.id()].checkState(1) == UNCHECKED  # hidden in the theme
+    assert "Csak telkek" in dialog.status.text()
+    view.setCheckState(UNCHECKED)
+    assert items[parcels.id()].checkState(1) == CHECKED
+
+
 def test_group_lock_raster_and_basemap_settings_round_trip(setup):
     dialog, project, parcels, zones, ortho = setup
     items, groups = _items(dialog), _groups(dialog)

@@ -549,7 +549,12 @@ Documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.53.4**. Newest first:
+This README describes QWebMap **4.54.0**. Newest first:
+
+**4.54.0** — views publish their layers; slow-map check before export
+- Ticking a map theme under *Map themes offered as views in the web map* publishes the layers it shows (additive: none are unpublished).
+- Before an export, a web map that will be slow when zoomed out is pointed out, with the layers and zooms that would make it faster; *Make it faster…* opens the *Zoomed-out load* suggestions. *Don't check this before exports* switches the check off (the button still works).
+- The plugin icon fills its toolbar square like the other icons.
 
 **4.53.4** — Horizontal polygon labels where QGIS puts them
 - Polygon labels with *Horizontal* placement go to the spot QGIS picks (its candidate grid and costs: room from the polygon's and the map's edges, then nearness to the centroid), not to the roomiest point: a long strip is labelled in its middle, not at its wider end, and the label no longer moves with the zoom. A strongly concave polygon can still be a little off (QGIS cuts it into pieces first).
