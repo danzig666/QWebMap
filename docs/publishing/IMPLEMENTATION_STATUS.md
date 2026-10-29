@@ -2182,3 +2182,16 @@ same zoom and within 0.0003 of the best cost. Not done: pal's splitPolygons (a c
 at its deepest notches, a grid per piece) - the viewer has the polygon in tile pieces; such a label
 can be a grid step or more off. Measured against QGIS's labelling results on a plan layer:
 convex polygons within a few px at zooms 13-17 (tests/browser/test_horizontal_polygon_spot.py).
+
+## 4.54.0 — views publish their layers; slow-map check before export
+
+* `PublishDialog._theme_item_changed`: a theme ticked in the views list publishes the layers it
+  shows (`_publish_theme_layers`, additive, also used by the theme picker's publish button).
+* `PublishDialog._check_zoom_load_before_export` (in `export_locally`, before the settings are
+  saved): the Zoomed-out load estimate (`zoom_load.analyse`, at the window's saved speed); when a
+  layer has a suggestion, `_ask_zoom_load` lists them: *Make it faster…* opens `ZoomLoadDialog`
+  on the same estimate and applies its choice before the export, *Export as it is*, Cancel.
+  *Don't check this before exports* sets `QWebMap/checkZoomLoadBeforeExport` false
+  (tests/integration/test_publish_scale_limits.py).
+* `icon.png` / `icon.svg` cropped to their artwork (the 7 % transparent margin made the icon look
+  smaller than the toolbar's others).
