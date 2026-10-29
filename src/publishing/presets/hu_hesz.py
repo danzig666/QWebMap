@@ -33,6 +33,7 @@ from ..models import CutLineConfig, LayerConfig, PopupField, RestrictionConfig
 
 PRESET_ID = "hu-hesz"
 TITLE = "Magyar településrendezési terv (HÉSZ, szab_ov)"
+DEFAULT_LOCALE = "hu"  # new settings: a Hungarian viewer (the generic default is English)
 
 PARCEL_NAMES = ("foldreszlet", "telek", "parcella")
 PARCEL_KEYS = ("hrsz", "helyrajzi_szam", "helyr_szam")
