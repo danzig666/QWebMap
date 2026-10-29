@@ -1,0 +1,1110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QWebMap user guide</title>
+<meta name="description" content="How to use QWebMap, the QGIS plugin that publishes a QGIS project as a web map: every option of the Publish window, with pitfalls and errors.">
+<link rel="icon" type="image/png" href="icons/icon.png">
+<style>
+:root { --bg: #fbfcf8; --fg: #1d2418; --muted: #5d6957; --line: #dde3d6; --panel: #f1f4ec; --accent: #4f8f33;
+  --code: #eef2e8; --note: #fff8e1; --note-line: #e0b84d; color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root { --bg: #151a13; --fg: #e3e9dc; --muted: #9aa692; --line: #2d3628;
+  --panel: #1c2319; --accent: #8cc56b; --code: #242c20; --note: #2b2617; --note-line: #8a7030; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: var(--accent); }
+header { position: sticky; top: 0; z-index: 2; display: flex; gap: 16px; align-items: center; padding: 10px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+header img { width: 30px; height: 30px; }
+header .name { font-weight: 700; }
+header .ver { color: var(--muted); font-size: 13px; }
+header input { margin-left: auto; width: min(320px, 45vw); padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+.layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1200px; margin: 0 auto; }
+nav { position: sticky; top: 52px; align-self: start; max-height: calc(100vh - 52px); overflow: auto; padding: 18px 12px 40px 20px;
+  font-size: 13.5px; border-right: 1px solid var(--line); }
+nav a { display: block; padding: 2px 0; color: var(--fg); text-decoration: none; }
+nav a.sub { padding-left: 14px; color: var(--muted); }
+nav a:hover { color: var(--accent); }
+main { padding: 8px 36px 80px; min-width: 0; }
+main > * { max-width: 820px; }
+h1 { font-size: 28px; margin: 24px 0 4px; }
+h2 { font-size: 22px; margin: 40px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+h3 { font-size: 17px; margin: 24px 0 6px; }
+h4 { font-size: 15px; margin: 18px 0 4px; }
+ul, ol { padding-left: 22px; }
+li { margin: 3px 0; }
+code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13.5px; }
+.note { border-left: 4px solid var(--note-line); background: var(--note); padding: 8px 12px; margin: 12px 0; border-radius: 4px; }
+.table { overflow-x: auto; }
+table { border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+th, td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; vertical-align: top; }
+th { background: var(--panel); }
+.hidden { display: none !important; }
+mark { background: #f6e27a; color: #1d2418; }
+@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } nav { display: none; } main { padding: 8px 16px 60px; } }
+</style>
+</head>
+<body>
+<header>
+  <img src="icons/icon.png" alt="">
+  <div><div class="name">QWebMap user guide</div><div class="ver">version 4.54.0 · <a href="https://github.com/danzig666/QWebMap">GitHub</a> · <a href="https://danzig666.github.io/QWebMap/">demo map</a></div></div>
+  <input id="find" type="search" placeholder="Find an option…" aria-label="Find an option">
+</header>
+<div class="layout">
+<nav><a href="#quick-start">Quick start</a>
+<a href="#map-tab">Map tab</a>
+<a href="#web-map" class="sub">Web map</a>
+<a href="#layers-publishing-does-not-change-the-project-s-layer-visibility" class="sub">Layers (publishing does not change the project's layer visibility)</a>
+<a href="#visible-scales-in-the-web-map-dialog" class="sub">Visible scales in the web map (dialog)</a>
+<a href="#zoomed-out-load-of-the-web-map-dialog" class="sub">Zoomed-out load of the web map (dialog)</a>
+<a href="#interaction-tab">Interaction tab</a>
+<a href="#viewer" class="sub">Viewer</a>
+<a href="#layer-list" class="sub">Layer list</a>
+<a href="#layer-settings-vector-layers" class="sub">Layer settings (vector layers)</a>
+<a href="#layer-settings-raster-layers" class="sub">Layer settings (raster layers)</a>
+<a href="#basemap-tab">Basemap tab</a>
+<a href="#openstreetmap-vector-basemap-copied-into-the-release" class="sub">OpenStreetMap vector basemap (copied into the release)</a>
+<a href="#web-basemaps-xyz-tiles-or-wms-loaded-from-their-server-while-browsing" class="sub">Web basemaps (XYZ tiles or WMS, loaded from their server while browsing)</a>
+<a href="#terrain-3d-relief-hillshade-elevation-profiles" class="sub">Terrain (3D relief, hillshade, elevation profiles)</a>
+<a href="#parcel-report-tab">Parcel report tab</a>
+<a href="#parcels" class="sub">Parcels</a>
+<a href="#zoning-parts-of-the-parcel" class="sub">Zoning (parts of the parcel)</a>
+<a href="#restrictions-shown-with-their-legend-symbol-when-they-touch-the-parcel" class="sub">Restrictions (shown with their legend symbol when they touch the parcel)</a>
+<a href="#zone-regulations-table-optional-e-g-the-local-building-code" class="sub">Zone regulations table (optional, e.g. the local building code)</a>
+<a href="#accuracy-and-notice" class="sub">Accuracy and notice</a>
+<a href="#info-tab">Info tab</a>
+<a href="#about-the-map" class="sub">About the map</a>
+<a href="#documents-published-with-the-map" class="sub">Documents published with the map</a>
+<a href="#output-tab">Output tab</a>
+<a href="#destination-tab">Destination tab</a>
+<a href="#cloudflare-r2-and-s3-compatible-storage" class="sub">Cloudflare R2 and S3-compatible storage</a>
+<a href="#ssh-sftp-server" class="sub">SSH / SFTP server</a>
+<a href="#cloudflare-r2-step-by-step-guide-window" class="sub">Cloudflare R2: step by step (guide window)</a>
+<a href="#releases-of-lt-map-gt-releases-and-rollback-window" class="sub">Releases of &lt;map&gt; (Releases and rollback… window)</a>
+<a href="#review-tab">Review tab</a>
+<a href="#window-buttons">Window buttons</a>
+<a href="#command-line-processing">Command line (Processing)</a>
+<a href="#keeping-this-guide-up-to-date">Keeping this guide up to date</a></nav>
+<main>
+<h1 id="qwebmap-user-guide">QWebMap user guide</h1>
+<p>QWebMap publishes a QGIS project as a fast, accurate web map: vector tiles in one PMTiles file, a ready viewer, and a static site you can open locally, upload to Cloudflare R2 / S3 or copy to any web server. This guide is for QWebMap 4.54.0, the generic edition. Everything is set in one window: <strong>Web → QWebMap: Publish Web Map…</strong> (or its toolbar button). The settings are saved in the project.</p>
+<h2 id="quick-start">Quick start</h2>
+<ol><li>
+<strong>Install.</strong> Download <code>QWebMap-&lt;version&gt;.zip</code> from the <a href="https://github.com/danzig666/QWebMap/releases/latest">latest release</a> (not the <code>-hu</code> file), then <em>Plugins → Manage and Install Plugins → Install from ZIP</em>. QGIS 3.44 or newer, or QGIS 4.
+</li><li>
+<strong>Open the window:</strong> <em>Web → QWebMap: Publish Web Map…</em>
+</li><li>
+<strong>Map tab.</strong> Enter a <strong>Title</strong>. Choose the <strong>Extent</strong>: the current map view, a layer's extent, or <strong>Draw…</strong> a rectangle. Tick <strong>Publish</strong> for the layers to put on the web map, or click <strong>Publish the visible layers</strong>.
+</li><li>
+<strong>Interaction tab</strong> (optional). For each layer, tick the fields to show in <strong>Popup</strong>, to <strong>Search</strong>, or to <strong>Filter</strong>. Only ticked fields become public.
+</li><li>
+<strong>Export locally</strong>, then <strong>Preview</strong>: the map opens in your browser from this computer. Fix what you see in QGIS or in the window, and export again (unchanged layers are reused, so it is faster).
+</li><li>
+<strong>Publish online</strong> (optional). On the <strong>Destination</strong> tab choose <em>Cloudflare R2</em> (see <strong>Step-by-step: set up Cloudflare R2…</strong>), <em>Other S3-compatible storage</em> or <em>SSH / SFTP server</em>. Fill in the fields and click <strong>Test connection</strong>. On the <strong>Review</strong> tab check what becomes public and tick the approval. Click <strong>Publish</strong>, then <strong>Copy link</strong>.
+</li><li>
+<strong>Save the project.</strong> The settings live in the project file. Save it after <strong>Save settings</strong> or <strong>Close</strong>.
+</li></ol>
+<div class="note">If the map is slow when zoomed out, use <strong>Zoomed-out load…</strong> on the Map tab (the export also offers it). For a raster layer (scanned plan, orthophoto), keep <strong>Sharpest detail</strong> at <em>Like the image</em>. Each extra zoom level makes about 4× more tiles.</div>
+<h2 id="map-tab">Map tab</h2>
+<h3 id="web-map">Web map</h3>
+<ul><li>
+<strong>Title</strong> — Map title shown in the viewer. Required. For new settings (never saved), editing it also updates the slug.
+</li><li>
+<strong>Address name (slug)</strong> — The map's address and folder name, e.g. <code>maps/&lt;slug&gt;</code>. Use lowercase ASCII letters, digits and <code>-</code>, 1–64 characters. If you leave it empty, it is made from the title.
+</li><li>
+<strong>Description</strong> — Short text about the map, shown in the viewer.
+</li><li>
+<strong>Language of the viewer</strong> — Language of the viewer's interface: Magyar (the default) or English.
+</li><li>
+<strong>Attribution</strong> — Credit or copyright text shown on the web map.
+</li><li>
+<strong>Logo (PNG/JPEG/WebP)</strong> — Local image file shown in the viewer. Click <strong>…</strong> to browse.
+</li><li>
+<strong>Minimum tile zoom</strong> — Lowest zoom (0–22) that gets tiles. Default 0.
+</li><li>
+<strong>Maximum tile zoom</strong> — Highest zoom (0–22) that gets tiles. Default 16. Beyond it, the viewer enlarges (overzooms) the last tiles.
+</li><li>
+<strong>Maximum browser zoom (overzoom)</strong> — How far visitors can zoom in (0–24). Default 22.
+</li><li>
+<strong>Extent</strong> — The area to publish. <strong>Current map view (at each export)</strong> (the default): whatever the QGIS map shows when you export. <strong>Extent of a layer</strong>: follows the chosen layer when its data changes. <strong>Fixed area (drawn or frozen)</strong>: a fixed rectangle.
+</li><li>
+<strong>Show on map</strong> — Briefly outlines the area that will be published on the QGIS map.
+</li><li>
+<strong>(choose a layer)</strong> — The layer whose extent is published. Available only in the "Extent of a layer" mode.
+</li><li>
+<strong>Freeze view</strong> — Fixes the published area to what the QGIS map shows now. Switches the mode to Fixed area.
+</li><li>
+<strong>Draw…</strong> — Hides the window so you can draw the area on the map. Click one corner, then the opposite corner, or press and drag. Corners snap when QGIS snapping is on. Right-click or Esc cancels.
+</li><li>
+<strong>Keep the web map on the extent (no panning or zooming away)</strong> — The map centre cannot leave the extent, and visitors can zoom out only a little beyond it. On by default.
+</li><li>
+<strong>Accent colour of the viewer</strong> — Colour of the viewer's interface (#rrggbb, no opacity).
+</li></ul>
+<p>The text below the extent buttons gives the area's size in km and its bounds in degrees.</p>
+<h3 id="layers-publishing-does-not-change-the-project-s-layer-visibility">Layers (publishing does not change the project's layer visibility)</h3>
+<ul><li>
+<strong>Map theme:</strong> — A QGIS map theme (View → Map Themes) for the two buttons next to it.
+</li><li>
+<strong>Publish its layers</strong> — Publishes the layers visible in the theme and makes them visible at start. Also ticks the theme as a web map view. Additive: layers that are already published stay published.
+</li><li>
+<strong>Use as start view</strong> — Sets "At start" to exactly the theme's visible layers. Because ticking At start publishes a layer, the theme's layers also become published.
+</li><li>
+<strong>Selected layers</strong> — Menu of bulk changes for the selected rows (see the menu entries below). Right-clicking the list opens the same menu.
+</li><li>
+<strong>Publish the visible layers</strong> — Publishes exactly the layers visible in the QGIS Layers panel now and makes them visible at start. A layer in a hidden group counts as hidden. All other layers are unpublished.
+</li><li>
+<strong>Zoomed-out load…</strong> — Estimates which published vector layers slow the map down when zoomed out, and suggests limits (see the dialog below).
+</li><li>
+<strong>Filter layers by name…</strong> — Shows only layers whose name contains the text (case- and accent-insensitive), plus the groups that hold them. If a group's name matches, the whole group shows.
+</li><li>
+<strong>Only published layers</strong> — Hides layers that are not published.
+</li></ul>
+<p>Layer list columns:</p>
+<ul><li>
+<strong>Layer</strong> — The QGIS layer tree: vector layers with geometry, and raster layers (marked "(raster)"). Group names are bold. Other layers are not listed.
+</li><li>
+<strong>Publish</strong> — Includes the layer in the web map. A group's box shows whether all, some or none of its layers are published. Ticking or unticking the group sets all of its visible layers.
+</li><li>
+<strong>At start</strong> — The layer or group is visible when the web map opens.
+</li><li>
+<strong>Switchable</strong> — Visitors can switch the layer or group off.
+</li><li>
+<strong>Legend</strong> — The layer is shown in the web map's legend. This is the same setting as "Show in the legend" in the Interaction tab. Layers only.
+</li><li>
+<strong>Scales</strong> — Web map only: hides the layer when zoomed out or in beyond a scale. "labels 1:… –" hides only its labels. Grey "(QGIS …)" shows the layer's own QGIS scale range. Double-click the cell to edit it.
+</li></ul>
+<p>Right-click / <strong>Selected layers</strong> menu (a selected group applies to all its visible rows):</p>
+<ul><li>
+<strong>Publish</strong> / <strong>Do not publish</strong> — Sets the Publish column.
+</li><li>
+<strong>Visible at start</strong> / <strong>Hidden at start</strong> — Sets the At start column.
+</li><li>
+<strong>Can be switched off by visitors</strong> / <strong>Always shown (cannot be switched off)</strong> — Sets the Switchable column.
+</li><li>
+<strong>Show in the legend</strong> / <strong>Hide from the legend</strong> — Sets the Legend column.
+</li><li>
+<strong>Visible scales…</strong> — Opens the scale dialog for all selected layers.
+</li></ul>
+<ul><li>
+<strong>Map themes offered as views in the web map:</strong> — Ticked QGIS map themes become views that visitors can switch between. Ticking a theme also publishes its layers.
+</li><li>
+<strong>Start with:</strong> — The view the map opens with. <strong>(the layer settings above)</strong> (the default) uses the At start column. Only ticked themes are listed.
+</li></ul>
+<h3 id="visible-scales-in-the-web-map-dialog">Visible scales in the web map (dialog)</h3>
+<ul><li>
+<strong>Hide when zoomed out beyond</strong> — Hides the layer at scales smaller than this one (suggested value 1:25 000). It is not tiled there either, so the map is faster and the export smaller.
+</li><li>
+<strong>Hide when zoomed in beyond</strong> — Hides the layer at scales larger than this one (suggested value 1:500).
+</li><li>
+<strong>Hide only the labels when zoomed out beyond</strong> — Hides only the labels beyond this scale. The features are still drawn (suggested value 1:10 000).
+</li></ul>
+<p>With several rows selected, a limit appears only if every row has the same value. A limit you leave unchanged keeps each row's own value. Only the web map changes; the QGIS project does not.</p>
+<h3 id="zoomed-out-load-of-the-web-map-dialog">Zoomed-out load of the web map (dialog)</h3>
+<ul><li>
+<strong>Find a layer…</strong> — Filters the rows by layer name. Hidden rows keep their ticks.
+</li><li>
+<strong>Zoomed out, the web map should be:</strong> — Slider from "slow, showing much" to "fast, showing little": Very slow, Slow, Balanced (the default), Fast, Very fast. Moving it recalculates the suggestions and replaces zooms you set by hand. The position is remembered.
+</li><li>
+<strong>Layer</strong> / <strong>Features</strong> — Layer name and its feature count in the extent.
+</li><li>
+<strong>Busiest tile, zoomed out</strong> — The layer's share of the heaviest tile at its current first zoom, in features and KB/MB.
+</li><li>
+<strong>Features from</strong> — Tick box and zoom: hides the layer (features and labels) when zoomed out beyond this zoom. Suggested changes come ticked. Changing the zoom ticks the box. The lowest zoom means no limit.
+</li><li>
+<strong>Labels, zoomed out</strong> — Labels in the heaviest tile and about how many fit.
+</li><li>
+<strong>Labels from</strong> — Tick box and zoom: hides only the labels when zoomed out beyond this zoom.
+</li><li>
+<strong>Apply the checked limits</strong> — Writes the ticked zooms into the Scales column as scales. The summary line compares the heaviest tile before and after.
+</li></ul>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+"Current map view" publishes whatever QGIS shows at export time. Before each export you see "Published area" with the size and tile count. Click <strong>Export this view</strong> to go on. "Don't ask again for this project" turns this prompt off. To publish the same area every time, use a layer extent or a drawn area.
+</li><li>
+If the extent layer is removed from the project, its last extent is kept and the mode becomes Fixed area.
+</li><li>
+Changing the slug of a map that is already published gives it a new address and folder. The old address is not updated.
+</li><li>
+A logo that does not exist or has another file extension is silently left out.
+</li><li>
+If "Maximum browser zoom" is below "Maximum tile zoom", it is silently raised to the maximum tile zoom.
+</li><li>
+Every extra tile zoom roughly quadruples the tile count. A high Maximum tile zoom over a large extent makes slow, large exports.
+</li><li>
+The tick boxes depend on each other. Ticking At start also publishes the layer. Unpublishing it clears At start. Unticking Switchable makes it visible at start (and publishes it). Unticking At start makes it Switchable again.
+</li><li>
+Bulk changes and group ticks affect only the rows the filter shows. Hiding rows with the filter also deselects them.
+</li><li>
+A theme whose layers are not published shows nothing of them, so ticking a theme as a view publishes its layers. Untick them again afterwards if you do not want them.
+</li><li>
+Web-only scales add to the layer's own QGIS scale range; they cannot show a layer outside its QGIS range.
+</li><li>
+Zoomed-out load is an estimate from a sample of up to 2000 features per layer. It covers only published vector layers with features in the extent. If a "Labels from" zoom is not past the "Features from" zoom, it is dropped (the layer is hidden there anyway). A zoomed-out limit is not applied if it would conflict with an existing zoomed-in limit.
+</li><li>
+Before each export, the plugin checks the zoomed-out load. If some layers are heavy, it asks: <strong>Make it faster…</strong> opens the dialog and then exports, <strong>Export as it is</strong> exports unchanged, and Cancel stops. "Don't check this before exports (the Map tab's Zoomed-out load… button still does)" turns the check off for good (QGIS setting).
+</li><li>
+Raster tiles are capped at 400 000 per layer. "Like the image" on a sharp aerial photo over a large extent can exceed the cap.
+</li><li>
+If QGIS cannot write WebP, the tiles are written as PNG (larger) and a warning is shown.
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+"title: required" (Q2VT_PUB_PROFILE_INVALID): the Title is empty. Enter a title.
+</li><li>
+"slug: lowercase ASCII letters, digits and '-', 1-64 characters": the slug is invalid, or it starts or ends with <code>-</code>. Fix the Address name.
+</li><li>
+"accentColor: #rrggbb": the accent colour is not a 6-digit hex value. Pick a colour.
+</li><li>
+"view: 0 &lt;= minZoom &lt;= maxZoom &lt;= 22": Minimum tile zoom is above Maximum tile zoom. Lower the minimum.
+</li><li>
+"Choose an extent." / "view.extent: [xmin, ymin, xmax, ymax] …": there is no usable area. Pick a layer, freeze the view, or draw an area.
+</li><li>
+"This area is outside what a web map can show (web maps end short of the poles); the extent is unchanged.": the view or drawn area reaches past about ±85°. Zoom in and try again.
+</li><li>
+"Select at least one layer to publish (Map tab) …": nothing is ticked in Publish. Publish at least one layer.
+</li><li>
+"Layer … is not a vector or raster layer of this project." / 'Raster layer "…" cannot be read (invalid data source).': a published layer is missing or broken. Fix the layer, or unpublish it.
+</li><li>
+'Raster layer "…": about N tiles at zooms a-b; lower its maximum zoom …': the raster exceeds 400 000 tiles. Choose a coarser "Sharpest detail", a higher "Shown from zoom", or a smaller extent.
+</li><li>
+"Nothing to publish: no published raster layer draws anything in the extent." (Q2VT_PUB_EMPTY_ARCHIVE): the extent does not cover the raster data. Check the extent.
+</li><li>
+"Select layers (or groups) in the list first.": you opened Visible scales… with nothing selected. Select rows first.
+</li><li>
+"The zoomed-out limit must be a smaller scale (larger number) than the zoomed-in limit.": the two limits in the scale dialog overlap. Fix one of them.
+</li><li>
+"No published vector layer has features in the extent.": Zoomed-out load found nothing to analyse. Publish vector layers, or check the extent.
+</li><li>
+"Zoomed-out load: cancelled.": you cancelled the estimate. Nothing was changed.
+</li></ul>
+<h2 id="interaction-tab">Interaction tab</h2>
+<h3 id="viewer">Viewer</h3>
+<ul><li>
+<strong>Labels switch</strong> — A switch in the web map that shows or hides all labels. Default: on.
+</li><li>
+<strong>Opacity sliders</strong> — An opacity slider for each layer in the Layers tab. Default: on.
+</li><li>
+<strong>Search</strong> — One search box covering the fields ticked in the <em>Search</em> column, plus streets and house numbers if those are set. The feature found is zoomed to and marked, and its popup opens when <em>Popups</em> is on. Default: on.
+</li><li>
+<strong>Attribute filters</strong> — Filters for the fields that have a <em>Filter</em> kind set (value lists with counts, number ranges, text). Default: on.
+</li><li>
+<strong>Popups</strong> — A click on a feature shows its <em>Popup</em> fields. Default: on.
+</li><li>
+<strong>Shareable links</strong> — A Share tab with a link to the current map (follows updates) and a link to this exact version. Links keep the view, layers, filters, basemap, selection and drawing. Default: on.
+</li><li>
+<strong>Coordinates (WGS 84 and the project CRS)</strong> — Shows the pointer's coordinates in the Tools tab. Default: on.
+</li><li>
+<strong>Measurement</strong> — Distance and area tools in the Tools tab. With terrain, measured lines also get an elevation profile. Default: off.
+</li><li>
+<strong>Print</strong> — Prints a map extract of the current view at a chosen scale on A4 or A3, with legend, scale bar and header. Default: on.
+</li><li>
+<strong>Legend: only what is visible in the current view</strong> — The legend starts in "only visible" mode. Visitors can switch it off. Default: off.
+</li><li>
+<strong>Layers tab (off: the legend only)</strong> — Off: visitors get only the legend, with an on/off switch per layer. Default: on.
+</li><li>
+<strong>Map panel closed at start</strong> — The web map opens with its panel closed, so more of the map shows. The menu button opens it. Default: off.
+</li><li>
+<strong>My location button</strong> — Shows the visitor's location. Needs https and the browser's permission. Outside the map extent it shows a message and does not move the map. Default: off.
+</li><li>
+<strong>Search street names (OpenStreetMap)</strong> — The search also finds named OSM streets inside the extent layer (Map tab), or inside the export extent if there is none. Only names, a point and bounds are published. Default: off.
+</li><li>
+<strong>Overview map (inset)</strong> — A small overview map in a corner that marks the current view. Default: off.
+</li><li>
+<strong>3D view</strong> — A 3D button: tilted view with the terrain relief (Basemap tab) and polygons raised by their <em>3D height field</em>. Default: off.
+</li><li>
+<strong>Drawing tools</strong> — Points, lines, areas and text in the Tools tab. The drawing is kept in the shared link and can be saved as GeoJSON or KML. Default: off.
+</li><li>
+<strong>Zoom-to-layer buttons</strong> — A button in each layer row of the Layers tab that zooms to the layer's extent. Default: off.
+</li><li>
+<strong>Street View (Google)</strong> — A Street View button. Blue lines show where coverage exists, and a tap opens the panorama facing the tapped point. Turning it on enables the key field. Default: off.
+</li><li>
+<strong>Google Maps API key (needed for Street View)</strong> — Your Google Cloud key, with the Maps JavaScript API and the Map Tiles API enabled. The key is visible in the published page.
+</li><li>
+<strong>House numbers</strong> — A point or building layer with house numbers. The search then finds "street number" (e.g. "Main Street 12"). Only street, number and a point are published. Default: (none).
+</li><li>
+<strong>number</strong> — The house number field. It is guessed from common names (hsz, housenumber, number…), otherwise left empty.
+</li><li>
+<strong>street (empty: nearest OSM street)</strong> — The street name field. Empty uses the nearest named OSM street within 150 m.
+</li></ul>
+<h3 id="layer-list">Layer list</h3>
+<ul><li>
+<strong>Find a layer…</strong> — Filters the layer list by name (case- and accent-insensitive). Shown only when more than 10 layers are listed.
+</li><li>
+Layer list — Lists every layer ticked <em>Publish</em> on the Map tab, sorted by name. Select one to edit its settings on the right.
+</li></ul>
+<h3 id="layer-settings-vector-layers">Layer settings (vector layers)</h3>
+<ul><li>
+<strong>Title in the viewer</strong> — The layer name in the web map. Empty: the QGIS layer name.
+</li><li>
+<strong>Feature title (display expression)</strong> — A QGIS expression for the search result and popup title (e.g. a parcel number field). Empty: the first search field.
+</li><li>
+<strong>Initial opacity</strong> — Starting opacity, 0–1 in steps of 0.1. Default: 1.
+</li><li>
+<strong>Show in the legend</strong> — Lists the layer in the legend. This is the same setting as the Map tab's Legend column. Default: on.
+</li><li>
+<strong>Feature links (deep links)</strong> — Adds "Link to this feature" to popups. Default: on.
+</li><li>
+<strong>Label every feature (smaller where the label does not fit)</strong> — Every feature gets its label. Labels that do not fit shrink to half size, or move to the roomiest point. None are dropped. Default: off.
+</li><li>
+<strong>Measurements snap to this layer (corners and edges)</strong> — While measuring, points snap to this layer's nearest corner, or else its nearest edge. Hold Alt in the viewer for a free point. Default: off.
+</li><li>
+<strong>3D height field (m)</strong> — Polygon layers only: a numeric field of heights in metres that the 3D view uses. Text fields holding numbers are listed with "(text)". Default: (none).
+</li><li>
+<strong>Field</strong> — The layer's field names (read-only).
+</li><li>
+<strong>Popup</strong> — Shows the field in popups and makes it public.
+</li><li>
+<strong>Popup title</strong> — The field's label in the popup. Empty: the field name.
+</li><li>
+<strong>Type</strong> — How the popup value is shown: string, integer, number, boolean, date or url (a safe link). Guessed from the field type.
+</li><li>
+<strong>Search</strong> — Makes the field searchable, and public.
+</li><li>
+<strong>Feature key</strong> — The field(s) that identify a feature for links. Values must be unique and never empty (e.g. a parcel number).
+</li><li>
+<strong>Filter</strong> — The visitor filter: no filter, values, range or text. Makes the field public.
+</li></ul>
+<h3 id="layer-settings-raster-layers">Layer settings (raster layers)</h3>
+<ul><li>
+<strong>Title in the viewer</strong> — The layer name in the web map. Empty: the QGIS layer name.
+</li><li>
+<strong>Load live from its server (web tiles / WMS)</strong> — XYZ or WMS layers only. Visitors' browsers load the images straight from the server, and a click on a WMS layer shows GetFeatureInfo. Disables the rendering settings below. Default: on.
+</li><li>
+<strong>Image format</strong> — WebP (small, transparent; the default), PNG (sharp, transparent; larger) or JPEG (photos; no transparency).
+</li><li>
+<strong>Sharpest detail</strong> — Ground size of one pixel when zoomed in fully: like the image or service (recommended), like the map, or a fixed size. Each finer step means about 4× more tiles.
+</li><li>
+<strong>Shown from zoom</strong> — The lowest zoom the layer is tiled for. "as the map" uses the publication's minimum zoom.
+</li><li>
+<strong>Quality (JPEG/WebP)</strong> — Compression quality, 1–100. Default: 85.
+</li><li>
+<strong>Initial opacity</strong> — Starting opacity, 0–1. Default: 1.
+</li><li>
+<strong>Show in the legend</strong> — Same as the Map tab's Legend column. Default: on.
+</li><li>
+The estimate line below shows the pixel size, the maximum tile count, the zooms and any warnings.
+</li></ul>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+Only layers ticked <em>Publish</em> on the Map tab are listed. Tick them there first.
+</li><li>
+A field becomes public only if it is ticked in Popup, Search or Feature key, or has a Filter kind. The 3D height field also becomes public. Nothing else ends up in the release unless <em>Output</em> includes all fields.
+</li><li>
+Without a Feature key, feature links only work in the same version of the map.
+</li><li>
+<em>House numbers</em>, <em>Search street names</em> and field search all need <strong>Search</strong> on. Without it they silently do nothing.
+</li><li>
+Choosing a House numbers layer with an empty <em>number</em> field silently drops the address search at save time.
+</li><li>
+<em>Measurements snap…</em> needs <strong>Measurement</strong> on. <em>3D height field</em> needs <strong>3D view</strong> on, and is disabled for layers that are not polygons.
+</li><li>
+<strong>Street View</strong> with an empty key is published as off, silently. The key is public: restrict it in Google Cloud to your site (HTTP referrers) and to the two APIs.
+</li><li>
+<strong>My location button</strong> works only on https pages.
+</li><li>
+Street search with no basemap reads streets from the latest Protomaps build, so exporting needs internet. Large areas take extra export time.
+</li><li>
+Filter titles have no widget here. Values saved in the profile are kept.
+</li><li>
+Raster <em>Load live</em> works only if the address is https with no login and no custom headers, the server allows CORS, and the source is not WMTS. Otherwise QGIS renders the layer into the release and the export log says why.
+</li><li>
+Finer <em>Sharpest detail</em> or a lower <em>Shown from zoom</em> makes raster exports much larger (about 4× per zoom).
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "Layer "…": field "…" does not exist." — A ticked field was renamed or removed in QGIS. Reopen the layer here and fix the ticks.
+</li><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "Layer "…": display expression: …" — The <em>Feature title</em> expression does not parse. Correct it, or clear it.
+</li><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "House numbers: the layer is not in the project (Interaction tab)." / "House numbers: field "…" does not exist in "…"." — The address layer or field is gone. Pick them again.
+</li><li>
+<code>Q2VT_PUB_IDENTITY</code> "Layer "…": N feature(s) have no key (… is NULL)." / "the key (…) is not unique, e.g. …" — Fix the data or choose another <em>Feature key</em> field.
+</li><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "Raster layer "…": about N tiles at zooms a-b; lower its maximum zoom or the extent (limit 400000)." — Choose a coarser <em>Sharpest detail</em>, a higher <em>Shown from zoom</em> or a smaller extent.
+</li><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "…opacity: between 0 and 1" / "rasterQuality: 1-100" — Only happens with an edited settings file. Fix the value.
+</li><li>
+<code>Q2VT_PUB_BASEMAP</code> "Street search: the area needs N tiles (limit …)." — The street-search area is too large. Use a smaller extent layer.
+</li><li>
+Warning "Street search: the street names could not be read (…)" / "no named street was found in the area." — The map is published without street search. Check the internet connection, the basemap source and the extent layer.
+</li><li>
+Warning "House number search: the address layer or its number field is missing…" / "N house numbers have no named street within 150 m and are left out." — Set a <em>street</em> field, or check that the addresses lie inside the area.
+</li><li>
+Info "Raster layer "…" is rendered into the release: it needs a login / its address is not https / … does not let other sites' pages use its images (CORS)" — Live loading is not possible. The layer is rendered instead.
+</li></ul>
+<h2 id="basemap-tab">Basemap tab</h2>
+<ul><li>
+<strong>Basemap shown at start</strong> — What the web map shows first: None (switched off), one of the offered styles, or "Web: &lt;name&gt;". Default: the first style.
+</li></ul>
+<h3 id="openstreetmap-vector-basemap-copied-into-the-release">OpenStreetMap vector basemap (copied into the release)</h3>
+<ul><li>
+<strong>Basemap</strong> — No basemap (only the project's layers), or OpenStreetMap vector basemap (Protomaps). Default: No basemap.
+</li><li>
+<strong>Download the area from the latest Protomaps daily build (internet needed while exporting)</strong> — The source is the newest Protomaps planet build. Default.
+</li><li>
+<strong>Use this PMTiles file or URL (Protomaps schema):</strong> — Uses the file or https URL in the box below instead.
+</li><li>
+<strong>…</strong> — Browses for a local .pmtiles file and selects the option above.
+</li><li>
+<strong>Styles offered</strong> — The styles visitors can switch between: Light, Dark, White, Grayscale, Black. If none is ticked, Light is used. Default: Light.
+</li><li>
+<strong>Most detailed zoom</strong> — The highest basemap zoom copied, 0–15. Default: 15.
+</li><li>
+<strong>Area around the extent</strong> — Extra detail area around the export extent, as % per side (0–1000). Default: 50 %.
+</li><li>
+<strong>Overview zooms (0 to)</strong> — Zooms 0 up to this value cover the wider overview area. Capped at <em>Most detailed zoom</em>. Default: 7.
+</li><li>
+<strong>Overview area</strong> — Side length of the overview area, 0–5000 km. Default: 300 km.
+</li></ul>
+<h3 id="web-basemaps-xyz-tiles-or-wms-loaded-from-their-server-while-browsing">Web basemaps (XYZ tiles or WMS, loaded from their server while browsing)</h3>
+<ul><li>
+<strong>Use</strong> — Offers the row in the web map's basemap menu. Rows that are not https cannot be ticked.
+</li><li>
+<strong>Name</strong> — The menu name. For an existing QGIS XYZ connection it is the connection name (read-only).
+</li><li>
+<strong>Tile address (XYZ or WMS)</strong> — An https:// template with {z}, {x} and {y} ({-y} for TMS, {s} for a/b/c servers), or a WMS template.
+</li><li>
+<strong>Attribution</strong> — The credit text the service requires. It is saved into the QGIS connection too.
+</li><li>
+<strong>Min z</strong> — The lowest zoom the service has. Default: 0.
+</li><li>
+<strong>Max z</strong> — The highest zoom the service has. Default: 19 (20 for WMS).
+</li><li>
+<strong>Add new…</strong> — Adds an editable empty row. Ticked rows are saved as QGIS XYZ connections (Browser → XYZ Tiles).
+</li><li>
+<strong>Add WMS…</strong> — Opens <em>Add WMS</em> to add a WMS service as a basemap.
+</li><li>
+<strong>Reload from QGIS</strong> — Lists the QGIS XYZ connections again, e.g. ones added in the Browser meanwhile.
+</li></ul>
+<h4 id="add-wms">Add WMS</h4>
+<ul><li>
+<strong>WMS layer of the project</strong> — Fills the fields below from a WMS layer in the project. Shown only if the project has one.
+</li><li>
+<strong>Name</strong> — The menu name. Empty: the layer names.
+</li><li>
+<strong>Service address</strong> — The https:// WMS address.
+</li><li>
+<strong>Layers</strong> — WMS layer names, comma separated.
+</li><li>
+<strong>Image format</strong> — image/png or image/jpeg.
+</li><li>
+<strong>Attribution</strong> — The credit text shown on the map.
+</li></ul>
+<h3 id="terrain-3d-relief-hillshade-elevation-profiles">Terrain (3D relief, hillshade, elevation profiles)</h3>
+<ul><li>
+<strong>Elevation layer (DEM)</strong> — A file-based raster of ground heights in metres. Online services are not listed. Default: (no terrain).
+</li><li>
+<strong>Hillshade: shaded relief drawn above the basemap (also in 2D)</strong> — Draws shaded relief. Enabled only when an elevation layer is chosen. Default: on.
+</li><li>
+<strong>Height exaggeration in 3D</strong> — Vertical exaggeration in the 3D view, 1–5 ×, in steps of 0.5. Default: 1.5 ×.
+</li></ul>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+<em>Styles offered</em>, the size fields and the source matter only when <em>Basemap</em> is the Protomaps option.
+</li><li>
+The PMTiles box is used only when its radio button is selected. Otherwise its text is ignored.
+</li><li>
+An http:// basemap URL is allowed only for localhost.
+</li><li>
+Large <em>Most detailed zoom</em>, <em>Area around the extent</em> or <em>Overview area</em> values multiply the tile count (limit 200,000) and the release size.
+</li><li>
+<em>Basemap shown at start</em> matches by name. If the chosen entry is unticked or removed, it falls back to the first style, or to None.
+</li><li>
+Web basemaps are never copied into the release: visitors' browsers load them live. Use only services you may use, with their required attribution.
+</li><li>
+A row with no address is ignored. A Min z or Max z that is not a number silently becomes 0 or 19.
+</li><li>
+WMS rows are not saved as QGIS XYZ connections. The service must support EPSG:3857 and allow use in web maps.
+</li><li>
+Terrain heights become public (data/terrain.pmtiles). 3D relief needs <em>3D view</em> on (Interaction tab). Elevation profiles need <em>Measurement</em> on.
+</li><li>
+A terrain failure does not stop the export: the map is published without terrain, with a warning.
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+<em>Add WMS</em> "An https:// service address and at least one layer name are needed." — Enter an https address and a layer name.
+</li><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "basemap.xyz[i].title: required" / "'…' is used twice" — Give every ticked row a unique name.
+</li><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "basemap.xyz[i].url: an https:// tile address" / "needs {z}, {x} and {y} (or {-y}), or a WMS {bbox-epsg-3857}" / "only {s} may stand in the server name" / "a WMS address needs REQUEST=GetMap" — Fix the tile address.
+</li><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "basemap.xyz[i]: 0 &lt;= minZoom &lt;= maxZoom &lt;= 24" — Fix Min z or Max z.
+</li><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "basemap.source: https:// URL (http only on this computer) or a local file" — Use https or a local file.
+</li><li>
+<code>Q2VT_PUB_BASEMAP</code> "Basemap file not found: …" — Fix the path.
+</li><li>
+<code>Q2VT_PUB_BASEMAP</code> "The list of Protomaps builds could not be read…" / "Basemap download failed…" — No internet, or the server failed. Retry, or use a URL or local file.
+</li><li>
+<code>Q2VT_PUB_RANGE_UNSUPPORTED</code> "The basemap server answered … to a range request" — The URL's server does not support HTTP Range. Download the file and use it locally.
+</li><li>
+<code>Q2VT_PUB_NOT_MVT</code> "The basemap source does not hold vector tiles." / <code>Q2VT_PUB_BASEMAP</code> "…is not in the Protomaps schema (no 'earth' layer)." — Use a Protomaps-schema vector PMTiles file.
+</li><li>
+<code>Q2VT_PUB_BASEMAP</code> "The basemap area needs N tiles (limit 200000); lower its maximum zoom, padding or overview size." — Lower <em>Most detailed zoom</em>, <em>Area around the extent</em> or <em>Overview area</em>.
+</li><li>
+<code>Q2VT_PUB_BASEMAP</code> "The basemap source has no tiles in this area." — The file does not cover your extent. Use another file, or the daily build.
+</li><li>
+<code>Q2VT_PUB_BASEMAP</code> "No installed font for the basemap labels." — Install a system font (e.g. Noto Sans or DejaVu Sans).
+</li><li>
+Warning "Terrain: "…" cannot be read as a file…" / "could not be read (…)" / "has no heights inside the extent." / "the elevation layer is not in the project" — Choose a local DEM that covers the extent.
+</li></ul>
+<h2 id="parcel-report-tab">Parcel report tab</h2>
+<ul><li>
+<strong>Clicking a parcel shows its report: area, parts cut by the zoning and the regulation lines, zones and restrictions</strong> — Turns the parcel report on. The report is computed in QGIS at export time from exact geometry; only the result is published. Default: off.
+</li></ul>
+<h3 id="parcels">Parcels</h3>
+<ul><li>
+<strong>Parcel layer</strong> — Polygon layer of the parcels. Clicking one of its features in the web map opens the report.
+</li><li>
+<strong>Parcel id (unique, e.g. hrsz)</strong> — Field that identifies a parcel. It also becomes the parcel layer's feature key in the tiles.
+</li><li>
+<strong>Parcel data shown</strong> — Table of the parcel layer's fields. Tick a field to show it in the report.
+</li><li>
+<strong>Field (tick to show)</strong> — Column of the field tables: the field name with its tick box.
+</li><li>
+<strong>Title</strong> — Column of the field tables: the label shown for the field. Empty uses the field name.
+</li></ul>
+<h3 id="zoning-parts-of-the-parcel">Zoning (parts of the parcel)</h3>
+<ul><li>
+<strong>Zone layer (its style gives the zone colours)</strong> — Polygon layer of the zones. The parcel is cut into parts by these zones. Each part gets the zone's legend colour.
+</li><li>
+<strong>Zone code field</strong> — Field with the zone code (e.g. a zone code such as R1). It names each part. It is guessed from the layer's style or labels when you pick the layer.
+</li><li>
+<strong>Zone values shown per part</strong> — Zone layer fields to show for each part. Tick the field, optionally give a title.
+</li><li>
+<strong>Lines that cut parcels</strong> — Tick line layers (e.g. regulation lines, zone boundaries) that also cut the parcel into parts. Lists only line layers of the project.
+</li></ul>
+<h3 id="restrictions-shown-with-their-legend-symbol-when-they-touch-the-parcel">Restrictions (shown with their legend symbol when they touch the parcel)</h3>
+<ul><li>
+<strong>Layer</strong> — Tick a layer to use it as a restriction. Lists every spatial vector layer of the project.
+</li><li>
+<strong>Title</strong> — Name of the restriction in the report. Default: the layer name.
+</li><li>
+<strong>Name field</strong> — Optional field whose value names the feature (e.g. the protected site). Empty: no name.
+</li><li>
+<strong>Distance (m)</strong> — Protection distance for line and point layers, 0–1000 m. Ignored for polygon layers. Default: 0.
+</li><li>
+<strong>Explanation</strong> — One-sentence explanation shown with the restriction.
+</li><li>
+<strong>Legal reference</strong> — Legal reference shown with the restriction (e.g. the article of the building act).
+</li></ul>
+<h3 id="zone-regulations-table-optional-e-g-the-local-building-code">Zone regulations table (optional, e.g. the local building code)</h3>
+<ul><li>
+<strong>Table</strong> — Optional table (any vector layer, also without geometry) joined to the zones by zone code. Empty: not used.
+</li><li>
+<strong>Zone code field</strong> — Field of the table with the same codes as the zone layer's code field. Guessed by name when you pick the table.
+</li><li>
+<strong>Fields shown</strong> — Table fields to show under each zone. Tick and optionally title them.
+</li><li>
+<strong>Full texts table</strong> — Optional table with the full regulation text of each zone. The report shows it under the zone, opened on request. Empty: not used.
+</li><li>
+<strong>Its zone code field</strong> — Zone code field of the full texts table. Guessed by name.
+</li><li>
+<strong>Its text field (HTML)</strong> — Field with the text as simple HTML (headings, paragraphs, lists, tables). Guessed from names like html or text.
+</li></ul>
+<h3 id="accuracy-and-notice">Accuracy and notice</h3>
+<ul><li>
+<strong>Ignore parts smaller than</strong> — Parcel parts below this area are dropped as slivers, 0–1000 m². Default: 1 m².
+</li><li>
+<strong>Ignore restriction overlaps below</strong> — Restriction overlaps below this share of the parcel are ignored, 0–50 %. Default: 0.5 %.
+</li><li>
+<strong>Notice shown on every report</strong> — Notice text at the bottom of each report. Empty: the viewer's standard notice ("Information only, not an official certificate…") in the viewer's language.
+</li></ul>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+The parcel layer must also be published on the Map tab. Its feature key is replaced with the parcel id field.
+</li><li>
+Everything in the report becomes public for every parcel in the extent. This includes the ticked fields, the restriction titles, explanations, references, name fields, regulation fields and full texts. The Review tab lists them.
+</li><li>
+Choosing another parcel, zone or regulations layer clears that layer's field ticks and titles.
+</li><li>
+The field tables have no type column. A field's type (url, number …) comes only from saved or imported settings.
+</li><li>
+Parcel layer and Zone layer have no empty choice. If saved settings name a layer that is not in this project, the log says "Parcel report: a layer of these settings is not in this project; check the Parcel report tab." Another layer may then be shown as selected. Check both combos.
+</li><li>
+If the zone code field looks like a feature id (fid), another field is used instead and a warning is logged. Choose the real code field.
+</li><li>
+Parcels with an empty id are skipped. If several parcels share an id, only the first is reported and a warning is logged. Use a unique id field.
+</li><li>
+With a distance of 0, line and point restrictions only count when they touch the parcel exactly. Set a protection distance.
+</li><li>
+A restriction or cut line layer missing from the project is skipped with a warning.
+</li><li>
+Regulations and full texts are matched by zone code. Only the first row per code is used. Codes that do not match the zone layer's codes show nothing, with no error.
+</li><li>
+Full texts are cleaned: HTML other than simple formatting is removed. A text that is empty after cleaning is dropped.
+</li><li>
+When the report is off, these settings are kept but ignored, and they are not validated.
+</li><li>
+The report adds an export stage. It is cached and is only recomputed when its inputs change.
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+"parcelInfo.parcel_layer_id / key_field / zoning_layer_id / zoning_code_field: required when the parcel report is on" — The report is on but a layer or field is not chosen. Choose it, or turn the report off.
+</li><li>
+"Parcel report: choose the parcel and zone layers." (Q2VT_PUB_PROFILE_INVALID) — A chosen layer is no longer in the project. Choose existing layers.
+</li><li>
+"Parcel report: the parcel id or the zone code field does not exist." (Q2VT_PUB_PROFILE_INVALID) — The field was renamed or removed. Choose the field again.
+</li><li>
+"Parcel report: publish the parcel layer (Map tab)." (Q2VT_PUB_PROFILE_INVALID) — The parcel layer is not ticked for publishing. Tick it on the Map tab.
+</li><li>
+"Parcel report: the parcel layer must be a vector layer (Parcel report tab)." (Q2VT_PUB_PROFILE_INVALID) — Choose a vector polygon layer.
+</li><li>
+"Parcel report → Zone regulations table: choose the table's zone code field …" — A table is chosen without its zone code field. Choose the field, or set Table to empty.
+</li><li>
+"Parcel report → Regulation texts: choose the zone code field and the text field, or set Table to empty" — The full texts table lacks one of its fields. Choose both, or set the table to empty.
+</li><li>
+"parcelInfo: minArea 0-1000 m², minShare 0-50 %", "parcelInfo.restrictions.bufferM: 0-1000 m", "parcelInfo.restrictions: a layer id once per layer" — Out-of-range or duplicate values, only possible from imported or hand-edited settings. Fix the values in the tab and save.
+</li></ul>
+<h2 id="info-tab">Info tab</h2>
+<h3 id="about-the-map">About the map</h3>
+<ul><li>
+<strong>Issued by</strong> — Who issued the map (e.g. the municipality). It is shown under the title, in the panel and on prints.
+</li><li>
+<strong>Decree / plan number</strong> — Decree or plan number (e.g. the local decree that adopted the plan).
+</li><li>
+<strong>In force from</strong> — Date the map is in force from, as free text. It is shown under the title, separately from the export date.
+</li><li>
+<strong>Data as of</strong> — Date of the data shown (survey, cadastre extract …), as free text.
+</li></ul>
+<h3 id="documents-published-with-the-map">Documents published with the map</h3>
+<ul><li>
+<strong>Title</strong> — Column: the document's name in the viewer's panel. Editable. Default: the file name without its extension.
+</li><li>
+<strong>File</strong> — Column: the local file path. Read-only. To change the file, remove the row and add the file again.
+</li><li>
+<strong>Add document…</strong> — Picks one or more files (.pdf, .docx, .doc, .odt, .rtf, .txt, .png, .jpg, .jpeg, .webp) and adds a row for each.
+</li><li>
+<strong>Remove</strong> — Removes the selected rows.
+</li></ul>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+Documents are copied into the web map. Anyone can download them. The Review tab lists them as "Documents (downloadable by anyone)".
+</li><li>
+A popup value equal to a document's file name or title becomes a link to the document.
+</li><li>
+Files are copied under ASCII names in docs/. Two files with the same name get -2, -3 … suffixes.
+</li><li>
+Paths are stored as local paths. On another computer, or after the file has moved, the export fails. Add the file again.
+</li><li>
+Changing a document's content (same name) requires a new review before publishing.
+</li><li>
+Dates are free text and are not checked. If all four fields are empty and there are no documents, the map shows no info block.
+</li><li>
+An empty title falls back to the file name.
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+"info.documents[n].title: '…' is used twice" — Two documents have the same title. Rename one.
+</li><li>
+"info.documents[n].title: required" — Empty title in imported settings. Enter a title.
+</li><li>
+"info.documents[n].path: one of .pdf, .docx, …" — Unsupported file type. Convert the file, e.g. to PDF.
+</li><li>
+"Document '…': the file does not exist." (Q2VT_PUB_PROFILE_INVALID) — The file was moved or deleted. Remove the row and add the file again.
+</li><li>
+"Document '…': not a .pdf, .docx, … file." (Q2VT_PUB_PROFILE_INVALID) — Unsupported extension at export. Use a supported type.
+</li></ul>
+<h2 id="output-tab">Output tab</h2>
+<ul><li>
+<strong>Archive</strong> — Tile archive format. <em>PMTiles (vector tiles for static web hosting)</em> (default) is what the web map uses. <em>PMTiles + MBTiles copy</em> also writes <code>&lt;slug&gt;-&lt;release&gt;.mbtiles</code> next to the publication folder. <em>MBTiles only (desktop / preview; not for direct web hosting)</em> works for local export only.
+</li><li>
+<strong>Local output folder</strong> — Folder for the exported map. It goes in <code>&lt;folder&gt;/&lt;name&gt;/</code>. Default: <code>web_maps</code> next to the project file, or in your home folder if the project is unsaved. Also used as the work and cache folder for uploads.
+</li><li>
+<strong>…</strong> — Opens a folder picker for the local output folder.
+</li><li>
+<strong>Keep earlier versions in the local folder (releases, rollback)</strong> — Off (default): each export replaces the map in <code>&lt;folder&gt;/&lt;name&gt;/</code>, a plain site you can copy to any web server. On: each export is kept as a version in <code>releases/</code>, and <code>index.html</code> opens the current one, with rollback. Applies to the <em>Local only</em> destination only.
+</li><li>
+<strong>Also write the legacy XYZ web package (web/)</strong> — Also writes static XYZ tiles, a style and a viewer in a <code>web/</code> folder inside the export's work folder (<code>.q2vt-work</code>). Off by default.
+</li><li>
+<strong>Also write an offline ZIP of the release</strong> — Writes <code>&lt;slug&gt;-&lt;release&gt;.zip</code> next to the publication folder. The ZIP holds the whole site. Off by default.
+</li><li>
+<strong>CPU limit (%)</strong> — Share of CPU cores used for parallel export, tiling and raster drawing (1–100, default 100).
+</li><li>
+<strong>Fidelity</strong> — <em>Vector-first: approximate where declared and report</em> (default) exports what it can and lists the approximations in the fidelity report. <em>Strict: fail if any component is unsupported or approximated</em> stops the export before anything is published.
+</li><li>
+<strong>Beyond the maximum zoom</strong> — <em>Keep showing the last tiles beyond the maximum zoom</em> (default, overzoom) or <em>Hide layers beyond the maximum zoom</em>.
+</li><li>
+<strong>Polygon labels</strong> — Where polygon labels go. <em>Whole polygon</em> uses the whole polygon. <em>Visible polygon</em> uses the part visible on screen. <em>As set in each layer's labels</em> (default) follows each layer's QGIS setting.
+</li><li>
+<strong>Publish ALL attribute fields in the tiles (not recommended)</strong> — Off (default): tiles carry only the fields the map needs, plus the fields you approved. On: every attribute goes into the public tiles.
+</li><li>
+<strong>Fast marker lines: let the browser place screen-size line markers</strong> — The browser places marker lines spaced in screen units, instead of the export computing them for every zoom. Much faster export, but positions are approximate: spacing is about 0.7–1.4× and markers can be missing at tile edges. Off by default.
+</li><li>
+<strong>Thin hairlines: draw zero-width lines thinner than QGIS</strong> — Zero-width lines (hairlines) are drawn one device pixel wide, and a little wider when zoomed far in, so dense lines do not merge. Dashed hairlines keep their width. On by default.
+</li><li>
+<strong>Low memory web map: keep fewer tiles in the browser</strong> — The browser keeps tiles for about one zoom level beyond the screen (instead of five). This uses much less memory, but tiles reload when you return to a place. Above 200 % screen scale, the map is drawn at 2 device pixels per CSS pixel. On by default.
+</li><li>
+<strong>Lighter tiles when zoomed out: leave out features under half a pixel</strong> — Leaves out fills and thin lines smaller than 0.5 px at each zoom, and simplifies outlines a little more (¼ px) below each layer's last zoom. The last zoom of each layer keeps every feature with its exact shape. On by default.
+</li><li>
+<strong>Hide labels smaller than</strong> — Hides labels sized in map units where their text is smaller on screen than the value (1–48 px, default 6 px). It also sets the smallest size for <em>Label every feature</em>. Labels sized in points, mm or pixels are not affected. On by default.
+</li><li>
+<strong>Reuse unchanged layers from earlier exports (faster)</strong> — Skips layers whose data files, style and export settings are unchanged since an earlier export into this output folder, raster layers included. Database and web layers are always exported again. On by default.
+</li><li>
+<strong>Clear cache…</strong> — Shows the size of this output folder's export cache (<code>.q2vt-cache</code>) and deletes it after you confirm. The next export processes every layer again.
+</li></ul>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+<em>MBTiles only</em> cannot be used with Cloudflare R2, S3 or SSH destinations. Choose <em>PMTiles</em> or <em>PMTiles + MBTiles copy</em>.
+</li><li>
+<em>Keep earlier versions…</em> does nothing for R2, S3 or SSH destinations (R2/S3 are always versioned; SSH never is).
+</li><li>
+If versions are off, each export overwrites the previous map in <code>&lt;folder&gt;/&lt;name&gt;/</code>. Only files written by an earlier export are deleted. Your other files there stay.
+</li><li>
+The XYZ package lands in the hidden work folder, not in the published site, and it is never uploaded.
+</li><li>
+<em>CPU limit</em> is capped internally: at most 90 %, and at most 6 parallel workers. Values above that do not speed up the export.
+</li><li>
+<em>Strict</em> fails on any warning about an unsupported or approximated component (code <code>Q2VT_STRICT_FAILED</code>). Read <code>fidelity_report.html</code> first.
+</li><li>
+Turning on <em>Publish ALL attribute fields</em> makes every attribute public. It also makes tiles larger. Check the field list in the Review tab.
+</li><li>
+Turning off <em>Lighter tiles</em>, <em>Low memory</em> or <em>Reuse unchanged layers</em> can make detailed maps (such as parcels) heavy in the browser or slow to export.
+</li><li>
+The cache is shared by every publication in the same output folder. It is pruned automatically: entries unused for 30 days, then the oldest beyond 4 GB. A plugin update invalidates it.
+</li><li>
+For a network output folder (Windows share, NFS, SMB, sshfs), the work files and the cache stay in the system temp folder on this computer. Only the finished map and logs go to the network folder.
+</li><li>
+Changing the output folder starts with an empty cache, and with a new site if versions are on.
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "output.archive: web hosting needs PMTiles (choose PMTiles or Both)" — <em>MBTiles only</em> is set with an R2, S3 or SSH destination. Fix: pick a PMTiles option.
+</li><li>
+<code>Q2VT_PUB_PROFILE_INVALID</code> "Choose a local output folder." — The <em>Local output folder</em> field is empty, on export or on <em>Clear cache…</em>. Fix: choose a folder.
+</li><li>
+"The cache of this output folder is empty." (Cache message) — There is nothing to delete. This is information only.
+</li><li>
+<code>Q2VT_STRICT_FAILED</code> "N component(s) cannot be reproduced exactly." — <em>Strict</em> fidelity found unsupported or approximated styling. Fix: change those styles (see the fidelity report), or switch to <em>Vector-first</em>.
+</li><li>
+<code>Q2VT_PUB_DISK</code> (OS error text) — Writing the PMTiles archive failed. Causes: the disk is full, or the folder is not writable. Fix: free space or choose another folder.
+</li></ul>
+<h2 id="destination-tab">Destination tab</h2>
+<ul><li>
+<strong>Destination</strong> — Where Publish sends the map: "Local only (no upload)" (default), "Cloudflare R2", "Other S3-compatible storage", or "SSH / SFTP server (one folder, not versioned)". The fields below change with the choice.
+</li><li>
+<strong>Step-by-step: set up Cloudflare R2…</strong> — Opens the "Cloudflare R2: step by step" guide (see below). Hidden for SSH.
+</li><li>
+<strong>Map address</strong> — Read-only. The final address: <code>&lt;public base URL&gt;/&lt;prefix&gt;/</code> (R2/S3) or <code>&lt;public URL&gt;/</code> (SSH). Shows "— (enter the public base URL)", "— (check the prefix)" or "— (local only)" when it cannot be built.
+</li></ul>
+<h3 id="cloudflare-r2-and-s3-compatible-storage">Cloudflare R2 and S3-compatible storage</h3>
+<ul><li>
+<strong>Cloudflare account id</strong> — R2 only. The 32-character Account ID. You can paste the S3 API URL or a dashboard address instead; the id (and the bucket, and a jurisdiction endpoint) is taken from it.
+</li><li>
+<strong>S3 API endpoint (optional)</strong> — R2: leave empty; it is derived from the account id. Fill only for EU/FedRAMP jurisdiction buckets.
+</li><li>
+<strong>S3 API endpoint</strong> — Other S3 storage: required. The API address, not the public address. Must be <code>https://</code>.
+</li><li>
+<strong>Bucket</strong> — The bucket name exactly as in the provider's console. Required. Pasting a bucket's S3 API URL fills the account id too.
+</li><li>
+<strong>Prefix in the bucket</strong> — Folder for this map inside the bucket, e.g. <code>maps/arlo</code>. Empty: <code>maps/&lt;slug&gt;</code>. The plugin writes only inside it; several maps can share one bucket.
+</li><li>
+<strong>Public base URL (custom domain)</strong> — The address people open (the custom domain connected to the bucket), e.g. <code>https://maps.example.com</code>. Required. Not the S3 API URL.
+</li><li>
+<strong>Saved credentials (QGIS authentication: user = access key id, password = secret)</strong> — A QGIS authentication configuration holding the keys, encrypted and protected by the QGIS master password. Only its id is saved with the settings.
+</li><li>
+<strong>Or keys for this session only</strong> — Access Key ID and Secret Access Key used while the window is open; not saved. They take precedence over the saved credentials.
+</li><li>
+<strong>Save keys in QGIS…</strong> — Stores the session keys as an encrypted "Basic" configuration named "R2/S3 &lt;bucket&gt; (QWebMap)", selects it and clears the fields.
+</li><li>
+<strong>Releases to keep</strong> — 1–100 (default 3). How many releases "Delete old releases…" leaves in the bucket. Not applied automatically.
+</li><li>
+<strong>Storage supports conditional writes (R2, AWS S3)</strong> — Default on. Activation uses If-Match/If-None-Match so two publishers cannot overwrite each other. Turn off only for storage without it.
+</li><li>
+<strong>Test connection</strong> — Checks that the bucket is reachable and the prefix can be listed. Shows ✔/✖ per check.
+</li><li>
+<strong>Show CORS policy</strong> — Shows a CORS rule for your public origin (GET/HEAD, Range headers). Needed only when the map data is read from another site (e.g. embedded). The plugin never changes the bucket's CORS.
+</li><li>
+<strong>Releases and rollback…</strong> — Opens the release list of this publication (see below).
+</li></ul>
+<h3 id="ssh-sftp-server">SSH / SFTP server</h3>
+<ul><li>
+<strong>SSH server</strong> — Host name or IP address. Pasting <code>user@server:/folder</code> or <code>sftp://user@server:port/folder</code> fills User, Port and Folder too.
+</li><li>
+<strong>Port</strong> — 1–65535, default 22.
+</li><li>
+<strong>User</strong> — The SSH login. Empty: the user of the saved password, else your ssh default.
+</li><li>
+<strong>Folder on the server</strong> — Where the map's files go (created if missing). Absolute, or relative to the login's home (<code>~/</code> allowed). Each publish replaces the previous map there; no versions.
+</li><li>
+<strong>Private key file</strong> — Optional OpenSSH private key. Empty: ssh-agent or your default keys in <code>~/.ssh</code>. <strong>Browse…</strong> picks the file.
+</li><li>
+<strong>Public URL of the folder (optional)</strong> — The folder's web address, e.g. <code>https://www.example.com/map</code>. Used for Open map / Copy link / embed code and to check that the new map is served. Empty: nothing is checked.
+</li><li>
+<strong>Saved password (QGIS authentication: user = SSH user, password = password or passphrase)</strong> — A saved, encrypted Basic configuration with the SSH password or key passphrase.
+</li><li>
+<strong>Or a password for this session only</strong> — Password or key passphrase used while the window is open; not saved. Leave empty for a key without passphrase or ssh-agent.
+</li><li>
+<strong>Save in QGIS…</strong> — Stores User + password as "SSH &lt;user&gt;@&lt;server&gt; (QWebMap)", selects it and clears the field.
+</li><li>
+<strong>Test connection</strong> — Logs in, creates the folder if needed, writes and deletes a test file, and reports whether files are replaced atomically.
+</li></ul>
+<h3 id="cloudflare-r2-step-by-step-guide-window">Cloudflare R2: step by step (guide window)</h3>
+<ul><li>
+<strong>Open the Cloudflare dashboard</strong> — Opens the R2 overview in your browser. The guide lists the one-time steps: activate R2, copy the Account ID, create a bucket, choose a prefix, connect a custom domain, create a bucket-scoped "Object Read &amp; Write" API token, save the keys in QGIS, test, then publish.
+</li><li>
+<strong>Close</strong> — Closes the guide.
+</li></ul>
+<h3 id="releases-of-lt-map-gt-releases-and-rollback-window">Releases of &lt;map&gt; (Releases and rollback… window)</h3>
+<ul><li>
+<strong>Make current (rollback)</strong> — Points the stable address at the selected older release (asks first; nothing is uploaded). The current one is marked "← current".
+</li><li>
+<strong>Delete old releases…</strong> — Deletes the oldest releases beyond <strong>Releases to keep</strong>; never the current one. Lists them and asks first.
+</li><li>
+<strong>Abort interrupted uploads…</strong> — Lists and aborts unfinished multipart uploads under this prefix. A later publish starts them again.
+</li><li>
+<strong>Close</strong> — Closes the window.
+</li></ul>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+R2/S3 and SSH need the PMTiles archive: choose PMTiles or Both on the Output tab, not MBTiles only.
+</li><li>
+R2/S3: <code>r2.dev</code> works for tests but is rate-limited; use a custom domain. The public URL and endpoint must be <code>https://</code> (plain <code>http</code> only for <code>localhost</code>).
+</li><li>
+Settings imported from another computer keep a credentials id that does not exist here: select or save the keys again.
+</li><li>
+Switching between SSH and R2/S3 puts the other family's public URL and saved credentials aside; switching back restores them (within the open window).
+</li><li>
+Releases are never deleted automatically: use <strong>Delete old releases…</strong> to apply <strong>Releases to keep</strong>. Storage of retained releases is billed.
+</li><li>
+Deleting releases or rollback cannot recall copies already downloaded or cached.
+</li><li>
+A prefix already used by another publication is refused; give the new map another prefix or slug.
+</li><li>
+SSH: no versions and no rollback. Files with the same name in the folder (e.g. <code>index.html</code>) are replaced; only files QWebMap uploaded before (listed in <code>.q2vt-files.json</code>) are deleted.
+</li><li>
+SSH: a new server's host key is accepted on first use; a changed key stops the upload.
+</li><li>
+SSH on Windows: a password or passphrase needs OpenSSH 8.4+; the built-in Windows 10 client is older, so use a key or ssh-agent.
+</li><li>
+SSH without "posix-rename" support: each changed file is briefly missing during the upload.
+</li><li>
+Session keys and passwords are lost when the window closes; settings export never includes an SSH password.
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+"destination.bucket: required" / "destination.publicBaseUrl: required (the public custom domain)" / "destination.endpoint: required" / "destination.accountId: required for R2 (or an explicit endpoint)" — Shown on Save/Export. Fill the field.
+</li><li>
+"destination.endpoint / publicBaseUrl: must be an https:// URL" — Use <code>https://</code>.
+</li><li>
+"output.archive: web hosting needs PMTiles (choose PMTiles or Both)" — Change the archive on the Output tab.
+</li><li>
+"destination.prefix: Prefix segment '…' must be ASCII letters, digits, '.', '_' or '-'." (Q2VT_PUB_PATH_UNSAFE) — Remove spaces, accents and <code>..</code> from the prefix.
+</li><li>
+"destination.retention: 1-100" — Use a value in range.
+</li><li>
+"destination.host: required" / "a host name or IP address (no spaces, user@ or path)" / "(the port goes into the Port field)" — Enter only the host; put user, port and folder in their fields.
+</li><li>
+"destination.remoteDir: required" / "a folder, not the server's root" — Give a real folder, not <code>/</code>.
+</li><li>
+"destination.identityFile: this is the public key (.pub)…" — Choose the private key file (same name without <code>.pub</code>).
+</li><li>
+"destination.publicBaseUrl: the folder's address, without index.html at the end" — Remove <code>index.html</code>.
+</li><li>
+"The private key file … does not exist." (Q2VT_PUB_DESTINATION) — Fix the path.
+</li><li>
+"Enter the Cloudflare account id." (Q2VT_PUB_DESTINATION) — Fill the account id (letters/digits only).
+</li><li>
+"No saved credentials are selected." / "…do not exist in this QGIS…" / "could not be unlocked (master password?)" / "need an access key id (user name) and a secret access key (password)" (Q2VT_PUB_CREDENTIALS) — Select or save keys, enter session keys, or unlock the master password.
+</li><li>
+"Set the QGIS master password to save credentials, or use them for this session only." (Q2VT_PUB_CREDENTIALS) — Set a master password, or use session keys.
+</li><li>
+"The storage refused the credentials or the key has no permission for this bucket/prefix." (Q2VT_PUB_CREDENTIALS) — Wrong keys, or the token is not scoped to this bucket.
+</li><li>
+"Bucket '…' does not exist." (Q2VT_PUB_DESTINATION) — Check the bucket name and the endpoint/jurisdiction.
+</li><li>
+"Object storage request failed." (Q2VT_PUB_UPLOAD) — Network or server error after retries; try again.
+</li><li>
+"The S3 library could not be loaded" (Q2VT_PUB_DEPENDENCY) — The bundled boto3 is broken; reinstall the plugin.
+</li><li>
+"The prefix '…' holds another publication (…)" (Q2VT_PUB_DESTINATION) — Choose another slug/prefix.
+</li><li>
+"This destination cannot do conditional writes; activation would not be conflict-safe." (Q2VT_PUB_ACTIVATION) — The conditional-writes box is off; turn it on if the storage supports it.
+</li><li>
+"Another publisher activated a release first." (Q2VT_PUB_ACTIVATION_CONFLICT) — Your release stays uploaded; make it current from <strong>Releases and rollback…</strong> if wanted.
+</li><li>
+"The current release cannot be deleted." (Q2VT_PUB_ACTIVATION) / "Release … is not complete remotely." — Pick another release.
+</li><li>
+"The OpenSSH client (sftp, ssh) was not found on this computer." (Q2VT_PUB_DEPENDENCY) — Install OpenSSH Client, restart QGIS.
+</li><li>
+"The OpenSSH client of this computer (version …) cannot take a password…" (Q2VT_PUB_DEPENDENCY) — Use a key/ssh-agent or install OpenSSH 8.4+.
+</li><li>
+"The server … refused the login (…)" (Q2VT_PUB_CREDENTIALS) — Check user, password/passphrase or key.
+</li><li>
+"ssh ignored the private key file … because other users can read it." — <code>chmod 600</code> the key (Windows: restrict file permissions).
+</li><li>
+"The private key file … is not an OpenSSH key (a PuTTY .ppk key?)." — Export it as OpenSSH from PuTTYgen.
+</li><li>
+"The host key of … has changed since the last connection" (Q2VT_PUB_DESTINATION) — If expected, run <code>ssh-keygen -R &lt;host&gt;</code> and retry.
+</li><li>
+"The server name … is not known" / "cannot be reached on port …" (Q2VT_PUB_DESTINATION) — Check host, port, network, firewall.
+</li><li>
+"…accepted the login but offers no SFTP" (Q2VT_PUB_DESTINATION) — Ask the admin to enable the SFTP subsystem.
+</li><li>
+"The folder … does not exist on the server and could not be created" / "Permission denied: … cannot write into …" (Q2VT_PUB_DESTINATION) — Fix the folder or the user's permissions.
+</li><li>
+"The map needs a folder where the server's folder has a file: …" (Q2VT_PUB_DESTINATION) — Rename or remove that file on the server.
+</li><li>
+"The SSH password (or the key's passphrase) appears in the map's files" (Q2VT_PUB_SECRET_LEAK) — Use another password or a key.
+</li><li>
+"The SSH connection to … failed or was lost" / "The SFTP transfer stopped" (Q2VT_PUB_UPLOAD) — Publish again to complete the folder.
+</li></ul>
+<h2 id="review-tab">Review tab</h2>
+<ul><li>
+<strong>Review text</strong> — Read-only summary of what becomes public: target address, each published layer (feature count, popup, search, filter and key fields, always-shown/hidden at start), raster layers, "all fields" warning, basemap source, views, terrain, 3D height fields, viewer extras, house-number search, documents, parcel report fields, external resources (web basemaps, Street View, live layers), cost note, last local export size, and whether approval is needed. Refreshed when the tab opens.
+</li><li>
+<strong>Refresh review</strong> — Rebuilds the summary from the current settings.
+</li><li>
+<strong>I understand that the geometry of the selected layers and the fields listed above become public at the target address.</strong> — The approval. Ticked automatically when the same data scope was approved before; untick and re-tick after reviewing a changed scope.
+</li></ul>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+Approval is needed for the first publication and whenever what becomes public changes: included layers, popup/search/filter/key fields, "all fields", documents (also their file content), terrain, web basemaps, Street View, address search, parcel report, live layers, or the destination (kind, public URL, bucket+prefix or SSH host/port/user/folder).
+</li><li>
+The approval covers only what the Review tab last showed: a change after ticking it sends you back to this tab on Publish.
+</li><li>
+Approval is not needed for "Local only"; Publish then just exports.
+</li><li>
+"Filter fields (also in the tiles)" and "all attribute fields" are downloadable by anyone, not only shown in popups.
+</li><li>
+Online map services (WMS/XYZ rasters) are flagged: check their licence allows republishing.
+</li><li>
+"3D height fields are set but "3D view" is off" — the height data is published but the map shows no 3D button.
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+"Review what becomes public and tick the approval before publishing." — Publish was pressed without a current approval. Read the summary, tick the box, press Publish again.
+</li></ul>
+<h2 id="window-buttons">Window buttons</h2>
+<ul><li>
+<strong>Save settings</strong> — Validates and saves the settings into the project. Save the project file to keep them. Shows up to 12 problems instead of saving.
+</li><li>
+<strong>Settings file…</strong> — Menu with <strong>Export settings to a file…</strong> (writes a <code>.q2vt.json</code>; includes the R2/S3 keys if session keys are entered or saved credentials are selected, never an SSH password — keep the file private) and <strong>Import settings from a file…</strong> (asks Yes = same web map/address, No = a new separate map; layers are matched by name; imported keys are saved encrypted in QGIS if possible; web basemaps also become QGIS XYZ connections).
+</li><li>
+<strong>Export locally</strong> — Builds the web map into the local folder. Asks first if the extent is the current map view, and may offer to speed up a slow zoomed-out map. Saves the settings first. Blocks the rest of QGIS while it runs.
+</li><li>
+<strong>Preview</strong> — Enabled after an export. Serves the exported folder on a local web server and opens it in the browser.
+</li><li>
+<strong>Publish</strong> — Local only: exports, then enables Open map (file address). R2/S3/SSH: checks the approval, reuses the last export if the settings are identical (else exports), then uploads in the background, verifies the public URL and activates the release. The status shows the stable address and, for R2/S3, "This version" (versioned link).
+</li><li>
+<strong>Open map</strong> — Opens the published map (or the local <code>index.html</code> after a local Publish).
+</li><li>
+<strong>Copy link</strong> — Copies the public address. Enabled after a successful online publish.
+</li><li>
+<strong>Copy embed code</strong> — Copies an <code>&lt;iframe&gt;</code> of the online map in embed mode (<code>?embed</code>). Works once a public URL is set, even before publishing.
+</li><li>
+<strong>Open local package</strong> — Opens the exported publication folder.
+</li><li>
+<strong>Cancel</strong> — Enabled while exporting or uploading. Stops the job; the previous online release stays current (SSH: already replaced files stay; publish again).
+</li><li>
+<strong>Close</strong> — Closes the window and saves changed, valid settings silently. An upload keeps running in the QGIS task bar.
+</li></ul>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+Settings live in the project: after Save settings, also save the project file.
+</li><li>
+If the project was saved elsewhere, the window asks: Yes = keep updating the same web map (same address), No = new separate map. Choose No for a copy, or both projects will overwrite one map.
+</li><li>
+Invalid settings are not saved on Close; the last valid ones stay.
+</li><li>
+Opening another project closes the window; its settings are not saved into the new project.
+</li><li>
+During an export the tabs are locked and QGIS takes no input until it ends or you press Cancel.
+</li><li>
+Copy link stays disabled for a local-only Publish; use Open map / Open local package.
+</li><li>
+If a CDN still serves the old <code>current.json</code>, a warning says so; the versioned link works at once.
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+"Choose an extent." (Q2VT_PUB_PROFILE_INVALID) — Set an extent on the Map tab.
+</li><li>
+"Export failed." (ERROR) — Unexpected error; the log under the progress bar has the details.
+</li><li>
+"Publishing failed." (ERROR) — Unexpected error in the upload task; see the log.
+</li><li>
+"Publishing cancelled." — Cancel was pressed before the upload started.
+</li><li>
+"The project these settings belong to was closed; they are not saved." — Reopen the project and the window.
+</li><li>
+"Not a publication settings file: …" — The import file is not valid settings JSON.
+</li><li>
+"This profile was saved by a newer plugin (schema …)" (Q2VT_PUB_SCHEMA_UNSUPPORTED) — Update the plugin.
+</li><li>
+"Profiles never store secrets; remove: …" (Q2VT_PUB_PROFILE_INVALID) — A hand-edited file contains secret-looking keys; remove them.
+</li><li>
+"Q2VT_PUB_RANGE_UNSUPPORTED" / "Q2VT_PUB_CORS" / "Q2VT_PUB_MIME" / "Q2VT_PUB_PUBLIC_VERIFY" — The public URL does not serve the release correctly (byte ranges, CORS, content type, or wrong URL/cache). R2/S3: the release is uploaded but not activated. SSH: the files are on the server; a warning explains. Check the public URL and the host settings (HOSTING.md).
+</li><li>
+"Q2VT_PUB_SECRET_LEAK" — A credential was found in the output; nothing is uploaded. Remove it from the data.
+</li><li>
+"Enter the public URL of the server folder (Destination tab)…" / "Publish the map online first (Destination tab)…" — Copy embed code needs a public address.
+</li></ul>
+<h2 id="command-line-processing">Command line (Processing)</h2>
+<p>Algorithm <strong>Publish web map (saved settings)</strong> (<code>QGIS2VectorTilesFork:publish_web_map</code>, QWebMap provider). Runs the saved settings without the window, as Publish / Export locally do; nothing is asked.</p>
+<ul><li>
+<strong>Publication settings (title or web address; empty = the active ones)</strong> — <code>SETTINGS</code>. Title, slug or id (any case) of saved settings. Empty: the ones the window opens with.
+</li><li>
+<strong>Action</strong> — <code>ACTION</code>. 0 = "Publish to the settings' destination" (default), 1 = "Export locally only".
+</li><li>
+<strong>Extent (empty = the settings' extent)</strong> — <code>EXTENT</code>. Empty: the extent layer's current extent, else the saved fixed/last-exported extent.
+</li><li>
+<strong>Local folder (empty = the settings' folder)</strong> — <code>OUTPUT_DIR</code>. Overrides the export folder.
+</li><li>
+<strong>Approve what becomes public (when the review is due)</strong> — <code>APPROVE</code>, default false. Required when the review is due.
+</li><li>
+<strong>Save the approval and settings into the project file</strong> — <code>SAVE_PROJECT</code>, default false. Writes the approval into the project so later runs need no APPROVE.
+</li><li>
+<strong>Outputs</strong> — <code>OUTPUT_FOLDER</code> (local web map folder), <code>ENTRY</code> (local index.html), <code>URL</code> (public address), <code>PUBLISHED</code> (true/false).
+</li><li>
+<strong>Credentials</strong> — Environment variables <code>QWEBMAP_ACCESS_KEY_ID</code>, <code>QWEBMAP_SECRET_ACCESS_KEY</code> (optional <code>QWEBMAP_SESSION_TOKEN</code>); SSH: <code>QWEBMAP_SSH_PASSWORD</code> (optional <code>QWEBMAP_SSH_USER</code>), or a key/ssh-agent. Else the saved QGIS authentication configuration.
+</li></ul>
+<p>``<code> qgis_process plugins enable QWebMap qgis_process run QGIS2VectorTilesFork:publish_web_map --PROJECT_PATH=city.qgz --ACTION=1 --OUTPUT_DIR=/srv/web/city qgis_process run QGIS2VectorTilesFork:publish_web_map --PROJECT_PATH=city.qgz --SETTINGS=&quot;City map&quot; --APPROVE=true --SAVE_PROJECT=true </code>``</p>
+<p>On Windows use <code>qgis_process-qgis.bat</code> (QGIS <code>bin</code> folder or OSGeo4W Shell). <code>--json</code> prints the outputs as JSON; <code>qgis_process help QGIS2VectorTilesFork:publish_web_map</code> lists the parameters. <code>--EXTENT=&quot;xmin,xmax,ymin,ymax [EPSG:xxxx]&quot;</code>.</p>
+<p><strong>Pitfalls</strong></p>
+<ul><li>
+The settings must be saved in the project first (Save settings, then save the project file).
+</li><li>
+Settings that follow the map view have no extent until exported once from the window; pass EXTENT.
+</li><li>
+A saved credentials configuration needs the master password without a prompt: integrate it with the system password manager (Settings → Options → Authentication), or use the environment variables.
+</li><li>
+Without SAVE_PROJECT the approval is not stored, so every run needs APPROVE.
+</li><li>
+APPROVE approves without showing the review; check the Review tab first.
+</li></ul>
+<p><strong>Errors</strong></p>
+<ul><li>
+"No project is open: give the project file (qgis_process: --PROJECT_PATH=map.qgz)." — Add <code>--PROJECT_PATH</code>.
+</li><li>
+"The project has no saved publication settings…" (Q2VT_PUB_PROFILE_INVALID) — Set up and save settings in the window.
+</li><li>
+"No saved publication settings are called '…'. Saved: …" (Q2VT_PUB_PROFILE_INVALID) — Use one of the listed names.
+</li><li>
+"The settings have no extent (they follow the map view, never used yet)…" (Q2VT_PUB_PROFILE_INVALID) — Pass EXTENT or export once from the window.
+</li><li>
+"The saved settings have problems: …" (Q2VT_PUB_PROFILE_INVALID) — Fix them in the window.
+</li><li>
+"This publication needs the review…" (Q2VT_PUB_REVIEW_NEEDED) — Approve on the Review tab, or run with <code>--APPROVE=true</code>.
+</li><li>
+"The project file could not be saved: …" — SAVE_PROJECT failed (read-only file?); the publish itself succeeded.
+</li><li>
+Credential and destination errors are the same as on the Destination tab (Q2VT_PUB_CREDENTIALS, Q2VT_PUB_DESTINATION, …), printed as <code>CODE: message</code>.
+</li></ul>
+<h2 id="keeping-this-guide-up-to-date">Keeping this guide up to date</h2>
+<p>This page is built from <code>docs/USAGE.md</code> in the repository (<code>python3 tools/build_usage.py</code> writes <code>docs/usage.html</code>); a push to <code>main</code> publishes it on GitHub Pages. The test <code>tests/unit/test_usage_docs.py</code> fails when an option of the Publish window has no entry here, or when the HTML is older than the Markdown. So a new option is documented together with the change that adds it.</p>
+</main>
+</div>
+<script>
+// "Find an option": show only the list items, rows and paragraphs that contain the text.
+const find = document.getElementById("find");
+const items = [...document.querySelectorAll("main li, main tr, main p, main .note")].filter((e) => !e.closest("li li"));
+find.addEventListener("input", () => {
+  const q = find.value.trim().toLowerCase();
+  for (const e of items) e.classList.toggle("hidden", Boolean(q) && !e.textContent.toLowerCase().includes(q)
+    && !(e.tagName === "TR" && e.parentElement.tagName === "THEAD"));
+});
+</script>
+</body>
+</html>
