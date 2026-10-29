@@ -274,6 +274,39 @@ def test_raster_only_map_is_exported_reviewed_and_published(plugin, messages, tm
         dialog.close()
 
 
+def test_a_very_large_raster_is_pointed_out_before_export(plugin, messages, tmp_path):
+    """Before an export, a raster layer of very many tiles is pointed out
+    with the setting that sets its size; the export goes on only if asked."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from test_publishing_raster import make_raster  # pylint: disable=import-error
+    from qgis.core import QgsRasterLayer
+    project = reset_project()
+    ortho = QgsRasterLayer(make_raster(tmp_path / "ortho.tif", origin=(2000000, 5940000), size=200, pixel=200),
+                           "Ortofotó")
+    project.addMapLayer(ortho)
+    dialog = _dialog()
+    try:
+        dialog.e_min_zoom.setValue(8)
+        dialog.e_max_zoom.setValue(12)
+        dialog.profile.view.extent = [2000000, 5900000, 2040000, 5940000]
+        item = next(dialog._tree_items())  # pylint: disable=protected-access
+        item.setCheckState(1, CHECKED)
+        asked = []
+        assert dialog._check_large_rasters(ask=asked.append) is True  # pylint: disable=protected-access
+        assert not asked  # zoom 12: few tiles, nothing asked
+        config = dialog.collect().layer(ortho.id())
+        config.raster_live, config.raster_max_zoom, config.raster_match_native = False, 20, False
+        dialog.layer_configs[ortho.id()] = config
+        large = dialog._large_rasters()  # pylint: disable=protected-access
+        assert large and large[0][0] == "Ortofotó"
+        assert '"Sharpest detail"' in large[0][1] and "(zoom 20)" in large[0][1]
+        assert dialog._check_large_rasters(ask=lambda text: False) is False  # pylint: disable=protected-access
+        assert dialog._check_large_rasters(ask=lambda text: "hours" in text) is True  # pylint: disable=protected-access
+    finally:
+        dialog.close()
+
+
 def test_copy_embed_code(project, messages, tmp_path):
     from qgis.PyQt.QtGui import QGuiApplication
     project, parcels = project

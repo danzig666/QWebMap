@@ -260,7 +260,7 @@ Zoomed-out load is an estimate from a sample of up to 2000 features per layer. I
 </li><li>
 Before each export, the plugin checks the zoomed-out load. If some layers are heavy, it asks: <strong>Make it faster…</strong> opens the dialog and then exports, <strong>Export as it is</strong> exports unchanged, and Cancel stops. "Don't check this before exports (the Map tab's Zoomed-out load… button still does)" turns the check off for good (QGIS setting).
 </li><li>
-A raster layer can have at most 400 000 tiles (a fixed limit, against runaway exports). It is checked before rendering, on an upper bound: every tile of the area at every zoom. That is roughly 15 × 15 km at zoom 20 (about 0.2 m detail), 30 × 30 km at zoom 19. "Like the image" on a sharp aerial photo over a large extent can exceed it.
+A raster layer of more than 400 000 tiles takes hours to export and makes a very large web map. There is no limit, but before the export a "Very large raster layer" warning names the layer, the setting that makes it large (its <em>Sharpest detail</em>, or the Map tab's <em>Maximum tile zoom</em> for "Like the map") and what brings it down: each coarser <em>Sharpest detail</em> step is about a quarter of the tiles, or a smaller extent. <strong>Export anyway</strong> goes on, Cancel stops. The count is an upper bound (every tile of the area at every zoom): 400 000 is roughly 15 × 15 km at zoom 20 (about 0.1 m detail), 30 × 30 km at zoom 19. A higher <em>Shown from zoom</em> barely helps: the sharpest zoom holds three quarters of the tiles.
 </li><li>
 If QGIS cannot write WebP, the tiles are written as PNG (larger) and a warning is shown.
 </li></ul>
@@ -281,8 +281,6 @@ If QGIS cannot write WebP, the tiles are written as PNG (larger) and a warning i
 "Select at least one layer to publish (Map tab) …": nothing is ticked in Publish. Publish at least one layer.
 </li><li>
 "Layer … is not a vector or raster layer of this project." / 'Raster layer "…" cannot be read (invalid data source).': a published layer is missing or broken. Fix the layer, or unpublish it.
-</li><li>
-'Raster layer "…": about N tiles at zooms a-b; lower its maximum zoom …': the raster exceeds 400 000 tiles. Choose a coarser "Sharpest detail", a higher "Shown from zoom", or a smaller extent.
 </li><li>
 "Nothing to publish: no published raster layer draws anything in the extent." (Q2VT_PUB_EMPTY_ARCHIVE): the extent does not cover the raster data. Check the extent.
 </li><li>
@@ -437,7 +435,7 @@ Finer <em>Sharpest detail</em> or a lower <em>Shown from zoom</em> makes raster 
 </li><li>
 <code>Q2VT_PUB_IDENTITY</code> "Layer "…": N feature(s) have no key (… is NULL)." / "the key (…) is not unique, e.g. …" — Fix the data or choose another <em>Feature key</em> field.
 </li><li>
-<code>Q2VT_PUB_PROFILE_INVALID</code> "Raster layer "…": about N tiles at zooms a-b; lower its maximum zoom or the extent (limit 400000)." — Choose a coarser <em>Sharpest detail</em>, a higher <em>Shown from zoom</em> or a smaller extent.
+Warning 'Raster layer "…": up to N tiles at zooms a-b; the export can take hours.' — Not an error; the export goes on. Choose a coarser <em>Sharpest detail</em> or a smaller extent to make it faster.
 </li><li>
 <code>Q2VT_PUB_PROFILE_INVALID</code> "…opacity: between 0 and 1" / "rasterQuality: 1-100" — Only happens with an edited settings file. Fix the value.
 </li><li>

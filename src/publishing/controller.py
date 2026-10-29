@@ -342,7 +342,7 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
     if _local_root(os.path.abspath(base_dir or profile.output.local_directory)):
         progress.info(f"Network output folder: the work files are on this computer, in {work_dir}")
     live_rasters, raster_configs = _live_rasters(project, raster_configs, extent_3857, progress)
-    raster_plans = _plan_rasters(project, profile, raster_configs, extent_3857)
+    raster_plans = _plan_rasters(project, profile, raster_configs, extent_3857, progress)
     if staged is not None:
         staged.weigh(_stage_weights(profile, raster_plans, has_vectors))
     keys, _ = qgis_model.feature_keys(vector_profile)
@@ -716,18 +716,18 @@ def _extent_lonlat(extent_3857) -> Optional[List[float]]:
     return [round(box.xMinimum(), 7), round(box.yMinimum(), 7), round(box.xMaximum(), 7), round(box.yMaximum(), 7)]
 
 
-def _plan_rasters(project, profile, configs, extent_3857) -> Dict[str, object]:
-    """Zooms and tile estimates of the raster layers (fails early on runaway sizes)."""
-    from .raster_tiles import MAX_TILES_PER_LAYER, plan_layer  # pylint: disable=import-outside-toplevel
+def _plan_rasters(project, profile, configs, extent_3857, progress=None) -> Dict[str, object]:
+    """Zooms and tile estimates of the raster layers (a very large one is
+    warned about: the export takes hours)."""
+    from .raster_tiles import LARGE_TILES_PER_LAYER, large_raster_warning, plan_layer  # pylint: disable=import-outside-toplevel
     plans = {}
     for config in configs:
         layer = project.mapLayer(config.layer_id)
         plan = plan_layer(project, layer, config, profile, extent_3857)
-        if plan.tiles > MAX_TILES_PER_LAYER:
-            raise PublishingError(
-                "Q2VT_PUB_PROFILE_INVALID",
-                f'Raster layer "{layer.name()}": about {plan.tiles} tiles at zooms {plan.min_zoom}-'
-                f"{plan.max_zoom}; lower its maximum zoom (Interaction tab) or the extent.")
+        if plan.tiles > LARGE_TILES_PER_LAYER:
+            plan.warnings.append(large_raster_warning(plan, layer.name()))
+            if progress is not None:
+                progress.info(plan.warnings[-1])
         plans[config.layer_id] = plan
     return plans
 
