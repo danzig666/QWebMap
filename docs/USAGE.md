@@ -21,7 +21,7 @@ QWebMap publishes a QGIS project as a fast, accurate web map: vector tiles in on
 - **Title** — Map title shown in the viewer. Required. For new settings (never saved), editing it also updates the slug.
 - **Address name (slug)** — The map's address and folder name, e.g. `maps/<slug>`. Use lowercase ASCII letters, digits and `-`, 1–64 characters. If you leave it empty, it is made from the title.
 - **Description** — Short text about the map, shown in the viewer.
-- **Language of the viewer** — Language of the viewer's interface: Magyar (the default) or English.
+- **Language of the viewer** — Language of the viewer's interface: English (the default for new settings) or Magyar. Saved settings keep their language.
 - **Attribution** — Credit or copyright text shown on the web map.
 - **Logo (PNG/JPEG/WebP)** — Local image file shown in the viewer. Click **…** to browse.
 - **Minimum tile zoom** — Lowest zoom (0–22) that gets tiles. Default 0.
