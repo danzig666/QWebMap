@@ -29,7 +29,7 @@ a full web viewer · no map server, database or Docker
 </kbd>
 </a>
 
-<a href="https://danzig666.github.io/QWebMap/"><b>🗺️ Try the live demo map</b></a> &nbsp;·&nbsp; <a href="https://danzig666.github.io/QWebMap/#video"><b>▶ Watch the full video (1080p)</b></a>
+<a href="https://danzig666.github.io/QWebMap/"><b>🗺️ Try the live demo map</b></a> &nbsp;·&nbsp; <a href="https://danzig666.github.io/QWebMap/usage/"><b>📖 User guide</b></a> &nbsp;·&nbsp; <a href="https://danzig666.github.io/QWebMap/#video"><b>▶ Watch the full video (1080p)</b></a>
 
 <sub>Demo data: Swellendam from the <a href="https://github.com/qgis/QGIS-Training-Data">QGIS training data</a> (GPL-2.0, from OpenStreetMap).</sub>
 
@@ -529,7 +529,9 @@ qgis_process-qgis.bat run QGIS2VectorTilesFork:publish_web_map --PROJECT_PATH="C
 
 ## Documentation
 
-Documentation: [`docs/publishing/`](docs/publishing/), covering
+**[User guide](https://danzig666.github.io/QWebMap/usage/)**: a quick start and every option of the Publish window, with pitfalls and errors ([source](docs/USAGE.md)).
+
+Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 [hosting: R2, SSH / SFTP and other servers](docs/publishing/HOSTING.md),
 [security](docs/publishing/SECURITY.md),
 [architecture](docs/publishing/ARCHITECTURE.md),
