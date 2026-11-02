@@ -11,8 +11,10 @@ export async function loadLocale(requested, base) {
     if (!response.ok) throw new Error(`locale ${name}: HTTP ${response.status}`);
     return response.json();
   };
+  // Both at once: the fallback and the map's language.
+  const wanted = pick === "en" ? null : load(pick).catch(() => null);
   fallback = await load("en");
-  strings = pick === "en" ? fallback : await load(pick).catch(() => fallback);
+  strings = (wanted && await wanted) || fallback;
   locale = pick;
   document.documentElement.lang = pick;
   return pick;

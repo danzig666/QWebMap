@@ -26,6 +26,7 @@ import hashlib
 import html
 import json
 import os
+import posixpath
 import re
 import shutil
 import time
@@ -257,8 +258,33 @@ GOOGLE_CSP = {
 }
 
 
+_STATIC_IMPORT = re.compile(r"""^\s*(?:import|export)\b[^;'"]*?\bfrom\s*["'](\./[^"']+\.mjs)["']|^\s*import\s*["'](\./[^"']+\.mjs)["']""",
+                            re.MULTILINE)
+
+
+def module_preloads(assets_dir: str, entry: str = "app.mjs") -> List[str]:
+    """The modules ``entry`` imports, at any depth (static imports only):
+    named in the page as modulepreload, the browser fetches them at once
+    instead of one import level after the other (an idea of
+    QGIS2VectorTiles 4.3, GallPeters/QGIS2VectorTiles)."""
+    seen, todo = [], [entry]
+    while todo:
+        name = todo.pop(0)
+        path = os.path.join(assets_dir, *name.split("/"))
+        if name in seen or not os.path.isfile(path):
+            continue
+        seen.append(name)
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            code = handle.read()
+        base = posixpath.dirname(name)
+        for match in _STATIC_IMPORT.finditer(code):
+            todo.append(posixpath.normpath(posixpath.join(base, match.group(1) or match.group(2))))
+    return seen
+
+
 def _render_index(template_path: str, title: str, connect: Iterable[str] = (),
-                  web_tiles: Iterable[str] = (), street_view: bool = False) -> str:
+                  web_tiles: Iterable[str] = (), street_view: bool = False,
+                  preloads: Iterable[str] = ()) -> str:
     """The release page. ``web_tiles``: origins of web basemaps (XYZ tiles):
     the page may load from them, and sends its origin as referrer (tile
     services such as OpenStreetMap's require one); otherwise nothing leaves
@@ -272,7 +298,10 @@ def _render_index(template_path: str, title: str, connect: Iterable[str] = (),
     origins = "".join(f" {o}" for o in [*connect, *web_tiles] if valid.match(o))
     text = text.replace("__Q2VT_TITLE__", html.escape(title, quote=True)) \
                .replace("__Q2VT_CONNECT__", origins) \
-               .replace("__Q2VT_IMG__", "".join(f" {o}" for o in web_tiles))
+               .replace("__Q2VT_IMG__", "".join(f" {o}" for o in web_tiles)) \
+               .replace("__Q2VT_PRELOAD__", "".join(
+                   f'<link rel="modulepreload" href="assets/{html.escape(name, quote=True)}">\n'
+                   for name in preloads))
     if street_view:
         def widen(match):
             directive, sources = match.group(1), match.group(2)
@@ -565,7 +594,8 @@ def _assemble(bundle, profile, staging, release_id, transport, progress, extra_f
     write_text_atomic(os.path.join(staging, "index.html"),
                       _render_index(os.path.join(WEB_VIEWER, "index.html"), profile.title,
                                     connect_origins, web_tiles,
-                                    profile.interaction.street_view and bool(profile.interaction.google_api_key)))
+                                    profile.interaction.street_view and bool(profile.interaction.google_api_key),
+                                    module_preloads(os.path.join(staging, "assets"))))
     # 5. Logo, legend and other UI assets.
     manifest_logo = None
     if profile.logo_path and os.path.isfile(profile.logo_path):

@@ -110,3 +110,70 @@ def test_groups_that_need_the_main_process(plugin, expression, missing, main):
         geometry_target=2, geometry_expression="@geometry", expression_fields=[], description="",
         include_required_fields_only=0, recipe=None, source_geometry=2, part_fields=[], flat_rules=[])
     assert needs_main_process(group, missing) is main
+
+
+def test_worker_messages_unpickle_only_what_the_protocol_sends():
+    """The pipe between the export and its workers rebuilds plain values,
+    the snapshot classes and Qt / QGIS values; any other class is refused."""
+    import io
+    import pickle
+    from qgis.PyQt.QtCore import QPointF
+    from qgis.PyQt.QtGui import QColor
+    from q2vt_plugin.src.core import export_workers  # pylint: disable=import-error
+    from q2vt_plugin.src.core.fidelity.materialize import Recipe  # pylint: disable=import-error
+
+    def round_trip(message):
+        stream = io.BytesIO()
+        export_workers.send(stream, message)
+        stream.seek(0)
+        return export_workers.receive(stream)
+
+    back = round_trip(("x", {1, 2}, QColor(1, 2, 3), QPointF(1, 2), Recipe.__name__))
+    assert back[1] == {1, 2} and back[2] == QColor(1, 2, 3) and back[3] == QPointF(1, 2)
+
+    class Evil:
+        def __reduce__(self):
+            return (os.system, ("true",))
+
+    for bad in (Evil(), pytest):
+        stream = io.BytesIO()
+        data = pickle.dumps(bad if bad is not pytest else os.path.join, protocol=4)
+        stream.write(export_workers._HEADER.pack(len(data)) + data)  # pylint: disable=protected-access
+        stream.seek(0)
+        with pytest.raises(pickle.UnpicklingError, match="not allowed"):
+            export_workers.receive(stream)
+
+
+def test_tile_runs_keep_their_work_database_in_memory_when_it_fits(monkeypatch, tmp_path):
+    """ogr2ogr's temporary database goes to /vsimem while 8x the run's input
+    fits in half the memory left; otherwise (and on a retry) on disk."""
+    import subprocess
+    from q2vt_plugin.src.core import tiles_generator  # pylint: disable=import-error
+    source = tmp_path / "data.gpkg"
+    source.write_bytes(b"x" * 1000)
+    vrt = tmp_path / "run.vrt"
+    vrt.write_text(f'<OGRVRTDataSource><OGRVRTLayer name="a"><SrcDataSource>{source}|layername=a'
+                   "</SrcDataSource></OGRVRTLayer></OGRVRTDataSource>", encoding="utf-8")
+    assert tiles_generator.vrt_input_bytes(str(vrt)) == 1000
+    seen = []
+
+    class Done:
+        def __init__(self, cmd, **_kw):
+            seen.append(cmd)
+            import io
+            self.stdout, self.stderr, self.returncode = io.StringIO(""), io.StringIO(""), 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", Done)
+    generator = tiles_generator.GDALTilesGenerator.__new__(tiles_generator.GDALTilesGenerator)
+    generator.feedback, generator.layer_seconds, generator.layer_pieces = None, {}, {}
+    monkeypatch.setattr(generator, "_cpu_num", lambda: 1, raising=False)
+    monkeypatch.setattr(generator, "_report", lambda *_: None, raising=False)
+    command = ["ogr2ogr", "-f", "MBTiles", str(tmp_path / "o.mbtiles"), str(vrt)]
+    for free, in_memory in ((10 ** 9, True), (10_000, False), (None, False)):
+        seen.clear()
+        monkeypatch.setattr(tiles_generator, "available_memory", lambda f=free: f)
+        generator._run_parallel([list(command)])  # pylint: disable=protected-access
+        assert any("TEMPORARY_DB=/vsimem/" in a for a in seen[0]) is in_memory, (free, seen)

@@ -109,7 +109,7 @@ def _local_root(base: str) -> Optional[str]:
     system temp folder, one per output folder); None for a local one."""
     if not is_network_folder(base):
         return None
-    digest = hashlib.sha1(os.path.normcase(base).encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(os.path.normcase(base).encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return os.path.join(tempfile.gettempdir(), "q2vt-work", digest)
 
 

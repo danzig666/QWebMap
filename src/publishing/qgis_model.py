@@ -399,7 +399,7 @@ def _raster_entry(layer, config, lid: str, path, paths, components: List[dict]) 
 
 def theme_id(name: str) -> str:
     import hashlib  # pylint: disable=import-outside-toplevel
-    return "th-" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
+    return "th-" + hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
 
 
 def theme_presets(project: QgsProject, profile: PublicationProfile, model: dict,

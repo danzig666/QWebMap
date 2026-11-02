@@ -13,13 +13,17 @@ worker cannot (a group whose expressions need the project's layers, a
 function only the main QGIS knows, or whatever a worker failed at).
 
 Protocol: pickled messages, each preceded by its length (8 bytes), on the
-worker's stdin / stdout; the worker's own output goes to a log file.
+worker's stdin / stdout; the worker's own output goes to a log file. Both
+ends are processes of this export; still, a message only unpickles plain
+Python values, the three snapshot classes below and Qt / QGIS values
+(_Unpickler): nothing else can be constructed or called.
 """
 
 import dataclasses
 import json
 import os
-import pickle
+import io
+import pickle  # nosec B403 - only between this export's own processes, allow-listed (_Unpickler)
 import queue
 import re
 import shutil
@@ -42,6 +46,37 @@ _READY_TIMEOUT_S = 60
 
 _HEADER = struct.Struct("<Q")
 
+# What a message may hold besides plain values: (module within this
+# plugin's src package, class), and Qt / QGIS values (sip rebuilds them).
+_PLUGIN_CLASSES = {("core.rules_exporter", "_RuleGroupSnapshot"), ("core.rules_exporter", "_SourceSnapshot"),
+                   ("core.fidelity.materialize", "Recipe")}
+_SAFE_BUILTINS = {"set", "frozenset", "complex", "bytearray", "range", "slice"}
+_QT_MODULES = ("qgis.", "PyQt5.", "PyQt6.")
+_SRC_PACKAGE = __name__.rsplit(".", 2)[0] if __name__.count(".") >= 2 else ""
+
+
+def _qt_only(unpickle_type):
+    """sip's rebuilder of a Qt / QGIS value, for Qt / QGIS classes only."""
+    def rebuild(module, name, *args):
+        if not str(module).startswith(_QT_MODULES):
+            raise pickle.UnpicklingError(f"worker message: {module}.{name} not allowed")
+        return unpickle_type(module, name, *args)
+    return rebuild
+
+
+class _Unpickler(pickle.Unpickler):
+    """Unpickles only what the protocol sends (see the module docstring)."""
+
+    def find_class(self, module, name):
+        if module == "builtins" and name in _SAFE_BUILTINS:
+            return super().find_class(module, name)
+        if module.endswith("sip") and name in ("_unpickle_type", "_unpickle_enum"):
+            return _qt_only(super().find_class(module, name))
+        prefix = _SRC_PACKAGE + "." if _SRC_PACKAGE else ""
+        if module.startswith(prefix) and (module[len(prefix):], name) in _PLUGIN_CLASSES:
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(f"worker message: {module}.{name} not allowed")
+
 
 def send(stream, message) -> None:
     data = pickle.dumps(message, protocol=4)
@@ -61,7 +96,7 @@ def receive(stream):
         if not chunk:
             raise EOFError("worker stream closed")
         data += chunk
-    return pickle.loads(data)
+    return _Unpickler(io.BytesIO(data)).load()
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,8 @@ def main() -> None:
         QgsApplication.setPrefixPath(os.environ["Q2VT_WORKER_PREFIX"], True)
     app = QgsApplication([], False)
     app.initQgis()
+    import faulthandler  # pylint: disable=import-outside-toplevel
+    faulthandler.enable(sys.stderr)  # a native crash leaves its stack in the worker's log
     from processing.core.Processing import Processing  # pylint: disable=import-outside-toplevel
     Processing.initialize()
     # The plugin package under the main process's name, without running the

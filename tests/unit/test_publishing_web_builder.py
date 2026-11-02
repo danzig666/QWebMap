@@ -227,3 +227,20 @@ def test_a_map_without_vector_layers_has_no_vector_source(tmp_path, profile, tra
         style = json.load(handle)
     assert list(style["sources"]) == [f"q2vt_raster_{lid}"] and style["sources"][f"q2vt_raster_{lid}"]["type"] == "raster"
     assert [layer["id"] for layer in style["layers"]] == [f"q2vt-raster-{lid}"]
+
+
+def test_the_page_preloads_every_module_the_viewer_imports(tmp_path):
+    """Static imports at any depth become modulepreload links; dynamic
+    imports (loaded on demand) do not."""
+    from publishing.web_builder import WEB_VIEWER, _render_index, module_preloads
+    (tmp_path / "app.mjs").write_text('import { a } from "./a.mjs";\nimport "./side.mjs";\n'
+                                      'const later = () => import("./lazy.mjs");\n', encoding="utf-8")
+    (tmp_path / "a.mjs").write_text('export { b } from "./sub/b.mjs";\nexport const a = 1;\n', encoding="utf-8")
+    (tmp_path / "side.mjs").write_text("", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.mjs").write_text('import { a } from "../a.mjs";\nexport const b = 2;\n', encoding="utf-8")
+    (tmp_path / "lazy.mjs").write_text("", encoding="utf-8")
+    assert module_preloads(str(tmp_path)) == ["app.mjs", "a.mjs", "side.mjs", "sub/b.mjs"]
+    page = _render_index(os.path.join(WEB_VIEWER, "index.html"), "T", preloads=["app.mjs", "a.mjs"])
+    assert '<link rel="modulepreload" href="assets/a.mjs">' in page and "__Q2VT_" not in page
+    assert '<link rel="preload" href="manifest.json" as="fetch" crossorigin="anonymous">' in page
