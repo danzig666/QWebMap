@@ -899,7 +899,10 @@ class RulesExporter:
                          g.output_dataset.endswith(self.VISIBLE_POLYGONS_SUFFIX)]:
             label_name = polygons.output_dataset[:-len(self.VISIBLE_POLYGONS_SUFFIX)]
             label = next((g for g in out if g.output_dataset == label_name), None)
-            hosts = self._hosts_of(out, polygons)
+            # "Split label text lines over parts": the copy gives each part
+            # its own line of the text (_label_lines_over_parts), a fill can't.
+            hosts = [] if polygons.split_label_lines or polygons.split_generated \
+                else self._hosts_of(out, polygons)
             if label is None or not hosts:
                 continue
             for host in hosts:
