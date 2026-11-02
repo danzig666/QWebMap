@@ -23,7 +23,10 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 
 def main(work, ffmpeg=None):
     publication = os.path.join(work, "out", "swellendam")
-    if not os.path.isfile(os.path.join(publication, "current.json")):
+    # A flat local export (index.html + manifest.json), or one that keeps
+    # its versions (releases/ + current.json).
+    if not any(os.path.isfile(os.path.join(publication, name))
+               for name in ("current.json", "manifest.json")):
         sys.exit(f"No published map in {publication}: run export_showcase.py first.")
     site = os.path.join(work, "site")
     shutil.rmtree(site, ignore_errors=True)
