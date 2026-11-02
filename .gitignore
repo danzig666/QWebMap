@@ -3,3 +3,6 @@ __pycache__
 node_modules/
 node_modules
 tests/browser/artifacts/
+
+# QGIS default style database a QGIS run may create in its working directory
+symbology-style.db
