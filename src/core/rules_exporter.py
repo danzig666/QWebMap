@@ -1876,6 +1876,42 @@ class RulesExporter:
 
         return expr_str
 
+    def _filter_match(self, source, expression: str) -> str:
+        """Whether a rule's filter keeps "all", "none" or "some" features of
+        a base layer, counted once per (layer, filter) without geometries:
+        a filter keeping every feature (labels of all drawn categories)
+        needs no filtered copy, and the groups of one filter share the
+        count. Evaluated as the extract step evaluates it (try(): an error
+        does not match). "some": not a base layer file, or unknown."""
+        if not isinstance(source, str) or source.startswith(_MEM_PREFIX) or not exists(source):
+            return "some"
+        key = (source, expression)
+        cache = self.__dict__.setdefault("_filter_matches", {})
+        lock = self.__dict__.setdefault("_filter_lock", threading.Lock())
+        with lock:
+            if key in cache:
+                return cache[key]
+        result = "some"
+        try:
+            layer = self._open(source, "filter_count")
+            if layer.isValid():
+                context = self._worker_expression_context()
+                context.appendScope(QgsExpressionContextUtils.layerScope(layer))
+                wrapped = f"try({expression}\n)"
+                parsed = QgsExpression(wrapped)
+                request = QgsFeatureRequest().setFilterExpression(wrapped).setExpressionContext(context)
+                request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+                if not parsed.needsGeometry() and not _uses_aggregates(expression):
+                    request.setSubsetOfAttributes(sorted(parsed.referencedColumns() - {""}),
+                                                  layer.fields())
+                    total, kept = layer.featureCount(), sum(1 for _ in layer.getFeatures(request))
+                    result = "all" if kept == total and total >= 0 else "none" if kept == 0 else "some"
+        except Exception:  # noqa: BLE001 - counted by the extract step instead
+            result = "some"
+        with lock:
+            cache[key] = result
+        return result
+
     def _export_one_rule_group(
         self, grp: _RuleGroupSnapshot, source_path: str
     ) -> Optional[str]:
@@ -1903,16 +1939,20 @@ class RulesExporter:
             if not self.validate_expression(grp, grp.filter_expression):
                 return None
 
-            filt = self._run_alg_safe(
-                "extractbyexpression", "native",
-                INPUT=current_input,
-                EXPRESSION=grp.filter_expression,
-                OUTPUT=filt_out,
-            )
-            check = self._open(filt, "check")
-            if not check.isValid() or check.featureCount() <= 0:
+            matched = self._filter_match(current_input, grp.filter_expression)
+            if matched == "none":
                 return None
-            current_input = filt
+            if matched != "all":  # a filter keeping every feature: the input as it is
+                filt = self._run_alg_safe(
+                    "extractbyexpression", "native",
+                    INPUT=current_input,
+                    EXPRESSION=grp.filter_expression,
+                    OUTPUT=filt_out,
+                )
+                check = self._open(filt, "check")
+                if not check.isValid() or check.featureCount() <= 0:
+                    return None
+                current_input = filt
 
         # Merged features / inverted polygons: the symbol's features drawn
         # together, before any recipe (a gradient fills the merged shape)
@@ -4778,6 +4818,7 @@ class RulesExporter:
         vertex. ``cut`` False: those that reach into it are kept whole (an
         outline drawn on the polygons would stroke the cut)."""
         extent_wkt = self.extent.asWktPolygon()
+        box = self.extent  # a rectangle: inside it = its bounding box inside (within())
         if not cut:
             return (
                 f"with_variable('q2vt_t', {enclosed(expression)}, "
@@ -4786,7 +4827,9 @@ class RulesExporter:
         return (
             f"with_variable('q2vt_t', {enclosed(expression)}, "
             f"with_variable('q2vt_ext', geom_from_wkt('{extent_wkt}'), "
-            f"with_variable('clip', if(within(@q2vt_t, @q2vt_ext), @q2vt_t, "
+            f"with_variable('clip', if(x_min(@q2vt_t) >= {box.xMinimum()!r} AND "
+            f"x_max(@q2vt_t) <= {box.xMaximum()!r} AND y_min(@q2vt_t) >= {box.yMinimum()!r} AND "
+            f"y_max(@q2vt_t) <= {box.yMaximum()!r}, @q2vt_t, "
             f"intersection(@q2vt_t, @q2vt_ext)), "
             f"if(not is_empty_or_null(@clip), @clip, NULL))))"
         )
@@ -5258,9 +5301,13 @@ class RulesExporter:
         point on its surface (pal PointSet::getCentroid); off, the centroid
         wherever it is."""
         if clip or self.cent_source == 1:
+            # Cut only where it reaches out of the extent (its bounding box
+            # inside the rectangle: the polygon is within it).
+            box = self.extent
             polygons = (
-                f"intersection(@geometry, "
-                f"geom_from_wkt('{self.extent.asWktPolygon()}'))"
+                f"if(x_min(@geometry) >= {box.xMinimum()!r} AND x_max(@geometry) <= {box.xMaximum()!r} "
+                f"AND y_min(@geometry) >= {box.yMinimum()!r} AND y_max(@geometry) <= {box.yMaximum()!r}, "
+                f"@geometry, intersection(@geometry, geom_from_wkt('{self.extent.asWktPolygon()}')))"
             )
         else:
             polygons = "@geometry"
