@@ -294,8 +294,11 @@ roads.setLabelsEnabled(True)
 
 # --- Buildings: a geometry-generator shadow under a two-tone fill --------------------
 build = layer(f"{OUT}/training_data.gpkg|layername=buildings", "Buildings")
-shadow = QgsGeometryGeneratorSymbolLayer.create({"geometryModifier": "translate($geometry, 1.6, -1.6)",
-                                                 "SymbolType": "Fill"})
+# The layer is in degrees (EPSG:4326): the shadow is moved 1.6 map metres
+# (EPSG:3857) down-right, then back into the layer's CRS.
+SHADOW = ("transform(translate(transform($geometry, 'EPSG:4326', 'EPSG:3857'), 1.6, -1.6), "
+          "'EPSG:3857', 'EPSG:4326')")
+shadow = QgsGeometryGeneratorSymbolLayer.create({"geometryModifier": SHADOW, "SymbolType": "Fill"})
 shadow.setSubSymbol(fill_symbol(solid("#c9bba6")))
 house = fill_symbol(shadow, solid("#dcc5a6", "#a88c69", 0.2))
 special = fill_symbol(shadow.clone(), solid("#e7b9a0", "#9c5a3c", 0.25))
