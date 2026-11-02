@@ -1390,33 +1390,42 @@ class SymbolMaterializer:
         trimmed line itself: MapLibre draws the whole line. Map units and
         "meters at scale" once, a percentage of each line's length once,
         screen units per quarter of a zoom (at the last zoom's value
-        beyond). Not with an offset, dashes aligned to the line or a
-        data-defined trim (drawn untrimmed, reported)."""
+        beyond). A data-defined trim: each feature's value (NULL: the static
+        one), in the trim's unit (an idea of QGIS2VectorTiles 4.2,
+        GallPeters/QGIS2VectorTiles). Not with an offset or dashes aligned
+        to the line (drawn untrimmed, reported)."""
         P = QgsSymbolLayer.Property
         props = layer.dataDefinedProperties()
-        if props.isActive(P.PropertyTrimStart) or props.isActive(P.PropertyTrimEnd) or \
-                abs(layer.offset()) > 1e-9 or layer.alignDashPattern() or \
+        if abs(layer.offset()) > 1e-9 or layer.alignDashPattern() or \
                 layer.tweakDashPatternOnCorners():
             self._report("Q2VT_DDP_NO_EMITTER",
-                         "SimpleLine: a trimmed line with a data-defined trim, an offset or "
-                         "dashes aligned to the line is drawn untrimmed.", flat_rule)
+                         "SimpleLine: a trimmed line with an offset or dashes aligned to the line "
+                         "is drawn untrimmed.", flat_rule)
             return None
+        expressions = {}
+        for name, key in (("start", P.PropertyTrimStart), ("end", P.PropertyTrimEnd)):
+            if props.isActive(key):
+                expressions[name] = props.property(key).asExpression()
         crs = self.project_crs or flat_rule.layer.crs().authid()
         polygon = flat_rule.get_attr("g") == 2
-        ends = []  # (name, map units | None, per cent | None, mm | None)
+        ends = []  # (name, map units | None, per cent | None, mm | None, (expression, per unit) | None)
         for name, value, unit in (("start", layer.trimDistanceStart(), layer.trimDistanceStartUnit()),
                                   ("end", layer.trimDistanceEnd(), layer.trimDistanceEndUnit())):
             value = float(value)
-            if value <= 0:
+            expression = expressions.get(name)
+            if value <= 0 and not expression:
                 continue
             if _enum_value(unit) == _enum_value(Qgis.RenderUnit.Percentage):
-                ends.append((name, None, value, None))
+                ends.append((name, None, value, None, (expression, 1.0) if expression else None))
                 continue
-            in_map = self._scaled_map_distance(value, unit)
-            mm = None if in_map is not None else _to_mm(value, unit)
-            if in_map is None and mm is None:
+            # Per unit of the trim: a data-defined value is multiplied by it.
+            factor = self._scaled_map_distance(1.0, unit)
+            mm = None if factor is not None else _to_mm(1.0, unit)
+            if factor is None and mm is None:
                 return None
-            ends.append((name, in_map, None, mm))
+            ends.append((name, None if factor is None else value * factor, None,
+                         None if mm is None else value * mm,
+                         (expression, factor if factor is not None else mm) if expression else None))
         if not ends:
             return None
 
@@ -1425,16 +1434,21 @@ class SymbolMaterializer:
             clone = derived.rule.symbol().symbolLayer(0)
             clone.setTrimDistanceStart(0.0)
             clone.setTrimDistanceEnd(0.0)
+            for key in (P.PropertyTrimStart, P.PropertyTrimEnd):  # trimmed in the geometry
+                clone.setDataDefinedProperty(key, QgsProperty())
             params = [("crs", crs)] + ([("polygon", True)] if polygon else [])
-            for name, in_map, pct, mm in ends:
+            for name, in_map, pct, mm, dd in ends:
                 if pct is not None:
                     params.append((f"{name}_pct", pct))
                 else:
                     params.append((name, in_map if in_map is not None else mm * per_mm))
+                if dd:  # the feature's value in the trim's unit, to map units here
+                    per = 1.0 if pct is not None or in_map is not None else per_mm
+                    params.append((f"{name}_expr", (dd[0], dd[1] * per)))
             derived.recipe = mat.Recipe("line_trim", params=tuple(params))
             derived.set_attr("m", 3)
             return derived
-        if all(mm is None for _, _, _, mm in ends):
+        if all(mm is None for _, _, _, mm, _ in ends):
             return [trimmed(flat_rule)]
         rules = []
         for rule in self._per_zoom(flat_rule):

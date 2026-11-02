@@ -109,6 +109,9 @@ class FlattenedRule:
     # image is the buffer around the whole symbol, under its layers
     # (RulesFlattener._split_by_symbol_layers).
     buffer_only: bool = False
+    # A point displacement renderer's own labels (RulesFlattener.
+    # _displacement_label): field, font, size (pt), colour; None: none.
+    displacement_label: Optional[dict] = None
 
     def derive(self, rule=None) -> "FlattenedRule":
         """Copy of this flat rule (optionally with another rule object)."""
@@ -120,6 +123,7 @@ class FlattenedRule:
             self.z_order, self.feature_filter, self.scale_zoom, self.unbound_filter,
             self.label_filter, self.shift, self.visible_repeat, self.diagram,
             self.band_dashes, self.fill_outline, self.shares_dataset, self.buffer_only,
+            self.displacement_label,
         )
 
     def evaluation_zoom(self) -> float:

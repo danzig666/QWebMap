@@ -2113,6 +2113,7 @@ class QgisMapLibreStyleExporter:
         inner_effects: Optional[Dict[str, dict]] = None,
         z_orders: Optional[Dict[str, str]] = None,
         buffer_only: Optional[set] = None,
+        displacement_labels: Optional[Dict[str, dict]] = None,
         feature_filters: Optional[Dict[str, list]] = None,
         label_windows: Optional[set] = None,
         layer_opacities: Optional[Dict[str, float]] = None,
@@ -2168,6 +2169,8 @@ class QgisMapLibreStyleExporter:
         self.z_orders = z_orders or {}
         # Style names of rules drawing only a marker symbol's buffer.
         self.buffer_only = buffer_only or set()
+        # Point displacement labels: {style name: label settings}.
+        self.displacement_labels = displacement_labels or {}
         # Style name -> filter of its feature-order stratum (fidelity.feature_order).
         self.feature_filters = feature_filters or {}
         # Style names of repeated curved line labels laid out at export time:
@@ -2729,8 +2732,13 @@ class QgisMapLibreStyleExporter:
                 self.context.report("Q2VT_DDP_NO_EMITTER",
                                     f"Symbol-level data-defined '{name}' is not exported.")
 
+        label = getattr(self, "displacement_labels", {}).get(self._style_base(style_name))
+        if label is not None:
+            self._displacement_label_layer(label, style_name, source_layer_name, source_name,
+                                           min_zoom, max_zoom)
+            return
         if symbol_type == QgsSymbol.SymbolType.Marker:
-            if self._style_base(style_name) in self.buffer_only:
+            if self._style_base(style_name) in getattr(self, "buffer_only", ()):
                 # Only the buffer of the whole symbol: one image (no circles, no text).
                 self._convert_marker_symbol(symbol_layer, symbol, style_name, source_layer_name,
                                             source_name, min_zoom, max_zoom)
@@ -3191,6 +3199,51 @@ class QgisMapLibreStyleExporter:
                         strategy=Strategy.SPRITE.value)
                     return False
         return True
+
+    # Where the text of a displaced point's label sits on its point (the
+    # anchor field: QgsPointDistanceRenderer::drawLabels writes it on its
+    # baseline, so "bottom" sits the box's bottom a descent lower).
+    _DISPLACEMENT_DESCENT_EM = 0.22
+
+    def _displacement_label_layer(self, label: dict, style_name, source_layer_name, source_name,
+                                  min_zoom, max_zoom):
+        """A point displacement renderer's labels: the label attribute as
+        text at the points RulesExporter wrote (role "label") in the
+        renderer's label font and colour, never hidden (QGIS draws them with
+        the symbols). An idea of QGIS2VectorTiles 4.1 (GallPeters/QGIS2VectorTiles)."""
+        from .fidelity.materialize import LABEL_ANCHOR_FIELD  # pylint: disable=import-outside-toplevel
+        layer_def = self._base_layer_def("symbol", style_name, source_layer_name, source_name,
+                                         min_zoom, max_zoom)
+        qfont = QFont(label["family"])
+        if label.get("style"):
+            qfont.setStyleName(label["style"])
+        qfont.setBold(bool(label.get("bold")))
+        qfont.setItalic(bool(label.get("italic")))
+        text_format = QgsTextFormat()
+        text_format.setFont(qfont)
+        stack = TextPropertyExtractor.get_text_font(text_format)
+        dataset = join(self.utils_dir, f"{source_layer_name}.gpkg")
+        self.glyphs.setdefault(stack, []).append((dataset, label["field"]))
+        descent = self._DISPLACEMENT_DESCENT_EM
+        anchor = ["coalesce", ["get", LABEL_ANCHOR_FIELD], "bottom-left"]
+        layer_def["layout"].update({
+            "text-field": ["to-string", ["coalesce", ["get", label["field"]], ""]],
+            "text-font": [stack],
+            "text-size": PropertyExtractor.length(label["size_pt"], Qgis.RenderUnit.Points),
+            "text-anchor": anchor,
+            "text-offset": ["match", anchor, ["bottom-left", "bottom-right"], ["literal", [0, descent]],
+                            ["literal", [0, 0]]],
+            "text-max-width": 999,
+            "text-padding": 0,
+            "text-allow-overlap": True,
+            "text-ignore-placement": True,
+            "symbol-placement": "point",
+            "symbol-z-order": IconPropertyExtractor.MARKER_Z_ORDER,
+            "visibility": "visible",
+        })
+        red, green, blue, alpha = label["color"]
+        layer_def["paint"].update({"text-color": f"rgba({red}, {green}, {blue}, {round(alpha, 3)})"})
+        self.style["layers"].append(layer_def)
 
     def _convert_font_marker(self, symbol_layer, symbol, style_name, source_layer_name,
                              source_name, min_zoom, max_zoom):
@@ -4612,7 +4665,7 @@ class QgisMapLibreStyleExporter:
         animation = self._animation(sprite_symbol)
         self.marker_symbols[marker_name] = SpriteRequest(
             sprite_symbol.clone(), bake_rotation=False, map_units_per_pixel=map_units_per_pixel,
-            oversampling=oversampling, buffer_only=self._style_base(style_name) in self.buffer_only)
+            oversampling=oversampling, buffer_only=self._style_base(style_name) in getattr(self, "buffer_only", ()))
         icon_image = self._marker_variants(sprite_symbol, marker_name, source_layer_name,
                                            map_units_per_pixel, oversampling, independent)
         if animation is not None and icon_image != marker_name:

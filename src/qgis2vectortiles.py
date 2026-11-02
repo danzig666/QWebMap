@@ -846,6 +846,8 @@ class QGIS2VectorTiles:
             z_orders={rule.rule.description(): rule.z_order
                       for rule in rules or [] if getattr(rule, "z_order", None)},
             buffer_only={rule.rule.description() for rule in rules or [] if getattr(rule, "buffer_only", False)},
+            displacement_labels={rule.rule.description(): rule.displacement_label for rule in rules or []
+                                 if getattr(rule, "displacement_label", None)},
             feature_filters={rule.rule.description(): rule.feature_filter
                              for rule in rules or [] if getattr(rule, "feature_filter", None)},
             label_modes={rule.rule.description(): rule.label_modes for rule in rules or []

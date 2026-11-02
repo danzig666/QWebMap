@@ -743,6 +743,12 @@ class RulesExporter:
                 expr_fields = list(expr_fields) + [
                     (6, primary.recipe.param("x"), CALLOUT_X_FIELD),
                     (6, primary.recipe.param("y"), CALLOUT_Y_FIELD)]
+            if getattr(primary, "displacement_label", None):
+                # A displaced point's label: its text and anchor (_point_groups).
+                expr_fields = list(expr_fields) + [
+                    (10, QgsExpression.quotedColumnRef(primary.displacement_label["field"]),
+                     primary.displacement_label["field"]),
+                    (10, QgsExpression.quotedColumnRef(mat.LABEL_ANCHOR_FIELD), mat.LABEL_ANCHOR_FIELD)]
             label_text = None
             if primary.get_attr("t") == 1:
                 expr_fields = self._add_label_expression_field(
@@ -2632,6 +2638,8 @@ class RulesExporter:
         if role in ("cluster", "center"):
             fields.append(QgsField(mat.CLUSTER_SIZE_FIELD, QVariant.Int))
             fields.append(QgsField(mat.CLUSTER_COLOR_FIELD, QVariant.String))
+        if role == "label":
+            fields.append(QgsField(mat.LABEL_ANCHOR_FIELD, QVariant.String))
         kind = QgsWkbTypes.LineString if role in ("circle", "grid") else QgsWkbTypes.Point
         out = self._temp_path("groups")[:-len(_TEMP_RULE_FORMAT)] + "fgb"
         with self._temp_files_lock:
@@ -2645,13 +2653,16 @@ class RulesExporter:
         def back(x, y):
             return from_crs.transform(QgsPointXY(x, y))
 
-        def write(source_feature, geometry, size=None):
+        def write(source_feature, geometry, size=None, anchor=None):
             feature = QgsFeature(fields)
             for field in fields:
-                if field.name() not in (mat.CLUSTER_SIZE_FIELD, mat.CLUSTER_COLOR_FIELD):
+                if field.name() not in (mat.CLUSTER_SIZE_FIELD, mat.CLUSTER_COLOR_FIELD,
+                                        mat.LABEL_ANCHOR_FIELD):
                     feature[field.name()] = source_feature[field.name()]
             if size is not None:
                 feature[mat.CLUSTER_SIZE_FIELD] = size
+            if anchor is not None:
+                feature[mat.LABEL_ANCHOR_FIELD] = anchor
             feature.setGeometry(geometry)
             writer.addFeature(feature)
 
@@ -2666,6 +2677,18 @@ class RulesExporter:
                 stable = self._point_group_cache[key]
         for members in groups:
             self._check_cancel()
+            if role == "label":  # where QGIS writes each member's label
+                center = pg.centroid(points, members) if len(members) > 1 else points[members[0]]
+                positions, radius, _size = pg.displaced(
+                    center, len(members), placement, params.get("symbol_diagonal", 0.0),
+                    params.get("center_diagonal", 0.0), params.get("addition", 0.0)) \
+                    if len(members) > 1 else ([points[members[0]]], None, None)
+                spots = pg.label_spots(center, positions, placement, params.get("symbol_diagonal", 0.0),
+                                       params.get("label_factor", 0.5), radius)
+                for index, ((x, y), anchor) in zip(members, spots):
+                    write(features[index], QgsGeometry.fromPointXY(back(x, y)), anchor=anchor)
+                    written += 1
+                continue
             if len(members) < 2:
                 if role == "members" and (members[0] in stable) == only_stable:
                     write(features[members[0]], features[members[0]].geometry())
@@ -4704,10 +4727,12 @@ class RulesExporter:
         """``expression`` moved by (dx, dy) project map units (a fill's map
         unit offset), measured in the project CRS."""
         export_crs = f"EPSG:{_EPSG_CRS}"
+        # Numbers, or expressions of each feature's (a data-defined offset).
+        dx, dy = (repr(v) if isinstance(v, (int, float)) else enclosed(v) for v in (dx, dy))
         if self._map_crs == export_crs:
-            return f"translate({enclosed(expression)}, {dx!r}, {dy!r})"
+            return f"translate({enclosed(expression)}, {dx}, {dy})"
         return (f"transform(translate(transform({enclosed(expression)}, '{export_crs}', "
-                f"'{self._map_crs}'), {dx!r}, {dy!r}), '{self._map_crs}', '{export_crs}')")
+                f"'{self._map_crs}'), {dx}, {dy}), '{self._map_crs}', '{export_crs}')")
 
     def _clip_to_extent(self, expression: str, cut: bool = True) -> str:
         """``expression`` cut to the export extent. Geometries inside it are

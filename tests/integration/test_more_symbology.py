@@ -120,6 +120,38 @@ def test_point_displacement_grid(plugin, tmp_path):
     assert mask_difference(ink_mask(expected), ink_mask(got)) < 0.08
 
 
+def test_displaced_points_get_their_labels_where_qgis_writes_them(plugin, tmp_path):
+    """The displacement renderer's own labels (label attribute, font,
+    colour): one point per member at QGIS's label shift (ring: past the
+    member, away from the centre, by its diagonal x the distance factor; a
+    lone point: up and right), anchored as QGIS writes the text (idea of
+    QGIS2VectorTiles 4.1)."""
+    from fidelity import point_groups as pg
+    positions, radius, _ = pg.displaced((0, 0), 4, pg.RING, 2.0, 2.0, 0.0)
+    spots = pg.label_spots((0, 0), positions, pg.RING, 2.0, 0.5, radius)
+    (x0, y0), anchor0 = spots[0]  # the first member, straight below the centre
+    assert x0 == pytest.approx(0, abs=1e-9) and y0 == pytest.approx(-(radius + 1.0))
+    assert anchor0 == "top-left"
+    (x3, _y3), anchor3 = spots[3]  # left of the centre: the text ends at its point
+    assert x3 == pytest.approx(-(radius + 1.0)) and anchor3.endswith("right")
+    alone = pg.label_spots((5, 5), [(5, 5)], pg.RING, 2.0, 0.5, None)
+    side = math.sqrt(2.0 ** 2 / 2) * 0.5  # QGIS: sqrt(diagonal² / 2) x the factor
+    assert alone[0][0] == pytest.approx((5 + side, 5 + side)) and alone[0][1] == "bottom-left"
+    # Exported: a text layer of the label attribute, an anchor per point.
+    layer = _layer("Point", POINTS, str(tmp_path / "pts.gpkg"))
+    renderer = QgsPointDisplacementRenderer("id")
+    renderer.setLabelColor(QColor(200, 0, 0))
+    renderer.setEmbeddedRenderer(QgsSingleSymbolRenderer(
+        QgsMarkerSymbol.createSimple({"name": "circle", "size": "2", "color": "#2b83ba"})))
+    layer.setRenderer(renderer)
+    zoom = _zoom(EXTENT)
+    rendered, rules, _ = _export(layer, tmp_path, int(zoom) - 1, int(zoom))
+    labels = [(out, rule) for out, rule in zip(rendered, rules) if rule.point_group[1:2] == ("label",)]
+    assert labels and all(rule.displacement_label["field"] == "id" for _, rule in labels)
+    anchors = {f["q2vt_label_anchor"] for out, _ in labels for f in out.getFeatures()}
+    assert anchors and anchors <= {"top-left", "top-right", "bottom-left", "bottom-right"}
+
+
 def test_isolated_points_stay_alone_at_smaller_tolerances():
     from fidelity import point_groups as pg
     points = [(0, 0), (4, 0), (20, 0), (20, 30), (50, 5)]
@@ -686,6 +718,51 @@ def test_trimmed_line_is_drawn_trimmed(plugin, tmp_path):
     difference, _, rules, _ = _render_compare(layer, tmp_path)
     assert any(rule.recipe is not None and rule.recipe.kind == "line_trim" for rule in rules)
     assert difference < 0.05
+
+
+@pytest.mark.parametrize("unit, expression", [
+    (Qgis.RenderUnit.MapUnits, "if(\"id\" = 0, 40, NULL)"),         # NULL: the static trim
+    (Qgis.RenderUnit.Percentage, "\"id\" * 20 + 10"),
+    (Qgis.RenderUnit.Millimeters, "\"id\" + 1"),
+])
+def test_data_defined_trims_of_simple_lines_match_qgis(plugin, tmp_path, unit, expression):
+    """A data-defined trim: each feature's value in the trim's unit, NULL the
+    static one (QgsSimpleLineSymbolLayer::renderPolyline); it was drawn
+    untrimmed (idea of QGIS2VectorTiles 4.2)."""
+    from qgis.core import QgsLineSymbol, QgsProperty, QgsSimpleLineSymbolLayer, QgsSymbolLayer
+    layer = _layer("LineString", ["LINESTRING(-100 0, 0 0, 0 100)", "LINESTRING(-100 -60, 100 -60)"],
+                   str(tmp_path / "ddtrim.gpkg"))
+    line = QgsSimpleLineSymbolLayer(QColor("black"), 2)
+    for setter in (line.setTrimDistanceStartUnit, line.setTrimDistanceEndUnit):
+        setter(unit)
+    line.setTrimDistanceStart(5)
+    line.setTrimDistanceEnd(5)
+    line.setDataDefinedProperty(QgsSymbolLayer.Property.PropertyTrimStart, QgsProperty.fromExpression(expression))
+    line.setDataDefinedProperty(QgsSymbolLayer.Property.PropertyTrimEnd, QgsProperty.fromExpression(expression))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([line])))
+    difference, _, rules, _ = _render_compare(layer, tmp_path)
+    assert any(rule.recipe is not None and rule.recipe.kind == "line_trim" for rule in rules)
+    assert difference < 0.05
+
+
+@pytest.mark.parametrize("expression", [
+    "array(\"id\" * 20, 10)",                        # an array
+    "if(\"id\" = 0, '15,-25', NULL)",               # a text; NULL: the static offset
+])
+def test_data_defined_map_unit_fill_offsets_match_qgis(plugin, tmp_path, expression):
+    """A data-defined fill offset in map units moves each polygon by its
+    own offset; it was moved by the static one (idea of QGIS2VectorTiles 4.2)."""
+    from qgis.core import QgsFillSymbol, QgsProperty, QgsSymbolLayer
+    layer = _layer("Polygon", ["POLYGON((-100 -100, -40 -100, -40 -40, -100 -40, -100 -100))",
+                               "POLYGON((20 20, 80 20, 80 80, 20 80, 20 20))"], str(tmp_path / "ddoff.gpkg"))
+    symbol = QgsFillSymbol.createSimple({"color": "200,0,0,255", "outline_style": "no",
+                                         "offset": "5,5", "offset_unit": "MapUnit"})
+    symbol.symbolLayer(0).setDataDefinedProperty(QgsSymbolLayer.Property.PropertyOffset,
+                                                 QgsProperty.fromExpression(expression))
+    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+    difference, _, rules, _ = _render_compare(layer, tmp_path)
+    assert any(getattr(rule, "shift", None) for rule in rules)
+    assert difference < 0.03
 
 
 def test_vertex_markers_and_generator_parts_take_their_own_numbers(plugin, tmp_path):

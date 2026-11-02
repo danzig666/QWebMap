@@ -34,6 +34,7 @@ LENGTH_FIELD = "q2vt_mat_length"
 COUNT_FIELD = "q2vt_mat_npoints"
 CLUSTER_SIZE_FIELD = "q2vt_cluster_size"    # @cluster_size of a point cluster / displacement group
 CLUSTER_COLOR_FIELD = "q2vt_cluster_color"  # @cluster_color (the members' common colour)
+LABEL_ANCHOR_FIELD = "q2vt_label_anchor"    # text anchor of a displaced point's label
 BAND_FIELD = "q2vt_mat_band"        # colour band of a gradient / shapeburst fill
 COLOR_FIELD = "q2vt_mat_color"      # its colour ("r,g,b,a", QgsSymbolLayerUtils.encodeColor)
 WIDTH_FIELD = "q2vt_mat_width"      # its stroke width (symbol units): interpolated lines
@@ -237,8 +238,9 @@ def trim_line_expression(recipe: Recipe, export_crs: str = "EPSG:3857") -> str:
     """Lines (or a polygon's rings) shortened at both ends as QGIS trims a
     simple line (``QgsSymbolLayerUtils::polylineSubstring``): by ``start`` /
     ``end`` map units of the recipe CRS, or ``start_pct`` / ``end_pct`` per
-    cent of each line's length. A line no longer than a trim, or whose trims
-    meet, is not drawn."""
+    cent of each line's length; ``start_expr`` / ``end_expr``: a data-defined
+    trim (expression, map units per its unit), its static value for NULL. A
+    line no longer than a trim, or whose trims meet, is not drawn."""
     crs = recipe.param("crs") or export_crs
     polygon = bool(recipe.param("polygon", False))
     geom = "@geometry" if crs == export_crs else f"transform(@geometry, '{export_crs}', '{crs}')"
@@ -247,9 +249,14 @@ def trim_line_expression(recipe: Recipe, export_crs: str = "EPSG:3857") -> str:
 
     def amount(name):
         pct = recipe.param(f"{name}_pct")
+        dd = recipe.param(f"{name}_expr")  # (QGIS expression, map units per its unit)
         if pct is not None:
-            return f"({float(pct)!r} * 0.01 * @q2vt_len)"
-        return repr(float(recipe.param(name, 0.0) or 0.0))
+            value = f"coalesce(to_real({enclosed(dd[0])}), {float(pct)!r})" if dd else repr(float(pct))
+            return f"({value} * 0.01 * @q2vt_len)"
+        static = float(recipe.param(name, 0.0) or 0.0)
+        if dd:  # the feature's trim (NULL: the static one)
+            return f"coalesce(to_real({enclosed(dd[0])}) * {float(dd[1])!r}, {static!r})"
+        return repr(static)
     line = "geometry_n(@q2vt_lines, @element)"
     piece = (f"if(@q2vt_s >= @q2vt_len OR @q2vt_e <= @q2vt_s, NULL, "
              f"line_substring({line}, @q2vt_s, @q2vt_e))")
