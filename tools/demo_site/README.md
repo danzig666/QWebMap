@@ -10,7 +10,7 @@ published with the plugin, the showcase video and code for embedding the map.
 | `build_showcase.py` | Builds the QGIS project with the showcase symbology from the training data. |
 | `export_showcase.py` | Publishes it with the plugin of this checkout (like *Export locally* in the Publish window). |
 | `package_project.py` | Zips the QGIS project with its data and fonts for download (`download/` on the site). |
-| `build_site.py` | Puts together the site: landing page, the published map in `demo/`, the project zip, video, images. |
+| `build_site.py` | Puts together the site: landing page, the published map in `demo/`, the project zip, video, images and the user guide in `usage/`. |
 | `site/index.html` | The landing page. |
 | `publish_site.sh` | Pushes the site as the `gh-pages` branch. |
 

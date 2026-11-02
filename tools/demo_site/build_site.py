@@ -8,6 +8,8 @@ Writes <work dir>/site:
                  browsers without H.264 when ffmpeg is given or on the PATH
   img/           the icon, the video poster and the close-up gallery (JPEG)
   download/      the QGIS project zip (from package_project.py)
+  usage/         the user guide (docs/usage.html; the usage-docs workflow
+                 updates it on its own between demo builds)
   .nojekyll      serve the files as they are
 """
 import os
@@ -23,7 +25,10 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 
 def main(work, ffmpeg=None):
     publication = os.path.join(work, "out", "swellendam")
-    if not os.path.isfile(os.path.join(publication, "current.json")):
+    # A flat local export (index.html + manifest.json), or one that keeps
+    # its versions (releases/ + current.json).
+    if not any(os.path.isfile(os.path.join(publication, name))
+               for name in ("current.json", "manifest.json")):
         sys.exit(f"No published map in {publication}: run export_showcase.py first.")
     site = os.path.join(work, "site")
     shutil.rmtree(site, ignore_errors=True)
@@ -43,6 +48,12 @@ def main(work, ffmpeg=None):
         sys.exit(f"No {package}: run package_project.py first.")
     os.makedirs(os.path.join(site, "download"))
     shutil.copy(package, os.path.join(site, "download"))
+
+    # The guide too: publish_site.sh replaces the whole gh-pages branch, and
+    # the usage-docs workflow only puts it there when the guide changes.
+    os.makedirs(os.path.join(site, "usage", "icons"))
+    shutil.copy(os.path.join(REPO, "docs", "usage.html"), os.path.join(site, "usage", "index.html"))
+    shutil.copy(os.path.join(REPO, "docs", "icons", "icon.png"), os.path.join(site, "usage", "icons", "icon.png"))
 
     video = os.path.join(site, "media", "qwebmap-showcase.mp4")
     shutil.copy(os.path.join(REPO, "docs", "media", "qwebmap-showcase.mp4"), video)
