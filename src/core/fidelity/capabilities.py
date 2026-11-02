@@ -59,7 +59,8 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
     Capability("SimpleFill", "fill", Strategy.NATIVE,
                "Solid fill color and opacity; outline exported as a separate line layer. Qt "
                "brush styles (dense dots, hatching, crossing) as their 8 px pattern texture, "
-               "started at the corner of the view as in QGIS.",
+               "started at the corner of the view as in QGIS. A map-unit offset (data-defined "
+               "too: each feature's) moves the polygon itself.",
                ("A Qt brush style with a data-defined colour or style is drawn solid.",),
                ("tests/integration/test_converter.py", "tests/browser/test_browser_parity.py")),
     Capability("SimpleLine", "line", Strategy.NATIVE,
@@ -74,15 +75,15 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
                "simplified at the effect's size, painting each pixel once as QGIS's effect "
                "image does (no darker overlap inside sharp corners); inner shadow and inner "
                "glow are strips across the line coloured by QGIS's own rendering for the "
-               "line's direction. Trimmed lines (trim distance at start / end) are exported "
-               "trimmed: map units and percentages once, screen units per quarter of a zoom.",
+               "line's direction. Trimmed lines (trim distance at start / end, data-defined "
+               "too) are exported trimmed: map units and percentages once, screen units per "
+               "quarter of a zoom.",
                ("Map-unit widths become exponential zoom curves.",
                 "Inner effects are computed for a straight line: where lines overlap or "
                 "nearly touch, QGIS shades their union, the web map each line.",
                 "Other dashes are MapLibre dash arrays: they restart where tiles clip a line.",
                 "Aligned or corner-tweaked dash patterns use MapLibre dash arrays.",
-                "A data-defined trim, or a trim with an offset or aligned dashes, is drawn "
-                "untrimmed."),
+                "A trim with an offset or aligned dashes is drawn untrimmed."),
                ("tests/integration/test_converter.py", "tests/integration/test_materialize.py",
                 "tests/browser/test_browser_parity.py")),
     Capability("SimpleMarker", "marker", Strategy.SPRITE,
