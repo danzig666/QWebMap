@@ -2112,6 +2112,7 @@ class QgisMapLibreStyleExporter:
         effect_roles: Optional[Dict[str, str]] = None,
         inner_effects: Optional[Dict[str, dict]] = None,
         z_orders: Optional[Dict[str, str]] = None,
+        buffer_only: Optional[set] = None,
         feature_filters: Optional[Dict[str, list]] = None,
         label_windows: Optional[set] = None,
         layer_opacities: Optional[Dict[str, float]] = None,
@@ -2165,6 +2166,8 @@ class QgisMapLibreStyleExporter:
         self.inner_effects = inner_effects or {}
         # Style name -> symbol-z-order ("source": data order).
         self.z_orders = z_orders or {}
+        # Style names of rules drawing only a marker symbol's buffer.
+        self.buffer_only = buffer_only or set()
         # Style name -> filter of its feature-order stratum (fidelity.feature_order).
         self.feature_filters = feature_filters or {}
         # Style names of repeated curved line labels laid out at export time:
@@ -2727,6 +2730,11 @@ class QgisMapLibreStyleExporter:
                                     f"Symbol-level data-defined '{name}' is not exported.")
 
         if symbol_type == QgsSymbol.SymbolType.Marker:
+            if self._style_base(style_name) in self.buffer_only:
+                # Only the buffer of the whole symbol: one image (no circles, no text).
+                self._convert_marker_symbol(symbol_layer, symbol, style_name, source_layer_name,
+                                            source_name, min_zoom, max_zoom)
+                return
             if self._classify(symbol_layer, 0) == Strategy.UNSUPPORTED:
                 return
             if symbol.symbolLayerCount() == 1 and symbol_layer.layerType() == "FontMarker" \
@@ -2794,7 +2802,8 @@ class QgisMapLibreStyleExporter:
         if request.attributes:
             return name
         key = (QgsSymbolLayerUtils.symbolProperties(request.symbol), request.bake_rotation,
-               repr(request.map_units_per_pixel), repr(request.oversampling), request.frame)
+               repr(request.map_units_per_pixel), repr(request.oversampling), request.frame,
+               request.buffer_only)
         shared = self.__dict__.setdefault("_sprite_requests", {})
         known = shared.get(key)
         if known is not None and known in self.marker_symbols:
@@ -3269,6 +3278,22 @@ class QgisMapLibreStyleExporter:
                                              symbol_layer.strokeWidthUnit())
             paint["text-halo-color"] = PropertyExtractor.convert_qcolor_to_maplibre(stroke)
             paint["text-halo-width"] = ex.mul(width, 0.5)  # stroke is centred on the outline
+        buffer = getattr(symbol, "bufferSettings", lambda: None)()
+        if buffer is not None and buffer.enabled() and buffer.fillSymbol() is not None:
+            # The symbol's buffer (QGIS 3.40+; a cluster's count): a halo
+            # in the buffer's colour. An idea of QGIS2VectorTiles 4.3
+            # (GallPeters/QGIS2VectorTiles).
+            if "text-halo-width" in paint:
+                self.context.report("Q2VT_SYMBOL_APPROXIMATE",
+                                    "Font marker with an outline and a symbol buffer: only the "
+                                    "outline is drawn around the character.")
+            else:
+                fill = buffer.fillSymbol()
+                color = QColor(fill.color())
+                color.setAlphaF(color.alphaF() * fill.opacity())
+                paint["text-halo-color"] = PropertyExtractor.convert_qcolor_to_maplibre(color)
+                paint["text-halo-width"] = PropertyExtractor.length(
+                    buffer.size(), buffer.sizeUnit(), None, buffer.sizeMapUnitScale())
         layer_def["paint"].update(paint)
         self.style["layers"].append(layer_def)
 
@@ -3322,6 +3347,11 @@ class QgisMapLibreStyleExporter:
         if not cases:
             return None
         return ["match", ["to-string", ["get", fields[0]]], *cases, ["literal", [font]]]
+
+    @staticmethod
+    def _style_base(style_name: str) -> str:
+        """A rule's style name without the zoom band suffix of its sprites."""
+        return re.sub(r"_z\d+$", "", style_name)
 
     def _distinct_values(self, source_layer: str, fields: List[str]) -> Optional[list]:
         """Distinct value combinations of ``fields`` in an exported dataset
@@ -4310,9 +4340,11 @@ class QgisMapLibreStyleExporter:
                 return shared
             name = f"{marker_name}_v{len(names)}"
             names[combo] = name
+            base = self.marker_symbols.get(marker_name)
             self.marker_symbols[name] = SpriteRequest(
                 symbol.clone(), bake_rotation=False, map_units_per_pixel=map_units_per_pixel,
-                attributes=dict(zip(fields, combo)), oversampling=oversampling)
+                attributes=dict(zip(fields, combo)), oversampling=oversampling,
+                buffer_only=bool(base and base.buffer_only))
             shared_names[drawn + (combo,)] = name
             return name
         key, cases = self._variant_images(fields, combos, make)
@@ -4580,7 +4612,7 @@ class QgisMapLibreStyleExporter:
         animation = self._animation(sprite_symbol)
         self.marker_symbols[marker_name] = SpriteRequest(
             sprite_symbol.clone(), bake_rotation=False, map_units_per_pixel=map_units_per_pixel,
-            oversampling=oversampling)
+            oversampling=oversampling, buffer_only=self._style_base(style_name) in self.buffer_only)
         icon_image = self._marker_variants(sprite_symbol, marker_name, source_layer_name,
                                            map_units_per_pixel, oversampling, independent)
         if animation is not None and icon_image != marker_name:

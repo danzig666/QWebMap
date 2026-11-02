@@ -845,6 +845,7 @@ class QGIS2VectorTiles:
                            for rule in rules or [] if getattr(rule, "inner_effect", None)},
             z_orders={rule.rule.description(): rule.z_order
                       for rule in rules or [] if getattr(rule, "z_order", None)},
+            buffer_only={rule.rule.description() for rule in rules or [] if getattr(rule, "buffer_only", False)},
             feature_filters={rule.rule.description(): rule.feature_filter
                              for rule in rules or [] if getattr(rule, "feature_filter", None)},
             label_modes={rule.rule.description(): rule.label_modes for rule in rules or []

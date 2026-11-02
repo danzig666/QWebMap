@@ -1745,6 +1745,7 @@ class RulesFlattener:
 
         layer_count = symbol.symbolLayerCount()
         split_rules = []
+        buffered = self._split_buffer(symbol)
 
         clone_symbol = clone_symbol_layer = rule_clone = None
         for layer_idx in reversed(range(layer_count)):
@@ -1784,6 +1785,8 @@ class RulesFlattener:
                     clone_symbol.deleteSymbolLayer(remove_idx)
 
 
+            if buffered:  # drawn once, under the whole symbol (below)
+                clone_symbol.bufferSettings().setEnabled(False)
             clone_symbol_layer = clone_symbol.symbolLayers()[0]
             self._fold_enabled_property(rule_clone, clone_symbol_layer)
             draw_pass = clone_symbol_layer.renderingPass() if self._honor_passes else 0
@@ -1805,7 +1808,38 @@ class RulesFlattener:
             if rule_clone:
                 split_rules.append(rule_clone)
 
+        if buffered:
+            split_rules.append(self._buffer_rule(flat_rule, symbol, layer_count))
         return split_rules
+
+    @staticmethod
+    def _split_buffer(symbol) -> bool:
+        """A marker symbol of several enabled layers with a symbol buffer
+        (QGIS 3.40+). QGIS buffers the shape of the whole rendered symbol
+        once and draws it under all its layers (QgsSymbol::drawPreviewIcon,
+        renderFeature); kept on every split layer, each layer got a buffer
+        of its own (one around every part, over the layers below)."""
+        settings = getattr(symbol, "bufferSettings", lambda: None)()
+        if settings is None or not settings.enabled() or settings.fillSymbol() is None:
+            return False
+        if int(getattr(symbol.type(), "value", symbol.type())) != 0:
+            return False  # line and fill symbols: drawn by MapLibre, without the buffer
+        return sum(1 for layer in symbol.symbolLayers() if layer.enabled()) > 1
+
+    def _buffer_rule(self, flat_rule: FlattenedRule, symbol, layer_count: int) -> FlattenedRule:
+        """The rule drawing a split marker symbol's buffer: the whole
+        symbol, whose image is only its buffer (SymbolImage buffer_only),
+        under the layers' rules. An idea of QGIS2VectorTiles 4.2
+        (GallPeters/QGIS2VectorTiles), which keeps the buffer on the bottom
+        layer; here it surrounds the whole symbol, as in QGIS."""
+        rule = flat_rule.derive()
+        rule.set_attr("c", 0)
+        rule.set_attr("s", layer_count)  # a dataset of its own (after the layers')
+        rule.buffer_only = True
+        passes = [layer.renderingPass() for layer in symbol.symbolLayers() if layer.enabled()] \
+            if self._honor_passes else [0]
+        rule.order = (-flat_rule.get_attr("l"), min(passes or [0]), 0, self._draw_seq, -1, 0)
+        return rule
 
     def _simple_fill_rules(self, rule_clone: FlattenedRule, fill_layer, order: tuple):
         """A simple fill as its fill and its outline: QGIS strokes the polygon
