@@ -227,6 +227,41 @@ def test_repeated_arrows_keep_nearly_collinear_vertices(plugin, tmp_path):
     assert mask_difference(reference, ours) < 0.02
 
 
+@pytest.mark.parametrize("unit", [Qgis.RenderUnit.MapUnits, Qgis.RenderUnit.Millimeters])
+def test_data_defined_arrows_match_qgis(plugin, tmp_path, unit):
+    """Data-defined arrow widths, head size, head type and arrow type: each
+    feature's own (NULL: the static one), as QGIS draws them; they were the
+    static values (idea of QGIS2VectorTiles 4.1)."""
+    from qgis.core import QgsArrowSymbolLayer, QgsProperty, QgsSymbolLayer
+    layer = _layer("LineString", ["LINESTRING(-100 -60, 100 -60)", "LINESTRING(-100 0, 60 40)",
+                                  "LINESTRING(-80 70, 90 60)"], str(tmp_path / "ddarrows.gpkg"))
+    arrow = QgsArrowSymbolLayer()
+    arrow.setIsCurved(False)
+    scale = 1.0 if unit == Qgis.RenderUnit.MapUnits else 0.25
+    for name, value in (("ArrowWidth", 6), ("ArrowStartWidth", 6), ("HeadLength", 14),
+                        ("HeadThickness", 9)):
+        getattr(arrow, f"set{name}")(value * scale)
+        getattr(arrow, f"set{name}Unit")(unit)
+    P = QgsSymbolLayer.Property
+    for key, expression in (
+            (P.PropertyArrowWidth, f'if("id" = 1, NULL, ("id" + 1) * {3 * scale})'),
+            (P.PropertyArrowHeadLength, f'({20 * scale} - "id" * {5 * scale})'),
+            (P.PropertyArrowHeadType, 'if("id" = 0, \'double\', if("id" = 2, 1, NULL))'),
+            (P.PropertyArrowType, 'if("id" = 1, \'lefthalf\', \'plain\')')):
+        arrow.setDataDefinedProperty(key, QgsProperty.fromExpression(expression))
+    arrow.setSubSymbol(_fill())
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([arrow])))
+    reference = ink_mask(render([layer], EXTENT, (240, 240)))
+    outputs, _ = _export(layer, tmp_path, 15, 16)
+    zoom = math.log2(WORLD / 512 / ((EXTENT.width()) / 240))
+    shown = [(out, rule) for out, rule in outputs
+             if rule.visibility is None or rule.visibility.contains(zoom)]
+    for out, rule in shown:
+        out.setRenderer(QgsSingleSymbolRenderer(rule.rule.symbol().clone()))
+    ours = ink_mask(render([o for o, _ in shown], EXTENT, (240, 240)))
+    assert mask_difference(reference, ours) < 0.03
+
+
 # -- inner effects -------------------------------------------------------------
 def _embossed_line(color="#e4a9a9", width=3.6):
     from qgis.core import QgsApplication, QgsDrawSourceEffect, QgsEffectStack

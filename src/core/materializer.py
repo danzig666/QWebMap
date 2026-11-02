@@ -3436,9 +3436,17 @@ class SymbolMaterializer:
             return []
         shadow = self._arrow_shadow(layer, flat_rule)
         props = layer.dataDefinedProperties()
-        if props is not None and props.hasActiveProperties():
-            self._report("Q2VT_MARKER_PLACEMENT_APPROX",
-                         "Data-defined arrow properties use their static values.", flat_rule)
+        P = QgsSymbolLayer.Property
+        # Data-defined sizes (each feature's, NULL: the static one) and
+        # types, as QgsArrowSymbolLayer::_resolveDataDefined reads them (an
+        # idea of QGIS2VectorTiles 4.1, GallPeters/QGIS2VectorTiles).
+        size_keys = (P.PropertyArrowStartWidth, P.PropertyArrowWidth, P.PropertyArrowHeadLength,
+                     P.PropertyArrowHeadThickness, P.PropertyOffset)
+        dd_sizes = tuple((index, props.property(key).asExpression()) for index, key in enumerate(size_keys)
+                         if props is not None and props.isActive(key))
+        dd_types = tuple((name, props.property(key).asExpression()) for name, key in
+                         (("head", P.PropertyArrowHeadType), ("arrow", P.PropertyArrowType))
+                         if props is not None and props.isActive(key))
         values = [(layer.arrowStartWidth(), layer.arrowStartWidthUnit()),
                   (layer.arrowWidth(), layer.arrowWidthUnit()),
                   (layer.headLength(), layer.headLengthUnit()),
@@ -3468,6 +3476,10 @@ class SymbolMaterializer:
             per_mm = self._map_units_per_mm(flat_rule, zoom)
             params = base + (("sizes", tuple(to_map(v, u, per_mm) for v, u in values)),
                              ("pixel", per_mm * 25.4 / 96.0))
+            if dd_sizes:  # (index, expression, map units per its unit at this zoom)
+                params += (("dd_sizes", tuple((i, e, to_map(1.0, values[i][1], per_mm)) for i, e in dd_sizes)),)
+            if dd_types:
+                params += (("dd_types", dd_types),)
             if painter:
                 # Painter offsets are x right, y down; map y points up.
                 shifts = tuple((to_map(l.offset().x(), l.offsetUnit(), per_mm),

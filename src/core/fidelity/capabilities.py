@@ -159,15 +159,15 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
                "with the arrow's fill symbol; a fill's outline is a line on the polygons' "
                "edges (its width, dashes and join). Screen sizes per eighth of a zoom. Opaque "
                "multi-layer fills keep QGIS's per-arrow drawing order; the "
-               "line keeps all its vertices. A drop shadow effect is a blurred line under "
-               "the arrow, as wide as its body.",
+               "line keeps all its vertices. Data-defined widths, head length and thickness, "
+               "offset, head type and arrow type are each feature's own. A drop shadow effect "
+               "is a blurred line under the arrow, as wide as its body.",
                ("Sizes are within +-4.5 % between eighths of a zoom; beyond the archive's "
                 "last zoom the arrows scale with the map.",
                 "Outlines are drawn above all the arrows' fills: where repeated arrows overlap, "
                 "QGIS covers an arrow's outline with the next arrow's fill.",
                 "QGIS rebuilds arrows from the line clipped to the view, so near the view's "
-                "edge its own arrows change while panning; the web map keeps the whole line.",
-                "Data-defined arrow sizes use their static values."),
+                "edge its own arrows change while panning; the web map keeps the whole line."),
                ("tests/integration/test_line_shapes.py", "tests/integration/test_materialize.py",
                 "tests/integration/test_gradient_fills.py")),
     Capability("FilledLine", "line", Strategy.MATERIALIZED,

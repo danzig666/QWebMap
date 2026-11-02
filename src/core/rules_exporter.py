@@ -2947,11 +2947,48 @@ class RulesExporter:
         shifts = recipe.param("painter")
         target = int(recipe.param("layer", 0))
         written = 0
+        static = (start, width, head_length, thickness, offset, head_type, arrow_type)
+        dd_sizes = recipe.param("dd_sizes") or ()
+        dd_types = recipe.param("dd_types") or ()
+        if dd_sizes or dd_types:
+            from qgis.core import QgsExpression, QgsSymbolLayerUtils  # pylint: disable=import-outside-toplevel
+            context = self._worker_expression_context()
+            context.setFields(layer.fields())
+            sized = [(i, QgsExpression(e), float(per_unit)) for i, e, per_unit in dd_sizes]
+            typed = [(name, QgsExpression(e)) for name, e in dd_types]
+            for _, expression, *_ in sized + typed:
+                expression.prepare(context)
         for feature in layer.getFeatures():
             self._check_cancel()
             geometry = QgsGeometry(feature.geometry())
             if geometry.isEmpty():
                 continue
+            start, width, head_length, thickness, offset, head_type, arrow_type = static
+            if dd_sizes or dd_types:
+                # Each feature's (QgsArrowSymbolLayer::_resolveDataDefined):
+                # a number in the property's unit, a head / arrow type by
+                # its number or name; otherwise the static value.
+                context.setFeature(feature)
+                sizes = [start, width, head_length, thickness, offset]
+                for index, expression, per_unit in sized:
+                    value = expression.evaluate(context)
+                    try:
+                        sizes[index] = float(value) * per_unit / pixel
+                    except (TypeError, ValueError):
+                        pass
+                start, width, head_length, thickness, offset = sizes
+                for name, expression in typed:
+                    value = expression.evaluate(context)
+                    if value is None or (hasattr(value, "isNull") and value.isNull()):
+                        continue
+                    decode = QgsSymbolLayerUtils.decodeArrowHeadType if name == "head" \
+                        else QgsSymbolLayerUtils.decodeArrowType
+                    decoded, ok = decode(value)
+                    if ok:
+                        if name == "head":
+                            head_type = int(getattr(decoded, "value", decoded))
+                        else:
+                            arrow_type = int(getattr(decoded, "value", decoded))
             if to_crs is not None:
                 geometry.transform(to_crs)
             shapes = []
