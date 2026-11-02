@@ -8,6 +8,8 @@ Writes <work dir>/site:
                  browsers without H.264 when ffmpeg is given or on the PATH
   img/           the icon, the video poster and the close-up gallery (JPEG)
   download/      the QGIS project zip (from package_project.py)
+  usage/         the user guide (docs/usage.html; the usage-docs workflow
+                 updates it on its own between demo builds)
   .nojekyll      serve the files as they are
 """
 import os
@@ -46,6 +48,12 @@ def main(work, ffmpeg=None):
         sys.exit(f"No {package}: run package_project.py first.")
     os.makedirs(os.path.join(site, "download"))
     shutil.copy(package, os.path.join(site, "download"))
+
+    # The guide too: publish_site.sh replaces the whole gh-pages branch, and
+    # the usage-docs workflow only puts it there when the guide changes.
+    os.makedirs(os.path.join(site, "usage", "icons"))
+    shutil.copy(os.path.join(REPO, "docs", "usage.html"), os.path.join(site, "usage", "index.html"))
+    shutil.copy(os.path.join(REPO, "docs", "icons", "icon.png"), os.path.join(site, "usage", "icons", "icon.png"))
 
     video = os.path.join(site, "media", "qwebmap-showcase.mp4")
     shutil.copy(os.path.join(REPO, "docs", "media", "qwebmap-showcase.mp4"), video)
