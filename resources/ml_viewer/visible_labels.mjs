@@ -361,8 +361,12 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
     const zoom = map.getZoom();
     for (const [polygons, group] of ranked) {
       if (!states.has(polygons)) states.set(polygons, newLabelState());
+      // querySourceFeatures leaves sourceLayer unset: note where each came from.
       const features = polygons.split("\n").flatMap((sourceLayer) =>
-        map.querySourceFeatures(sourceId, { sourceLayer }));
+        map.querySourceFeatures(sourceId, { sourceLayer }).map((f) => {
+          f.q2vtSourceLayer = sourceLayer;
+          return f;
+        }));
       if (features.length && !features.some((f) => f._vectorTileFeature && Number.isInteger(f._z))) {
         unsupported = true;  // private tile fields gone (MapLibre upgrade)
         if (options.onUnsupported) options.onUnsupported("tile feature fields unavailable");
@@ -393,7 +397,9 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
         textAnchor: (activeLayer(group, zoom).layout || {})["text-anchor"],
         rotationField: group.orient === "free" ? FREE_ROTATION : rotationField(group, zoom),
         // Each polygon's own source layer (a label's polygons can be several fills').
-        eligible: eligible ? (properties, sourceLayer) => eligible(properties, sourceLayer || polygons) : null,
+        // (A kept label's polygon has no source layer at hand: any of the group's.)
+        eligible: eligible ? (properties, sourceLayer) => (sourceLayer ? [sourceLayer] : polygons.split("\n"))
+          .some((layer) => eligible(properties, layer)) : null,
         always: !!group.always,
         around: aroundOption(group.around, zoom, perPx),
       });
@@ -559,7 +565,7 @@ export function labelPoints(features, view, maplibregl, options = {}) {
   for (const f of features) {
     if (f._z !== deepest || !f._vectorTileFeature) continue;
     loaded.add(`${f._x}/${f._y}`);
-    if (options.eligible && !options.eligible(f.properties, f.sourceLayer)) {
+    if (options.eligible && !options.eligible(f.properties, f.q2vtSourceLayer || f.sourceLayer)) {
       excluded.add(String(f.properties.q2vt_orig_id ?? f.id ?? JSON.stringify(f.properties)));
       continue;
     }
