@@ -1,0 +1,174 @@
+// Overview map: a small second map in the bottom-right corner, a few zoom
+// levels further out, with the main map's view marked and the publication
+// extent outlined. A click there moves the main map. It draws the cheap
+// layers of the main map's own style (sources are shared through the
+// pmtiles:// protocol), refreshed after the main style changes (layers,
+// basemap).
+import { SOURCE_ID as BASEMAP_SOURCE } from "./basemap.mjs";
+import { t } from "./i18n.mjs";
+import { button, el } from "./icons.mjs";
+import { LOADER_PREFIX, styleLayers } from "./style_control.mjs";
+
+const KEY = "q2vt:overview";
+const VIEW = "q2vt_overview_view";
+const EXTENT = "q2vt_overview_extent";
+const ZOOM_OUT = 6;  // zoom levels further out than the main map (64× the area)
+
+const PATTERNS = { background: "background-pattern", fill: "fill-pattern", line: "line-pattern" };
+
+// A layer of the main map the overview draws (cheap ones): the background,
+// raster layers, the basemap's fills, lines and points, and the fills and
+// lines of the published layers. No labels, icons, patterns, 3D or terrain,
+// not the runtime overlays (measuring, drawing, highlights, the visible-label
+// points: GeoJSON sources) nor the label helper's tile loaders.
+export function overviewLayer(map, layer) {
+  if (layer.type === "raster") return layer.id !== "q2vt_streetview_coverage";  // (Google tiles, billed)
+  if (PATTERNS[layer.type] && map.getPaintProperty(layer.id, PATTERNS[layer.type]) !== undefined) return false;
+  if (layer.type === "background") return true;
+  const source = layer.source && map.getSource(layer.source);
+  if (!source || source.type !== "vector" || layer.id.startsWith(LOADER_PREFIX)) return false;
+  return ["fill", "line"].includes(layer.type) || (layer.source === BASEMAP_SOURCE && layer.type === "circle");
+}
+
+// The main style for the overview: its overview layers and their sources,
+// each copied (not the whole style: map.getStyle()).
+export function overviewStyle(map) {
+  const out = { version: 8, sources: {}, layers: [] };
+  for (const layer of styleLayers(map)) {
+    if (!overviewLayer(map, layer)) continue;
+    const def = JSON.parse(JSON.stringify(layer.serialize()));
+    // Thin hairlines are divided by the main map's pixel ratio
+    // (screenHairlines); the overview draws at ratio 1.
+    if (layer.metadata?.["q2vt:hairline"] && def.paint && def.paint["line-width"] !== undefined) {
+      def.paint["line-width"] = timesWidth(def.paint["line-width"], Math.max(1, map.getPixelRatio()));
+    }
+    out.layers.push(def);
+    if (layer.source && !out.sources[layer.source]) {
+      out.sources[layer.source] = JSON.parse(JSON.stringify(map.getSource(layer.source).serialize()));
+    }
+  }
+  return out;
+}
+
+// A line-width (a number or a zoom interpolation) times ``factor``.
+function timesWidth(value, factor) {
+  if (typeof value === "number") return value * factor;
+  if (Array.isArray(value) && value[0] === "interpolate") {
+    return value.map((v, i) => (i > 3 && i % 2 === 0 && typeof v === "number" ? v * factor : v));
+  }
+  return value;
+}
+
+// [[w, s], [e, n]] of the main map's view as a closed ring.
+export function boundsRing(bounds) {
+  const [[w, s], [e, n]] = bounds;
+  return [[w, s], [e, s], [e, n], [w, n], [w, s]];
+}
+
+export class OverviewControl {
+  constructor({ map, manifest, maplibregl }) {
+    Object.assign(this, { map, manifest, maplibregl });
+    this.timer = null;
+  }
+
+  onAdd() {
+    const root = el("div", "maplibregl-ctrl q2vt-overview");
+    const box = el("div", "q2vt-overview-map");
+    box.setAttribute("aria-label", t("overview.title"));
+    box.setAttribute("role", "img");
+    const toggle = button("q2vt-icon-btn q2vt-overview-toggle", t("overview.title"), "inset");
+    root.append(box, toggle);
+    this.root = root;
+    this.box = box;
+    const saved = (() => { try { return localStorage.getItem(KEY); } catch { return null; } })();
+    const small = window.matchMedia && window.matchMedia("(max-width: 760px)").matches;
+    this.setOpen(saved ? saved === "1" : !small && !document.body.classList.contains("q2vt-embed"));
+    toggle.addEventListener("click", () => {
+      this.setOpen(box.hidden);
+      try { localStorage.setItem(KEY, box.hidden ? "0" : "1"); } catch { /* storage unavailable */ }
+    });
+    return root;
+  }
+
+  setOpen(open) {
+    this.box.hidden = !open;
+    this.root.classList.toggle("q2vt-overview-open", open);
+    if (open && !this.mini) this.create();
+    if (open && this.mini) { this.mini.resize(); this.restyle(); this.sync(); }
+  }
+
+  create() {
+    const { map, maplibregl } = this;
+    this.mini = new maplibregl.Map({
+      container: this.box, style: overviewStyle(map), interactive: false,
+      attributionControl: false, renderWorldCopies: false, fadeDuration: 0, maxTileCacheZoomLevels: 1,
+      pixelRatio: 1,  // a small inset: its buffers at one pixel per CSS pixel
+      center: map.getCenter(), zoom: Math.max(0, map.getZoom() - ZOOM_OUT),
+    });
+    this.mini.on("load", () => {
+      this.ready = true;
+      const bounds = this.manifest.view && this.manifest.view.bounds;
+      if (Array.isArray(bounds) && bounds.length === 4) {
+        this.mini.addSource(EXTENT, { type: "geojson", data: { type: "Feature", properties: {},
+          geometry: { type: "Polygon", coordinates: [boundsRing([[bounds[0], bounds[1]], [bounds[2], bounds[3]]])] } } });
+        this.mini.addLayer({ id: EXTENT, type: "line", source: EXTENT,
+          paint: { "line-color": "#64748b", "line-width": 1, "line-dasharray": [2, 2] } });
+      }
+      this.mini.addSource(VIEW, { type: "geojson", data: this.viewFeature() });
+      const accent = getComputedStyle(document.documentElement).getPropertyValue("--q2vt-accent").trim() || "#2563eb";
+      this.mini.addLayer({ id: `${VIEW}-fill`, type: "fill", source: VIEW, paint: { "fill-color": accent, "fill-opacity": 0.15 } });
+      this.mini.addLayer({ id: VIEW, type: "line", source: VIEW, paint: { "line-color": accent, "line-width": 2 } });
+      // A style change while the overview loaded its first style.
+      this.restyle();
+      this.sync();
+    });
+    // A click on the overview centres the main map there.
+    this.box.addEventListener("click", (event) => {
+      const rect = this.box.getBoundingClientRect();
+      const lngLat = this.mini.unproject([event.clientX - rect.left, event.clientY - rect.top]);
+      map.easeTo({ center: lngLat });
+    });
+    this.onMove = () => this.sync();
+    map.on("move", this.onMove);
+    // Layers switched on/off, another basemap: the overview follows (later).
+    // Throttled, not debounced: an animated marker changes the style every
+    // frame, and a debounce restarted on each change never ran.
+    this.onStyle = () => {
+      if (this.timer) return;
+      this.timer = setTimeout(() => { this.timer = null; this.restyle(); }, 600);
+    };
+    map.on("styledata", this.onStyle);
+  }
+
+  viewFeature() {
+    const b = this.map.getBounds();
+    return { type: "Feature", properties: {},
+      geometry: { type: "Polygon", coordinates: [boundsRing([[b.getWest(), b.getSouth()], [b.getEast(), b.getNorth()]])] } };
+  }
+
+  sync() {
+    if (!this.mini || this.box.hidden) return;
+    this.mini.jumpTo({ center: this.map.getCenter(), zoom: Math.max(0, this.map.getZoom() - ZOOM_OUT) });
+    const source = this.mini.getSource(VIEW);
+    if (source) source.setData(this.viewFeature());
+  }
+
+  // The overview draws what the main map draws now (layers switched, a
+  // theme, another basemap). Not skipped while tiles load (isStyleLoaded()
+  // is false then, and a skipped change was never applied): only before the
+  // overview's own first style, which applies it on load.
+  restyle() {
+    if (!this.mini || !this.ready) return;
+    const style = overviewStyle(this.map);
+    for (const id of [EXTENT, VIEW]) if (this.mini.getSource(id)) style.sources[id] = this.mini.getSource(id).serialize();
+    for (const id of [EXTENT, `${VIEW}-fill`, VIEW]) if (this.mini.getLayer(id)) style.layers.push(this.mini.getLayer(id).serialize());
+    this.mini.setStyle(style, { diff: true });
+  }
+
+  onRemove() {
+    this.map.off("move", this.onMove);
+    this.map.off("styledata", this.onStyle);
+    if (this.mini) this.mini.remove();
+    this.root.remove();
+  }
+}

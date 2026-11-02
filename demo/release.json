@@ -1,0 +1,677 @@
+{
+ "buildId": "e0cb10902bd7",
+ "configFingerprint": "",
+ "createdAt": "2026-11-02T23:14:50Z",
+ "files": [
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/animation.mjs",
+   "sha256": "f97bed68715616235a477f3b739cc1142bd436775514e2579f2d7d8fe85eeaaa",
+   "size": 3386
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/app.mjs",
+   "sha256": "4f3fda9c3202a08f24bc9b1c69cc99f190415597600036540b9cfbbed5420f67",
+   "size": 23431
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/backstack.mjs",
+   "sha256": "761d62c43b15cf2a0bbbf0388c8ae25f8759af29b3a6bf0a9aa6ee851dbd69a5",
+   "size": 4261
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/basemap.mjs",
+   "sha256": "69ea44f0cb03aa3f2b801afd66a2c1c7a3b225cb13943697c2cc9686b19b47ec",
+   "size": 7445
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/controls.mjs",
+   "sha256": "274814737be1032901274cb5fbcec619cd56c2748dd3b8c9d75df3289a6ce489",
+   "size": 24358
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/diagnostics.mjs",
+   "sha256": "d0b674162ee7355324388a1aa0aaf6a6f07d8b1542b5af4b6a69c37173d90ebb",
+   "size": 2943
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/diagrams.mjs",
+   "sha256": "824fc30abdaf6690c8796a560d26be1752b579ba01f8f317a6c08636c5760956",
+   "size": 8044
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/draw.mjs",
+   "sha256": "17d1af1fa4e0a463b32169a528950d2c720e571aefdc9d2e234184109b525d76",
+   "size": 17102
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/features.mjs",
+   "sha256": "09dd2a910e7cf2c37417ae764be90d89f9c6a43ac2c954c73265d94c39977d78",
+   "size": 1670
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/filters.mjs",
+   "sha256": "6206d28cf8cc7352ef109028fc80711f3896bf915c9b91b341d4c9a075d9f90f",
+   "size": 5917
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/geo.mjs",
+   "sha256": "42151bb76a5a67fb3dc50f76b19c5ecc1cfb6da809cc9a491610357be0345908",
+   "size": 5833
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/i18n.mjs",
+   "sha256": "5ab76082bb20697d8a49aabcd3d0c8f23281394615378361084a77ecf692a52f",
+   "size": 1391
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/icons.mjs",
+   "sha256": "1362468f58439ba5a5c2a0b147fcf4fd15a6660da5bdab2b81bd466408478762",
+   "size": 5521
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/identify.mjs",
+   "sha256": "5790cc1c6658e64ce57b6930a83d35152ef2595b358e819c4b25213134f302ea",
+   "size": 11664
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/label_shadows.mjs",
+   "sha256": "f55e49b501b9ae093acce3247eaffedd22f2a7bd83a445ef548bde0ae63dc7f3",
+   "size": 2328
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/layer_controls.mjs",
+   "sha256": "d8139544feafedf4f9772b3f99b744bbe10f5cdeb79beb5c309d3e53bf934b3f",
+   "size": 11226
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/legend.mjs",
+   "sha256": "5abbf8b164eb7da09bfaac0bb5fcf7957497d5b718ee25fedf0c893eb5c9acfe",
+   "size": 8767
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "assets/locales/en.json",
+   "sha256": "3cdd26c8a4472e804124e2f3ac1c3adfef9b53675c9f1de8e3a9185786874691",
+   "size": 9215
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "assets/locales/hu.json",
+   "sha256": "d2f5a779919d4fa92a042151634aa13090ce85d62d1581b1753a612fc7049d66",
+   "size": 10360
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/maplibre-gl-worker.mjs",
+   "sha256": "fdf66f7c5cbd44740b47a594ca8c6ce0b9b35f25129f33b0a4c41ce65324791a",
+   "size": 520881
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/css; charset=utf-8",
+   "path": "assets/maplibre-gl.css",
+   "sha256": "bacba6a85a867fcf602f2ff88331b8acf7edf3fbd063a519888cfbff39970193",
+   "size": 83263
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/maplibre-gl.mjs",
+   "sha256": "1fe995303f7e0334a0895353b3f18885d907a130d1bff94417e754311df43248",
+   "size": 1097292
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/overview.mjs",
+   "sha256": "80ecf46080deda3a71bd74d3589414f7c3f29c014086dd1d2d6430f912d8902d",
+   "size": 8253
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/parcel_report.mjs",
+   "sha256": "02c24f2530faaa24e6e446c5139bd9c39439a8486a4e5ec8a2a2879bed45ec4d",
+   "size": 16550
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/permalink.mjs",
+   "sha256": "708d7b798224bb31ea9437a7a4e4f700dcf60132433c3e64ef30304902302ed4",
+   "size": 6741
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/print.mjs",
+   "sha256": "d3d2b8730726988de189061993af14d548e46140314ae591dc790acf7abfc22a",
+   "size": 10601
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/profile.mjs",
+   "sha256": "216e2f4bc4bbcc0626fc530e17eebee17f2492a731eacc9d154024f806ceaf16",
+   "size": 3834
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/reader.mjs",
+   "sha256": "6dc190d9532c5575279da094e459716f8de2b22b3801b641d8c2e3fb4eb57cc6",
+   "size": 6699
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/rich_text.mjs",
+   "sha256": "c825636db17456553444632eb46c9ef6dc387b05b114e70eb91581a646569fa4",
+   "size": 1950
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/search.mjs",
+   "sha256": "526454ae09dc19b40b5702dfa55de7a4fb70ca878bb97777360e9e514eb3cb8d",
+   "size": 11125
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/search_core.mjs",
+   "sha256": "2ff01872e1cb0c5f85f2a14b489dd224834d0c58e0836bdd861b4b74ea78955b",
+   "size": 3307
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/search_worker.mjs",
+   "sha256": "720980f737fd592593e6e6aaf409c1e77bfcc84be9e0aae6976af6b1c843c75a",
+   "size": 2257
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/shards.mjs",
+   "sha256": "b9fbb94259b6c0782b1a7197ee89ed423935fcb0e95ef90582df8d2b858bc5dd",
+   "size": 1995
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/snap.mjs",
+   "sha256": "360939b8b9e8f82de0c07ce212cb0b6486d18d321621eb12f265e3a14ac80292",
+   "size": 5976
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/state.mjs",
+   "sha256": "e039b10a8e86a31e7ad712b85b306c99c5d76a836639b61b42c31b398ff5fdd7",
+   "size": 7943
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/streetview.mjs",
+   "sha256": "8a8bc5cd1e2856b61d99d5cbc22c10443a2d14094a1f968ec8a6a78a2143e9ef",
+   "size": 15039
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/style_control.mjs",
+   "sha256": "07651e9a3e5682acb7e7ba2341003ca896da9b8e709d82dcd5115398afe92563",
+   "size": 10293
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/css; charset=utf-8",
+   "path": "assets/styles.css",
+   "sha256": "7a176b68c28f16704db25a18ed69eec7f11f068790d523b1768b1d457b5c6b4c",
+   "size": 49878
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/threed.mjs",
+   "sha256": "fc6e528739209cf17b1cfe7556ed586aee906a629aed0e9bba6cc72ae49e28b9",
+   "size": 9981
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/tools.mjs",
+   "sha256": "10fcd161588908e038e920b3223cc6f1cfa9c956aad97a73dab3983057bb75a9",
+   "size": 18023
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/transport.mjs",
+   "sha256": "59d5667a388c6361c0a6d19626490c776f45b4b06bdefe609e46cf8138a01413",
+   "size": 9066
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/vendor/pmtiles.js",
+   "sha256": "caf981bc46f6327ee7e65d5dc964d89d38a69f60edca2bd4c5c890c21b554c6c",
+   "size": 20229
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/vendor/proj4.js",
+   "sha256": "af7df653d91ea591f33d26fb958990bbd3071b2db644a4edaba441cc9861a474",
+   "size": 129733
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/visible_labels.mjs",
+   "sha256": "fc1e562b3fcad5f80313a06915100397fa898091a21ed79c325e64a8757ec134",
+   "size": 151084
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/javascript; charset=utf-8",
+   "path": "assets/wms_info.mjs",
+   "sha256": "3358e47e1cd1e677058e05d8e2d2d0b2a5a650e0f428738f788fda1615c14ef8",
+   "size": 8094
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/vnd.pmtiles",
+   "path": "data/map.pmtiles",
+   "sha256": "c0ab7d6d09a0ae5893a7886abfca4563a1d4ea5b3b6f04ccfe441d7f80683221",
+   "size": 4150435
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/octet-stream",
+   "path": "features/features.pack",
+   "sha256": "d1f12260f7fef43fce660b6a891dfc76cec569d803b279372bba7f9b58047a4e",
+   "size": 195289
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "features/manifest.json",
+   "sha256": "21d0331ce01bf4b64d9b72539a803a0b9980c7a2366e4965dfa50e7e47b2378d",
+   "size": 4002
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/x-protobuf",
+   "path": "glyphs/Open Sans Bold/0-255.pbf",
+   "sha256": "c5036e6cb45819767f8816731de0ba6de951c37681f1a95c093292c613dd5756",
+   "size": 85451
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/x-protobuf",
+   "path": "glyphs/Open Sans Regular/0-255.pbf",
+   "sha256": "b56b148a9e57b3915f903bf2ec9da519fcfcc4f4168736d7ea70773bcf19c51b",
+   "size": 87992
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/x-protobuf",
+   "path": "glyphs/Open Sans Semibold Italic/0-255.pbf",
+   "sha256": "84adf5450ec095e20be2bd1f7fd9adea812e4de5d0b22e12510a5aec5b832623",
+   "size": 66256
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/x-protobuf",
+   "path": "glyphs/Open Sans Semibold Regular/0-255.pbf",
+   "sha256": "7dabc0c255e68e3110220e6cafeec5c19db7af7a614f88114dbbe07b844ed780",
+   "size": 84059
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/html; charset=utf-8",
+   "path": "index.html",
+   "sha256": "7b2276acd14796c9ea7471fc933d666989a2f7477b1847a9f2b2635c6a6e598c",
+   "size": 3162
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-04d71db322.png",
+   "sha256": "1e42b53a2fdcafba7b10bf3fc630cd1e18bd318222bed68902e8378a4ee9d738",
+   "size": 104
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-08348d4c0b.png",
+   "sha256": "8feb65fc7e8b926a59b5f2f2864facda89517164fbccdf762393f78389170591",
+   "size": 767
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-0ca7611544.png",
+   "sha256": "efd2ba2776c7a65ac1a7c4ee06b0dce5f6daa4e79091baf156b793d30ca9c5af",
+   "size": 340
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-0d434d5e26.png",
+   "sha256": "4d7c64f55df37e4cfad29b0d099b97bb71ada46c461b3c2099f93c75611fac7b",
+   "size": 754
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-11f3b94318.png",
+   "sha256": "2df8c6df27cd39b14dcb7c307abf2d037830f8cbc4cffc312d15739a42021b6b",
+   "size": 240
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-15dd914fd3.png",
+   "sha256": "296074db79f86ba306e23f3f3fccf736cee1839c934cf65a33cbe18b480ae944",
+   "size": 221
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-1765ef8333.png",
+   "sha256": "db13eae5cd31391ecb0ab7e83b3d22ac031b7c85ff366c414cfceca1075dbee3",
+   "size": 143
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-217810c1ad.png",
+   "sha256": "48a17c77ad12ac306e324b80e25d648353f100c4ca25c5b63226300b16311bd9",
+   "size": 470
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-2be5931df7.png",
+   "sha256": "8f51a23a5d51053ce37ebdddf5ab861768821678f8ce541879b80554b10066ef",
+   "size": 1002
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-395b8b46f9.png",
+   "sha256": "b7fccc15146f8ae7cb2ef4ede3b804fa0a3ef52af4a4e95082e65945311f407b",
+   "size": 1488
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-48b5f8e156.png",
+   "sha256": "c3e20fa8cf62062d98ff0cf8f045d342a5bf0843e45ee8bb27f00eaafccf37fe",
+   "size": 241
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-4a0cb36478.png",
+   "sha256": "b143e1b05acbc7bce2b30488f221606cf9e0f6e61654211b742bf335f40db364",
+   "size": 859
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-6759b4da50.png",
+   "sha256": "54beb0d656abc859f92cf3b7ce0ad043e3b96f7f252ea51b7839abd8ee6ec60b",
+   "size": 711
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-72ecb4ee67.png",
+   "sha256": "2dfa03a68ecd3ca2638496e6709eecbebdb640831e2645ac5f7e2ae292b7429a",
+   "size": 345
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-746fa77238.png",
+   "sha256": "e8e117e21a4b54819e5bcfe30a10beffc4e1f1d08d5d60c8665ddb94d40cad1b",
+   "size": 225
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-83b822c4d8.png",
+   "sha256": "b960dfe4fa5771334fd1ba10b0499e01b96c591cb8b13d158462002c6160f5bd",
+   "size": 232
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-ab6dc41840.png",
+   "sha256": "5419a46b37f86368a95ec9ff7e0e0b432b1e0def27f6b5fbc16936efc1377161",
+   "size": 292
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-b6424f7b3c.png",
+   "sha256": "cb000890244c330a5b19d64f14a3a0deae15c51c3f5e1ec7735bf685726e774c",
+   "size": 216
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-b9b05a9bea.png",
+   "sha256": "e8e117e21a4b54819e5bcfe30a10beffc4e1f1d08d5d60c8665ddb94d40cad1b",
+   "size": 225
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-c2eaac31bc.png",
+   "sha256": "8feb65fc7e8b926a59b5f2f2864facda89517164fbccdf762393f78389170591",
+   "size": 767
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-d1227daea0.png",
+   "sha256": "e1a22033b94f6ba7da85c00c184b3fb6a69ac1b3d9855b3ab1b74c2b4f228842",
+   "size": 726
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-e41d110e95.png",
+   "sha256": "115cd182d1797b89655321e865ebc5bc86c5a3f4b84d5b8fcabbf7b0724c32fe",
+   "size": 919
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-e646008055.png",
+   "sha256": "f6db659ad825c63a710df784b3a9441dce8d791a180eb2ca93b61b4e3b5be419",
+   "size": 367
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-e9dbabbe0a.png",
+   "sha256": "7b4e346239a064b406fe0011fb7a7a78cd43705289df1d1ae2d51222fb53b523",
+   "size": 527
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-ee7b91bec1.png",
+   "sha256": "93033506df73522598a2d6c73ceed76ac8cfd3f2607660501818959328f5774d",
+   "size": 225
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-ef76cc5792.png",
+   "sha256": "131b06a1364c900a15ff30f3469b07b307cca0881915bfec13d8977ee0a03b30",
+   "size": 209
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-f2203ec8b3.png",
+   "sha256": "e8e117e21a4b54819e5bcfe30a10beffc4e1f1d08d5d60c8665ddb94d40cad1b",
+   "size": 225
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-f96ef4c8b4.png",
+   "sha256": "6014e47f2154a59a325d3d189e7948d823cc79aaa5dff65266176f1cd1db38aa",
+   "size": 360
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "legend/rule-fd5b049cfa.png",
+   "sha256": "77d72ca2bb0f7c58e715f2cd0415bdfa7f29cc44c42c611b49689fbd232a4a38",
+   "size": 221
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/plain; charset=utf-8",
+   "path": "licenses/MAPLIBRE-LICENSE.txt",
+   "sha256": "ee5fc05a0677eaf69601d2c7db0d9ecd6cc27c3abc1d0733bc9ed34707cf8ef2",
+   "size": 5984
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/plain; charset=utf-8",
+   "path": "licenses/PMTILES-LICENSE.txt",
+   "sha256": "0371c38f338835f7fc13ed71176f3d92144e22c8b736a31cced57adbbeb647b3",
+   "size": 1713
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "text/plain; charset=utf-8",
+   "path": "licenses/PROJ4JS-LICENSE.txt",
+   "sha256": "d514fd8b286fc00a5c97a29f8a99b73f1a4053bbdd00c400aee5f24a1b6b301e",
+   "size": 1454
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "manifest.json",
+   "sha256": "e91e1daa9e3a5f6729a35050e06c2e7842f7129bb25aec1e3277a30a8042636d",
+   "size": 242163
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "public-diagnostics.json",
+   "sha256": "17a901b3ea9da05b23f9daafeeebec8046a4861486ee72fbd59d6869eb30f7e7",
+   "size": 118
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "search/index.json",
+   "sha256": "bad30f311b95a0e9495296de09fb71f0e3b1e0b32516c3bf631bb84d21624fbf",
+   "size": 81543
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "search/manifest.json",
+   "sha256": "69a295076c322dd8fe260bee792bcd81f8b2edd37d56ecc55c0600d94a10f0cc",
+   "size": 793
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "sprite/sprite.json",
+   "sha256": "246e5a7287fdd8f607f05406b024bc168197db83e2d38b2511cda9d1374411f3",
+   "size": 2170
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "sprite/sprite.png",
+   "sha256": "6d6ce305f9c2e92d5ac20e2bf53cae1899e8efea5bc16c744afaf026804fd743",
+   "size": 7384
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "sprite/sprite@2x.json",
+   "sha256": "598620405383ac61732127854aed2f90e600071fc9526512059a3f489e576d31",
+   "size": 2185
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "image/png",
+   "path": "sprite/sprite@2x.png",
+   "sha256": "83301ac81cb7717c1ef894ab6ab827e407ed2328607ca923bbc67a21516feeeb",
+   "size": 16133
+  },
+  {
+   "cacheControl": "public, max-age=31536000, immutable",
+   "contentType": "application/json; charset=utf-8",
+   "path": "style.json",
+   "sha256": "e96f6be039ad26e945a886fa7e1b4972dd9ee3b7789fef0aeb4a07e749598662",
+   "size": 426800
+  }
+ ],
+ "publicationId": "61780808-5a8b-4ddf-915b-d282f6c6a10d",
+ "releaseId": "r-20261102T231448Z-6b355d68",
+ "schemaVersion": 1,
+ "versions": {
+  "gdal": "3.8.4",
+  "maplibre": "6.14.0",
+  "plugin": "4.56.0",
+  "pmtilesJs": "4.5.0",
+  "pmtilesPython": "3.8.1",
+  "qgis": "3.34.4-Prizren",
+  "qt": "5.15.13"
+ }
+}
