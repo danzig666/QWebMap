@@ -135,6 +135,7 @@ from . import label_lines
 from . import marker_points
 from .fidelity.diagnostics import DiagnosticCollector, Severity
 from .fidelity import feature_order as fo
+from .fidelity import label_case
 from .fidelity.qgis_expr import (bind_geometry, enclosed, in_layer_crs,
                                  uses_map_scale, with_map_scale, with_variable)
 from .fidelity import zoom as fidelity_zoom
@@ -4536,6 +4537,24 @@ class RulesExporter:
                 fields.extend(tuple(f) for f in rule_fields)
         return fields
 
+    @staticmethod
+    def _label_case(settings, text: str) -> str:
+        """``text`` in the label's type case (QGIS's capitalization, also
+        data-defined: its value, unless NULL, instead)."""
+        from qgis.core import QgsPalLayerSettings  # pylint: disable=import-outside-toplevel
+        try:
+            static = int(settings.format().capitalization())
+        except (AttributeError, TypeError, ValueError):
+            static = 0
+        prop = settings.dataDefinedProperties().property(QgsPalLayerSettings.Property.FontCase)
+        if prop and prop.isActive():
+            label_case.register_expression_functions()
+            return f"q2vt_capitalize({text}, coalesce({enclosed(prop.asExpression())}, {static}))"
+        if static in (0, 1, 2):  # mixed: as it is; upper / lower: text-transform
+            return text
+        label_case.register_expression_functions()
+        return f"q2vt_capitalize({text}, {static})"
+
     def _add_label_expression_field(
         self,
         flat_rule: FlattenedRule,
@@ -4588,6 +4607,9 @@ class RulesExporter:
             spaces = TextPropertyExtractor.word_spacing_spaces(settings.format())
             if spaces:  # QGIS word spacing: wider spaces (MapLibre has none)
                 filter_exp = f"replace({filter_exp}, ' ', '{' ' * (spaces + 1)}')"
+        if not settings.format().allowHtmlFormatting():
+            filter_exp = self._label_case(settings, filter_exp)
+            filter_exp = label_case.edge_spaces_kept(filter_exp)
         fields.append((10, filter_exp, field_name))
         if settings.format().allowHtmlFormatting():
             # MapLibre has no markup: text sections with their own scale.
@@ -4963,7 +4985,8 @@ class RulesExporter:
             flat_rule.set_attr("c", 0)
             target_geom = 0
             transform_expr = self._get_polygon_centroids_expression(
-                clip=visible, roomiest=self._roomiest_placement(settings))
+                clip=visible, roomiest=self._roomiest_placement(settings),
+                force_inside=bool(getattr(settings, "centroidInside", True)))
         return [target_geom, transform_expr]
 
     @staticmethod
@@ -5166,7 +5189,12 @@ class RulesExporter:
         return placement in (_enum_value(Qgis.LabelPlacement.Horizontal),
                              _enum_value(Qgis.LabelPlacement.Free))
 
-    def _get_polygon_centroids_expression(self, clip: bool = False, roomiest: bool = False) -> str:
+    def _get_polygon_centroids_expression(self, clip: bool = False, roomiest: bool = False,
+                                          force_inside: bool = True) -> str:
+        """``force_inside``: QGIS's "Force point inside polygon"
+        (centroidInside): the centroid, unless outside the polygon, else a
+        point on its surface (pal PointSet::getCentroid); off, the centroid
+        wherever it is."""
         if clip or self.cent_source == 1:
             polygons = (
                 f"intersection(@geometry, "
@@ -5177,6 +5205,8 @@ class RulesExporter:
         if roomiest:  # 0.5 m in EPSG:3857 units (the base layers' CRS)
             return (f"with_variable('source', {polygons}, "
                     f"coalesce(pole_of_inaccessibility(@source, 0.5), point_on_surface(@source)))")
+        if not force_inside:
+            return f"centroid({polygons})"
         return (
             f"with_variable('source', {polygons}, "
             f"if(intersects(centroid(@source), @source), "

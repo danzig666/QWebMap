@@ -1319,9 +1319,21 @@ class IconPropertyExtractor:
         return False
 
     @staticmethod
-    def get_symbol_sort_key() -> float:
-        """Return ``symbol-sort-key`` (default 0; lower keys render first)."""
-        return 0
+    def get_symbol_sort_key(label_settings: QgsPalLayerSettings = None) -> Union[float, List]:
+        """Return ``symbol-sort-key`` (lower keys are placed first). A
+        data-defined label priority orders each feature's label: 10 -
+        priority (0-10, NULL: the static priority); a static one orders the
+        label layers instead (TilesStyler). An idea of QGIS2VectorTiles 4.1
+        (GallPeters/QGIS2VectorTiles)."""
+        if label_settings is None:
+            return 0
+        prop = label_settings.dataDefinedProperties().property(QgsPalLayerSettings.Property.Priority)
+        if not prop or not prop.isActive():
+            return 0
+        value = PropertyExtractor.get_value_or_expression(float(label_settings.priority), prop, "number")
+        if ex.is_number(value):
+            return 0  # feature-independent: the layer order holds it
+        return ex.add(10, ex.mul(-1, ex.clamp(value, 0, 10)))
 
     @staticmethod
     def get_symbol_z_order() -> str:
@@ -1913,6 +1925,9 @@ class TextPropertyExtractor:
         """
         if label_settings is None:
             return "none"
+        case_prop = label_settings.dataDefinedProperties().property(QgsPalLayerSettings.Property.FontCase)
+        if case_prop and case_prop.isActive() and not label_settings.format().allowHtmlFormatting():
+            return "none"  # per feature, in the exported text (RulesExporter._label_case)
         try:
             cap = PropertyExtractor.get_attribute(
                 label_settings.format(), "capitalization"
@@ -3259,6 +3274,54 @@ class QgisMapLibreStyleExporter:
 
     # --- sprite variants -----------------------------------------------------------
     MAX_VARIANTS = 64
+
+    def _data_defined_fonts(self, text_format, label_settings, source_layer: str, font: str,
+                            dataset: str) -> Optional[list]:
+        """``text-font`` of a data-defined font family: the font stack of each
+        family the label's features name (the format's style kept), the
+        format's own for others; a family that is not installed keeps the
+        format's font, as QGIS (QgsTextFormat::updateDataDefinedProperties).
+        None: no data-defined family. An idea of QGIS2VectorTiles 4.2
+        (GallPeters/QGIS2VectorTiles)."""
+        from qgis.core import QgsFontUtils  # pylint: disable=import-outside-toplevel
+        prop = label_settings.dataDefinedProperties().property(QgsPalLayerSettings.Property.Family)
+        if not prop or not prop.isActive():
+            return None
+        value = PropertyExtractor.get_value_or_expression("", prop, "string")
+
+        def stack(family):
+            if not family or not QgsFontUtils.fontFamilyOnSystem(str(family)):
+                return None
+            changed = QgsTextFormat(text_format)
+            qfont = changed.font()
+            qfont.setFamily(str(family))
+            changed.setFont(qfont)
+            name = TextPropertyExtractor.get_text_font(changed)
+            self.glyphs.setdefault(name, [])
+            if dataset not in self.glyphs[name]:
+                self.glyphs[name].append(dataset)
+            return name
+
+        if isinstance(value, str):  # the same for every feature
+            name = stack(value)
+            return [name] if name else None
+        fields = sorted(set(re.findall(r"\[\"get\", \"([^\"]+)\"\]", json.dumps(value))))
+        values = self._distinct_values(source_layer, fields[:1]) if fields else None
+        if not values:
+            if values is None:
+                self.context.report(
+                    "Q2VT_LABEL_APPROXIMATE",
+                    f"Data-defined label font family: more than {self.MAX_VARIANTS} families or "
+                    "not read; the labels use the format's font.")
+            return None
+        cases = []
+        for (family,) in values:
+            name = stack(family)
+            if name and name != font and family not in cases[0::2]:
+                cases += [family, ["literal", [name]]]
+        if not cases:
+            return None
+        return ["match", ["to-string", ["get", fields[0]]], *cases, ["literal", [font]]]
 
     def _distinct_values(self, source_layer: str, fields: List[str]) -> Optional[list]:
         """Distinct value combinations of ``fields`` in an exported dataset
@@ -5439,8 +5502,9 @@ class QgisMapLibreStyleExporter:
             if self.viewer == 0:
                 em_size = ex.div(em_size, _MAPLIBRE_LABELS_FACTOR)
         placement = TextPropertyExtractor.placement_name(label_settings)
+        fonts = self._data_defined_fonts(text_format, label_settings, source_layer_name, font, dataset)
         layer_def["layout"].update({
-            "text-font": [font],
+            "text-font": fonts or [font],
             "text-size": text_size,
             "text-anchor": TextPropertyExtractor.get_text_anchor(label_settings),
             "text-justify": TextPropertyExtractor.get_text_justify(label_settings),
@@ -5463,7 +5527,7 @@ class QgisMapLibreStyleExporter:
             "symbol-placement": IconPropertyExtractor.get_symbol_placement(label_settings),
             "symbol-spacing": IconPropertyExtractor.get_symbol_spacing(label_settings),
             "symbol-avoid-edges": IconPropertyExtractor.get_symbol_avoid_edges(),
-            "symbol-sort-key": IconPropertyExtractor.get_symbol_sort_key(),
+            "symbol-sort-key": IconPropertyExtractor.get_symbol_sort_key(label_settings),
             "symbol-z-order": IconPropertyExtractor.get_symbol_z_order(),
             "visibility": "visible",
         })
@@ -5617,6 +5681,9 @@ class QgisMapLibreStyleExporter:
                 # Horizontal / Free: QGIS puts the label where it has the most
                 # room (pole of inaccessibility); around / over point: centroid.
                 "q2vt:label-anchor": "pole" if placement in ("Horizontal", "Free") else "centroid",
+                # Around / over point: the centroid moved inside the polygon
+                # only with "Force point inside polygon" (QGIS centroidInside).
+                "q2vt:label-inside": bool(getattr(label_settings, "centroidInside", True)),
                 # Who gets the best spot when labels compete (QGIS priority,
                 # then z-index): the viewer places these labels in that order.
                 "q2vt:label-rank": [label_settings.priority, label_settings.zIndex],

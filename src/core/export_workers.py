@@ -412,6 +412,10 @@ def serve(stdin, stdout) -> None:
             break
         if kind == "init":
             try:
+                # The exporter's own expression functions (the main QGIS has them).
+                from .fidelity import html_labels, label_case  # pylint: disable=import-outside-toplevel
+                html_labels.register_expression_functions()
+                label_case.register_expression_functions()
                 exporter = _build_exporter(message[1])
                 exporter._memory_active = False
                 send(stdout, ("ready", Qgis.version()))
