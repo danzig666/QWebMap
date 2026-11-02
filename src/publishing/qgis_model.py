@@ -369,8 +369,9 @@ def logical_model(project: QgsProject, profile: PublicationProfile, rules, style
                 next(r for r in rule_entries if r["id"] == rid)["componentIds"].append(cid)
         component["styleLayerIds"].append(style_layer["id"])
         helper = (style_layer.get("metadata") or {}).get("q2vt:visible-polygons")
-        if helper and helper not in component["dependsOnSourceLayers"]:
-            component["dependsOnSourceLayers"].append(helper)
+        for name in ([helper] if isinstance(helper, str) else helper or []):
+            if name not in component["dependsOnSourceLayers"]:
+                component["dependsOnSourceLayers"].append(name)
     return {"groups": list(groups.values()), "layers": layers, "rules": rule_entries,
             "components": components}
 

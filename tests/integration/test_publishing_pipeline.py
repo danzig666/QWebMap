@@ -119,7 +119,12 @@ def test_local_publication_end_to_end(project, tmp_path):
     for rule in manifest["rules"]:  # every category owns its fill component
         assert rule["componentIds"], rule
     label = next(c for c in manifest["components"] if c["role"] == "label")
-    assert label["dependsOnSourceLayers"] and label["dependsOnSourceLayers"][0].endswith("_vp")
+    # The label's polygons: those of the parcels' fills (its categories),
+    # which carry the label's fields - no copy of their own.
+    fills = {c["sourceLayer"] for c in manifest["components"]
+             if c["layerId"] == label["layerId"] and c["role"] == "geometry"}
+    assert label["dependsOnSourceLayers"] and set(label["dependsOnSourceLayers"]) <= fills, \
+        (label["dependsOnSourceLayers"], fills)
     style_layers = json.load(open(os.path.join(rel, "style.json"), encoding="utf-8"))["layers"]
     style_ids = {l["id"] for l in style_layers}
     assert all(set(c["styleLayerIds"]) <= style_ids for c in manifest["components"])

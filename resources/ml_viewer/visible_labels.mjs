@@ -158,7 +158,10 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   const fonts = fontMetrics(style);
   const tileSource = style.sources[sourceId] || {};
   style.layers.forEach((layer, index) => {
-    const polygons = layer.metadata && layer.metadata["q2vt:visible-polygons"];
+    // The source layer(s) of the polygons: one, or several (the fills of
+    // the label's categories, which carry its fields), one group for all.
+    const named = layer.metadata && layer.metadata["q2vt:visible-polygons"];
+    const polygons = Array.isArray(named) ? named.join("\n") : named;
     if (!polygons || layer.source !== sourceId) return;
     if (!groups.has(polygons)) groups.set(polygons, { layers: [] });
     const before = style.layers.slice(index + 1).find((l) => !(l.metadata && l.metadata["q2vt:visible-polygons"]));
@@ -227,12 +230,16 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
     // tile (memory) only to draw nothing. (A source layer no tile has lost
     // the polygons of overzoomed tiles.)
     const zooms = group.layers.map(({ def }) => [def.minzoom ?? 0, def.maxzoom ?? 24]);
-    map.addLayer({
-      id: LOADER_PREFIX + polygons, type: "fill", source: sourceId, "source-layer": polygons,
-      filter: ["==", ["literal", 1], 0],
-      minzoom: Math.min(...zooms.map((z) => z[0])), maxzoom: Math.max(...zooms.map((z) => z[1])),
-      paint: { "fill-opacity": 0 },
-    }, firstLayer);
+    // One loader a source layer (a fill's polygons can be several labels').
+    for (const sourceLayer of polygons.split("\n")) {
+      if (map.getLayer(LOADER_PREFIX + sourceLayer)) continue;
+      map.addLayer({
+        id: LOADER_PREFIX + sourceLayer, type: "fill", source: sourceId, "source-layer": sourceLayer,
+        filter: ["==", ["literal", 1], 0],
+        minzoom: Math.min(...zooms.map((z) => z[0])), maxzoom: Math.max(...zooms.map((z) => z[1])),
+        paint: { "fill-opacity": 0 },
+      }, firstLayer);
+    }
     if (!added.has(group.source)) added.add(group.source) && map.addSource(group.source, {
       type: "geojson", data: { type: "FeatureCollection", features: [] },
       // A curved label's piece of line whole in every tile it crosses: each
@@ -354,7 +361,8 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
     const zoom = map.getZoom();
     for (const [polygons, group] of ranked) {
       if (!states.has(polygons)) states.set(polygons, newLabelState());
-      const features = map.querySourceFeatures(sourceId, { sourceLayer: polygons });
+      const features = polygons.split("\n").flatMap((sourceLayer) =>
+        map.querySourceFeatures(sourceId, { sourceLayer }));
       if (features.length && !features.some((f) => f._vectorTileFeature && Number.isInteger(f._z))) {
         unsupported = true;  // private tile fields gone (MapLibre upgrade)
         if (options.onUnsupported) options.onUnsupported("tile feature fields unavailable");
@@ -384,7 +392,8 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
         mergeText: group.merge ? textKey((activeLayer(group, zoom).layout || {})["text-field"]) : null,
         textAnchor: (activeLayer(group, zoom).layout || {})["text-anchor"],
         rotationField: group.orient === "free" ? FREE_ROTATION : rotationField(group, zoom),
-        eligible: eligible ? (properties) => eligible(properties, polygons) : null,
+        // Each polygon's own source layer (a label's polygons can be several fills').
+        eligible: eligible ? (properties, sourceLayer) => eligible(properties, sourceLayer || polygons) : null,
         always: !!group.always,
         around: aroundOption(group.around, zoom, perPx),
       });
@@ -550,7 +559,7 @@ export function labelPoints(features, view, maplibregl, options = {}) {
   for (const f of features) {
     if (f._z !== deepest || !f._vectorTileFeature) continue;
     loaded.add(`${f._x}/${f._y}`);
-    if (options.eligible && !options.eligible(f.properties)) {
+    if (options.eligible && !options.eligible(f.properties, f.sourceLayer)) {
       excluded.add(String(f.properties.q2vt_orig_id ?? f.id ?? JSON.stringify(f.properties)));
       continue;
     }

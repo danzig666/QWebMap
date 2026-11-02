@@ -9,7 +9,7 @@ import os
 import sys
 
 import pytest
-from qgis.core import (QgsFeature, QgsFillSymbol, QgsGeometry, QgsMarkerSymbol, QgsSimpleMarkerSymbolLayer,
+from qgis.core import (Qgis, QgsFeature, QgsFillSymbol, QgsGeometry, QgsMarkerSymbol, QgsSimpleMarkerSymbolLayer,
                        QgsSingleSymbolRenderer, QgsVectorLayer)
 from qgis.PyQt.QtCore import QPointF, Qt
 from qgis.PyQt.QtGui import QColor, QImage
@@ -30,7 +30,8 @@ def _buffered_points(tmp_path):
     feature.setGeometry(QgsGeometry.fromWkt("POINT(2121000 6021000)"))
     layer.dataProvider().addFeatures([feature])
     layer = to_geopackage(layer, str(tmp_path / "trees.gpkg"))
-    big = QgsSimpleMarkerSymbolLayer(size=6, color=QColor(0, 120, 0))
+    # A square (a plain circle would be a native circle layer, not an icon).
+    big = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, size=6, color=QColor(0, 120, 0))
     big.setStrokeStyle(Qt.PenStyle.NoPen)
     small = QgsSimpleMarkerSymbolLayer(size=2, color=QColor(200, 0, 0))
     small.setStrokeStyle(Qt.PenStyle.NoPen)
@@ -55,7 +56,7 @@ def test_the_buffer_is_drawn_once_under_the_whole_symbol(export, tmp_path):  # n
     entries = [index[layer["layout"]["icon-image"]] for layer in icons]
     widths = [entry["width"] / entry["pixelRatio"] for entry in entries]
     # Bottom first: the buffer, wider than the symbol (1 mm each side), then
-    # the layers without a buffer of their own (the big circle: 6 mm).
+    # the layers without a buffer of their own (the big square: 6 mm).
     mm = 96 / 25.4
     # Cropped symmetrically about the point: the small circle reaches 4 + 1 mm
     # to the right, the buffer 1 mm more: 2 x 6 mm.

@@ -388,6 +388,9 @@ class _RuleGroupSnapshot:
     # as lines ("largest": the feature's longest ring, "every": each ring;
     # _vertex_rings); "" otherwise.
     vertex_rings: str = ""
+    # The rule's own filter, before a label's "has a text" condition: a
+    # fill of the same filter can host a label's polygons (_host_visible_polygons).
+    base_filter: str = ""
 
 
 _RING_FIELD = f"{_FIELD_PREFIX}_ring_cw"
@@ -775,6 +778,7 @@ class RulesExporter:
             ]
             filter_expression = in_layer_crs(
                 primary.rule.filterExpression(), f"EPSG:{_EPSG_CRS}", layer_crs, self._planar)
+            base_filter = filter_expression
             if label_text:
                 filter_expression = self._with_label_text(
                     filter_expression,
@@ -795,8 +799,8 @@ class RulesExporter:
             # The layer's variables (@layer_name, its own ones): Processing
             # would give the temporary input layer's.
             bind = functools.partial(self._with_layer_variables, layer=primary.layer)
-            filter_expression, geom_expr, pre_generator = (
-                bind(filter_expression), bind(geom_expr), bind(pre_generator))
+            filter_expression, geom_expr, pre_generator, base_filter = (
+                bind(filter_expression), bind(geom_expr), bind(pre_generator), bind(base_filter))
             expr_fields, part_fields, generated_fields = (
                 [(ftype, bind(expr), name) for ftype, expr, name in fields]
                 for fields in (expr_fields, part_fields, generated_fields))
@@ -831,6 +835,7 @@ class RulesExporter:
                 split_generated=primary.get_attr("t") == 1 and getattr(
                     primary, "label_modes", {}).get("multipart") == MULTIPART_SPLIT
                 and bool(getattr(primary, "label_generated", False)),
+                base_filter=base_filter or "",
             ))
             if self._labels_visible_polygon(primary, geom_target):
                 rule_groups.append(self._visible_polygon_group(rule_groups[-1], primary))
@@ -838,7 +843,79 @@ class RulesExporter:
                 rule_groups.append(self._visible_line_group(rule_groups[-1], primary))
 
         self._flush_view_reports()
-        return sources, rule_groups
+        return sources, self._host_visible_polygons(rule_groups)
+
+    @staticmethod
+    def _plain_polygons_of(fill: "_RuleGroupSnapshot", polygons: "_RuleGroupSnapshot") -> bool:
+        """Whether ``fill``'s dataset holds plain polygons of the layer a
+        visible-polygon label reads (``polygons``; no generator, recipe,
+        merge, offset or feature order copy) at every zoom the label's data
+        is at."""
+        if fill.layer_id != polygons.layer_id or fill.rule_type != 0 or fill.visible_polygons \
+                or fill.geometry_target != 2 or fill.source_geometry != 2 or fill.recipe is not None \
+                or fill.pre_generator or fill.merge or fill.point_group or fill.pattern_anchor:
+            return False
+        if any(getattr(rule, "shift", None) or getattr(rule, "feature_filter", None)
+               or getattr(rule, "translate", None) for rule in fill.flat_rules):
+            return False
+        if fill.data_min_zoom > polygons.data_min_zoom:
+            return False
+        return fill.data_max_zoom is None or (
+            polygons.data_max_zoom is not None and fill.data_max_zoom >= polygons.data_max_zoom)
+
+    @classmethod
+    def _hosts_of(cls, groups, polygons: "_RuleGroupSnapshot") -> List["_RuleGroupSnapshot"]:
+        """The fills whose polygons together are a visible-polygon label's:
+        one of the label's own filter, or those whose filters the label's
+        filter joins with OR (a label of the features its categories draw:
+        RulesFlattener._renderers_label_filter), each once. [] if none."""
+        candidates = [g for g in groups if cls._plain_polygons_of(g, polygons)]
+        wanted = polygons.base_filter or ""
+        single = [g for g in candidates if (g.filter_expression or "") == wanted]
+        if single:
+            return single[:1]
+        if not wanted:
+            return []
+        terms, chosen = set(), []
+        for group in candidates:
+            term = enclosed(group.filter_expression or "")
+            if group.filter_expression and term in wanted and term not in terms:
+                terms.add(term)
+                chosen.append(group)
+        chosen.sort(key=lambda g: wanted.index(enclosed(g.filter_expression)))
+        if len(chosen) < 2 or " OR ".join(enclosed(g.filter_expression) for g in chosen) != wanted:
+            return []
+        return chosen
+
+    def _host_visible_polygons(self, groups: List["_RuleGroupSnapshot"]) -> List["_RuleGroupSnapshot"]:
+        """A visible-polygon label's polygons from a fill of the same
+        polygons (_hosts_polygons_of) instead of a copy: the label's fields
+        are added to the fill's dataset and the viewer reads the label's
+        polygons there - one copy of the polygons in the tiles, one dataset
+        less to export (an idea of QGIS2VectorTiles 4.1,
+        GallPeters/QGIS2VectorTiles: labels drawn from their features' rows)."""
+        out = list(groups)
+        for polygons in [g for g in groups if g.visible_polygons and
+                         g.output_dataset.endswith(self.VISIBLE_POLYGONS_SUFFIX)]:
+            label_name = polygons.output_dataset[:-len(self.VISIBLE_POLYGONS_SUFFIX)]
+            label = next((g for g in out if g.output_dataset == label_name), None)
+            hosts = self._hosts_of(out, polygons)
+            if label is None or not hosts:
+                continue
+            for host in hosts:
+                names = {name for _, _, name in host.expression_fields}
+                parts = {name for _, _, name in host.part_fields}
+                out[out.index(host)] = dataclasses.replace(
+                    host, visible_polygons=True,
+                    expression_fields=list(host.expression_fields) + [
+                        f for f in polygons.expression_fields if f[2] not in names],
+                    part_fields=list(host.part_fields) + [
+                        f for f in polygons.part_fields if f[2] not in parts])
+            out.remove(polygons)
+            names = [host.output_dataset for host in hosts]
+            for rule in label.flat_rules:
+                rule.visible_polygons = names[0] if len(names) == 1 else names
+        return out
 
     def _templated_recipe(self, primary: FlattenedRule, layer_crs: str, bind) -> Optional[Recipe]:
         """The rule's recipe, with the QGIS 4 marker / hash line trim, blank
@@ -3489,7 +3566,7 @@ class RulesExporter:
             mapping.append((10, f'"{FEATURE_KEY_FIELD}"', FEATURE_KEY_FIELD))
         for name in self.extra_tile_fields.get(grp.layer_id, []):
             if name == LABEL_ANCHOR_MARKER:
-                if grp.rule_type == 1 and grp.source_geometry == 2:
+                if (grp.rule_type == 1 or grp.visible_polygons) and grp.source_geometry == 2:
                     mapping.extend(LABEL_ANCHOR_FIELDS)
                 continue
             # The base layer can hold the field under another case (OGR's

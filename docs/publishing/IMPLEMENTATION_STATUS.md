@@ -2207,3 +2207,39 @@ convex polygons within a few px at zooms 13-17 (tests/browser/test_horizontal_po
 * `presets.default_locale()`: the first preset's `DEFAULT_LOCALE`, else "en"; `PublicationProfile.locale`
   defaults to it (the HU edition's preset: "hu"). Saved settings keep their language.
 * User guide (`tools/build_usage.py`): a *Contents* button opens the table of contents on phones.
+
+## 4.56.0 — ideas from GallPeters/QGIS2VectorTiles
+
+Each item reimplements an idea seen in the October–November 2026 versions of the original plugin,
+[GallPeters/QGIS2VectorTiles](https://github.com/GallPeters/QGIS2VectorTiles); no code was copied.
+
+* Symbol buffers (upstream: buffer drawn once per symbol): `FlattenedRule.buffer_only`;
+  `RulesFlattener._split_buffer` adds one buffer-only rule under the symbol's layers, the clones
+  drop their buffer; sprites render the buffer of the whole symbol (`SpriteRequest.buffer_only`);
+  font markers drawn as text get a text halo (tests/integration/test_symbol_buffer.py, QGIS ≥ 3.40).
+* Labels (upstream: type case, edge spaces, data-defined priority and font family, centroid inside):
+  `fidelity/label_case.py` (QgsStringUtils capitalisation, U+2060 edge-space guards,
+  `q2vt_capitalize` expression function, also in export workers); `symbol-sort-key` from
+  data-defined priority; data-defined font family as a `text-font` match; *Force point inside
+  polygon* (`q2vt:label-inside`) (test_label_text_case.py, test_visible_labels.py).
+* Data-defined trims and fill offsets, point displacement labels (upstream 4.1): materializer
+  `_trim_line`, flattener `_map_offset_shift` expressions, `_displacement_label_rule`
+  (`q2vt_label_anchor`) (test_more_symbology.py, test_displacement_labels.py).
+* Callouts (upstream: balloon and shaped callouts): `fidelity/callouts.py` (simple, Manhattan,
+  curved leaders; balloon outline as in QGIS), drawn into the label's icon; balloons as stretchable
+  icons (test_label_callouts.py, tests/browser/test_label_balloons.py). Pinned labels keep
+  straight leaders.
+* Arrows (upstream: data-defined arrow types): data-defined widths, head sizes, offset, head and
+  arrow type evaluated per feature (test_line_shapes.py).
+* Labels of visible polygon parts (upstream: labels from the renderer's rows):
+  `_host_visible_polygons` merges the `_vp` parts into the fill datasets whose filters cover the
+  label's (one fill, or category fills OR-ed); the viewer's `visible_labels.mjs` reads one or
+  several source layers (test_end_to_end.py, test_publishing_pipeline.py, test_export_cache.py).
+* Export speed (upstream: in-memory ogr2ogr DB, compact JSON, faster GDAL): `TEMPORARY_DB` in
+  `/vsimem` when 8× the input fits in half the free memory, else on disk; `_filter_match` skips the
+  copy of a filter that keeps every feature; bounding-box shortcuts for extent clips; compact JSON
+  (test_export_workers.py). Rule filtering of the benchmark town 21 s → 5 s.
+* Viewer start-up (upstream: parallel start-up): `module_preloads` (modulepreload links), style,
+  archive headers and locales fetched concurrently (test_publishing_web_builder.py).
+* Bandit (upstream): export worker unpickler allow-list; `hashlib.sha1(usedforsecurity=False)`.
+* Not taken: data-defined *CentroidWhole*; GDAL-built base layers (fidelity loss); leaf prefetch.

@@ -739,9 +739,11 @@ class QGIS2VectorTiles:
                 low, high = min(low, old_low), max(high, old_high)
             zooms[rule.output_dataset] = (low, high)
             polygons = getattr(rule, "visible_polygons", None)
-            if polygons:  # a visible-polygon label's polygons: the label's zooms
-                old_low, old_high = zooms.get(polygons, (low, high))
-                zooms[polygons] = (min(low, old_low), max(high, old_high))
+            # A visible-polygon label's polygons (one dataset, or the fills
+            # of its categories): the label's zooms.
+            for name in ([polygons] if isinstance(polygons, str) else polygons or []):
+                old_low, old_high = zooms.get(name, (low, high))
+                zooms[name] = (min(low, old_low), max(high, old_high))
         return zooms
 
     def _tiles_generator(self, layers: List[QgsVectorLayer], temp_dir: str, style: dict,

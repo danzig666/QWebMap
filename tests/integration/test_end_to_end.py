@@ -584,8 +584,10 @@ def test_export_runs_processing_on_the_main_thread_by_default(export, tmp_path, 
 
 def test_polygon_labels_on_the_visible_part_ship_their_polygons(export, tmp_path):
     """QGIS's default "Centroid: visible polygon": the viewer places the label
-    on the visible part, so the export ships the polygons (``_vp``) and marks
-    the style layer; "whole polygon" labels stay static centroids."""
+    on the visible part, so the export ships the polygons and marks the style
+    layer: those of the layer's fill, which carry the label's fields (one copy
+    of the polygons; a copy of their own, ``_vp``, where no fill has them);
+    "whole polygon" labels stay static centroids."""
     layer = zoning_layer(path=str(tmp_path / "vp.gpkg"))
     layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple({"color": "red"})))
     settings = QgsPalLayerSettings()
@@ -598,9 +600,11 @@ def test_polygon_labels_on_the_visible_part_ship_their_polygons(export, tmp_path
     style = json.load(open(os.path.join(result, "style", "style.json"), encoding="utf-8"))
     labels = [l for l in style["layers"] if "text-field" in l.get("layout", {})]
     polygons = labels[0]["metadata"]["q2vt:visible-polygons"]
-    assert polygons.endswith("_vp") and labels[0]["source-layer"] + "_vp" == polygons
+    fills = {l["source-layer"] for l in style["layers"] if l["type"] == "fill"}
+    assert polygons in fills, (polygons, fills)  # the fill's polygons
     archive = inspect_mbtiles(os.path.join(result, "tiles.mbtiles"))
     assert polygons in archive["vector_layers"]
+    assert not any(name.endswith("_vp") for name in archive["vector_layers"])
     assert "q2vt_label" in archive["vector_layers"][polygons]["fields"]
     # Each single part is told apart ("Label every part" / the biggest part).
     assert "q2vt_part" in archive["vector_layers"][polygons]["fields"]
@@ -628,7 +632,8 @@ def test_polygon_labels_on_the_visible_part_ship_their_polygons(export, tmp_path
     style = json.load(open(os.path.join(result, "style", "style.json"), encoding="utf-8"))
     labels = [l for l in style["layers"] if "text-field" in l.get("layout", {})]
     metadata = labels[0].get("metadata", {})
-    assert metadata.get("q2vt:visible-polygons", "").endswith("_vp")
+    assert metadata.get("q2vt:visible-polygons") in {l["source-layer"] for l in style["layers"]
+                                                     if l["type"] == "fill"}
     assert metadata["q2vt:label-orient"] == "free" and metadata["q2vt:label-anchor"] == "pole"
 
 

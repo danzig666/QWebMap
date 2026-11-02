@@ -553,7 +553,16 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.55.0**. Newest first:
+This README describes QWebMap **4.56.0**. Newest first:
+
+**4.56.0** — ideas from the original plugin: symbol buffers, label case and callouts, data-defined trims, offsets and arrows, faster start-up and export
+Ideas taken from recent versions of [GallPeters/QGIS2VectorTiles](https://github.com/GallPeters/QGIS2VectorTiles), reimplemented here:
+- A marker symbol's buffer is drawn once around the whole symbol, under its layers (idea: GallPeters/QGIS2VectorTiles).
+- Data-defined line trims, fill offsets and arrow widths, head sizes and types; *Point displacement* labels (idea: GallPeters/QGIS2VectorTiles).
+- Labels: QGIS type case (also data-defined), edge spaces kept, data-defined priority and font family, *Force point inside polygon*; simple, Manhattan, curved and balloon callouts of point labels (idea: GallPeters/QGIS2VectorTiles).
+- Labels of visible polygon parts ride in the polygons' own tiles: smaller web maps (idea: GallPeters/QGIS2VectorTiles).
+- Faster viewer start-up (preloaded modules, parallel fetches) and export (in-memory tile work database, no copy for filters that keep every feature, compact JSON) (idea: GallPeters/QGIS2VectorTiles).
+- The export worker's pipe accepts only the plugin's own classes (idea: GallPeters/QGIS2VectorTiles's Bandit fixes).
 
 **4.55.0** — no raster tile limit; English by default; user guide on phones
 - A raster layer of more than 400 000 tiles is no longer refused. Before the export a warning says it will take hours and names the layer, the setting that makes it large (*Sharpest detail* or the Map tab's *Maximum tile zoom*) and what brings it down (tile counts one detail step coarser, and how much smaller the extent should be). *Export anyway* goes on.

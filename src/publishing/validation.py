@@ -100,8 +100,8 @@ def visible_polygon_helpers(style: dict) -> Dict[str, List[str]]:
     helpers: Dict[str, List[str]] = {}
     for layer in style.get("layers") or []:
         polygons = (layer.get("metadata") or {}).get("q2vt:visible-polygons")
-        if polygons:
-            helpers.setdefault(polygons, []).append(layer["id"])
+        for name in ([polygons] if isinstance(polygons, str) else polygons or []):
+            helpers.setdefault(name, []).append(layer["id"])
     return helpers
 
 
