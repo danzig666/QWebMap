@@ -537,7 +537,9 @@ def source_layer_groups(rules) -> Dict[str, List[str]]:
     groups: Dict[str, List[str]] = {}
     for rule in rules:
         names = groups.setdefault(rule.layer.id(), [])
-        for name in (rule.output_dataset, getattr(rule, "visible_polygons", None)):
+        polygons = getattr(rule, "visible_polygons", None)
+        # One polygon dataset, or several (the fills of the label's categories).
+        for name in [rule.output_dataset] + ([polygons] if isinstance(polygons, str) else list(polygons or [])):
             if name and name not in names:
                 names.append(name)
     return groups

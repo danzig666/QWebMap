@@ -16,12 +16,23 @@ MODULE = os.path.join(ROOT, "resources", "ml_viewer", "visible_labels.mjs")
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
 
 
-def _label_point(rings):
+def _label_point(rings, force_inside=True):
     script = (f"import {{ labelPoint }} from {json.dumps('file://' + MODULE)};"
-              f"console.log(JSON.stringify(labelPoint({json.dumps(rings)})));")
+              f"console.log(JSON.stringify(labelPoint({json.dumps(rings)}, {json.dumps(force_inside)})));")
     run = subprocess.run(["node", "--input-type=module", "-e", script],
                          capture_output=True, text=True, check=True)
     return json.loads(run.stdout)
+
+
+def test_force_point_inside_polygon():
+    """QGIS "Force point inside polygon" (centroidInside, off by default):
+    the centroid of a U-shaped polygon lies in its gap; only with the option
+    does the label move into the polygon (pal PointSet::getCentroid)."""
+    u_shape = [[[0, 0], [6, 0], [6, 6], [4, 6], [4, 2], [2, 2], [2, 6], [0, 6]]]
+    centroid = _label_point(u_shape, force_inside=False)
+    assert 2 < centroid[0] < 4 and 2 < centroid[1] < 6  # in the gap
+    x, y = _label_point(u_shape)
+    assert (x < 2 or x > 4 or y < 2) and 0 <= y <= 6
 
 
 def test_centroid_of_a_square():

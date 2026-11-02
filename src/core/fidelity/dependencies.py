@@ -46,8 +46,9 @@ def style_field_dependencies(style: dict) -> Dict[str, Set[str]]:
         # drawn from that polygon layer: it needs the same fields there (the
         # pruned size field left the parcel numbers at the fallback size).
         polygons = (layer.get("metadata") or {}).get("q2vt:visible-polygons")
-        if polygons:
-            deps.setdefault(polygons, set()).update(fields)
+        # One source layer, or several (the fills of a label's categories).
+        for name in ([polygons] if isinstance(polygons, str) else polygons or []):
+            deps.setdefault(name, set()).update(fields)
     return deps
 
 

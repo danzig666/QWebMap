@@ -196,7 +196,7 @@ def tile_markers(marker, cell_w: int, cell_h: int, positions, wrap: bool = True,
     from collections import OrderedDict  # pylint: disable=import-outside-toplevel
     if _TILED is None:
         _TILED = OrderedDict()
-    key = (hashlib.sha1(marker.tobytes()).hexdigest(), marker.mode, marker.size, int(cell_w), int(cell_h),
+    key = (hashlib.sha1(marker.tobytes(), usedforsecurity=False).hexdigest(), marker.mode, marker.size, int(cell_w), int(cell_h),
            tuple((float(x), float(y)) for x, y in positions), bool(wrap), bool(snap))
     cell = _TILED.get(key)
     if cell is None:

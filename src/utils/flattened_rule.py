@@ -105,6 +105,13 @@ class FlattenedRule:
     # Drawn from another rule's dataset (output_dataset is the fill's: the
     # same polygons, once in the tiles); that rule's geometry is exported.
     shares_dataset: bool = False
+    # Only the symbol buffer of a split marker symbol (QGIS 3.40+): its
+    # image is the buffer around the whole symbol, under its layers
+    # (RulesFlattener._split_by_symbol_layers).
+    buffer_only: bool = False
+    # A point displacement renderer's own labels (RulesFlattener.
+    # _displacement_label): field, font, size (pt), colour; None: none.
+    displacement_label: Optional[dict] = None
 
     def derive(self, rule=None) -> "FlattenedRule":
         """Copy of this flat rule (optionally with another rule object)."""
@@ -115,7 +122,8 @@ class FlattenedRule:
             self.point_group, self.translate, self.effect_role, self.inner_effect,
             self.z_order, self.feature_filter, self.scale_zoom, self.unbound_filter,
             self.label_filter, self.shift, self.visible_repeat, self.diagram,
-            self.band_dashes, self.fill_outline, self.shares_dataset,
+            self.band_dashes, self.fill_outline, self.shares_dataset, self.buffer_only,
+            self.displacement_label,
         )
 
     def evaluation_zoom(self) -> float:

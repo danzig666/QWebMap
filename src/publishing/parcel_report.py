@@ -156,7 +156,7 @@ class _Legend:
         buffer = QBuffer(data)
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
         image.save(buffer, "PNG")
-        digest = hashlib.sha1(bytes(data)).hexdigest()[:14]
+        digest = hashlib.sha1(bytes(data), usedforsecurity=False).hexdigest()[:14]
         if digest not in self.files:
             name = f"pr-{digest}.png"
             with open(os.path.join(self.out_dir, name), "wb") as handle:

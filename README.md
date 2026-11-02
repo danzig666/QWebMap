@@ -103,8 +103,9 @@ What carries over:
 - **Labels:** your installed fonts (glyphs are generated from them, bold, italic and weights such
   as DemiBold, Medium and Light included), buffers, background shapes, letter and word spacing, curved,
   parallel, Free (angled) and around-point placement, scale-based visibility, data-defined
-  positions (their callouts as straight leaders to the label's anchor, reported), and an option
-  to label every feature.
+  positions (their callouts as straight leaders to the label's anchor, reported), callouts of
+  point labels (simple, Manhattan, curved and balloon, as QGIS draws them), and an option to
+  label every feature.
 - **Data-defined properties:** evaluated by QGIS for each feature (`@symbol_color` included, and
   `rand()` gives every marker of a pattern fill its own value, as in QGIS); a property with no
   browser equivalent keeps its static value and is reported.
@@ -162,9 +163,10 @@ generated table of every symbol layer type's strategy and limits is in
 - **Map-unit pattern fills:** markers on the polygon edge are drawn whole instead of clipped,
   rotated map-unit point patterns are not rotated, and in a rotated map-unit SVG fill each tile is
   turned but the grid is not (reported).
-- **Label callouts:** callouts of labels with data-defined positions are straight leaders to the
-  label's anchor (reported). Callouts of labels that QGIS places itself are left out, without a
-  report entry.
+- **Label callouts:** callouts of point labels are drawn as QGIS draws them; a label placed
+  around its point keeps its first position (QGIS may move it), reported. Callouts of labels
+  with data-defined positions are straight leaders to the label's anchor (reported). Callouts of
+  line and polygon labels, which the browser places itself, are left out without a report entry.
 - **Label placement:** close to QGIS's, but the browser places labels itself, so in crowded areas
   other labels can win.
 - **Feature order across rules:** overlapping features of different rules keep QGIS's order up to
@@ -192,7 +194,7 @@ Processing tool, and for *Publish Web Map* in the work folder
 code (`Q2VT_*`), where it happened (the layer, plus the rule or symbol layer when known), the
 export strategy when one applies, and usually a suggested fix, so missing hatches or unsupported
 symbols are visible without reading the log. A few differences are not in the report: the
-callouts of labels that QGIS places itself are left out without an
+callouts of line and polygon labels are left out without an
 entry, and blend modes on vector layers only get a warning in the Publish window.
 
 Both the Processing tool (*Fidelity Mode*, *Beyond Maximum Zoom*) and the Publish Web Map window
@@ -551,7 +553,16 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.55.0**. Newest first:
+This README describes QWebMap **4.56.0**. Newest first:
+
+**4.56.0** — ideas from the original plugin: symbol buffers, label case and callouts, data-defined trims, offsets and arrows, faster start-up and export
+Ideas taken from recent versions of [GallPeters/QGIS2VectorTiles](https://github.com/GallPeters/QGIS2VectorTiles), reimplemented here:
+- A marker symbol's buffer is drawn once around the whole symbol, under its layers (idea: GallPeters/QGIS2VectorTiles).
+- Data-defined line trims, fill offsets and arrow widths, head sizes and types; *Point displacement* labels (idea: GallPeters/QGIS2VectorTiles).
+- Labels: QGIS type case (also data-defined), edge spaces kept, data-defined priority and font family, *Force point inside polygon*; simple, Manhattan, curved and balloon callouts of point labels (idea: GallPeters/QGIS2VectorTiles).
+- Labels of visible polygon parts ride in the polygons' own tiles: smaller web maps (idea: GallPeters/QGIS2VectorTiles).
+- Faster viewer start-up (preloaded modules, parallel fetches) and export (in-memory tile work database, no copy for filters that keep every feature, compact JSON) (idea: GallPeters/QGIS2VectorTiles).
+- The export worker's pipe accepts only the plugin's own classes (idea: GallPeters/QGIS2VectorTiles's Bandit fixes).
 
 **4.55.0** — no raster tile limit; English by default; user guide on phones
 - A raster layer of more than 400 000 tiles is no longer refused. Before the export a warning says it will take hours and names the layer, the setting that makes it large (*Sharpest detail* or the Map tab's *Maximum tile zoom*) and what brings it down (tile counts one detail step coarser, and how much smaller the extent should be). *Export anyway* goes on.

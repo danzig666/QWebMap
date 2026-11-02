@@ -47,6 +47,53 @@ from .fidelity.dependencies import prunable_fields, style_field_dependencies
 from . import export_cache
 from .datasets import drop_fields, gpkg_info
 
+# The MVT writer keeps its features in a temporary SQLite database, by default
+# a file next to the output; in memory (/vsimem) a run is about a third
+# faster. It takes up to about 4x the run's input (measured); a run goes in
+# memory while 8x its input fits in half of the memory left (an idea of
+# QGIS2VectorTiles 4.0, GallPeters/QGIS2VectorTiles); a run that fails is
+# run once more on disk.
+_MEMORY_DB_FACTOR = 8
+
+
+def available_memory() -> Optional[int]:
+    """Bytes of memory the system can still give (None: unknown)."""
+    try:
+        if os.name == "nt":
+            import ctypes  # pylint: disable=import-outside-toplevel
+
+            class _Status(ctypes.Structure):  # MEMORYSTATUSEX
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong),
+                            ("total", ctypes.c_ulonglong), ("available", ctypes.c_ulonglong),
+                            ("page_total", ctypes.c_ulonglong), ("page_available", ctypes.c_ulonglong),
+                            ("virtual_total", ctypes.c_ulonglong), ("virtual_available", ctypes.c_ulonglong),
+                            ("extended", ctypes.c_ulonglong)]
+            status = _Status()
+            status.length = ctypes.sizeof(_Status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.available)
+            return None
+        with open("/proc/meminfo", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:  # noqa: BLE001 - macOS and others: on disk
+        return None
+    return None
+
+
+def vrt_input_bytes(vrt_path: str) -> int:
+    """Size of the files a tile run's VRT reads."""
+    total = 0
+    try:
+        for node in ET.parse(vrt_path).getroot().iter("SrcDataSource"):
+            path = (node.text or "").split("|")[0]
+            if os.path.isfile(path):
+                total += os.path.getsize(path)
+    except (ET.ParseError, OSError):
+        return 0
+    return total
+
 _MVT_MAX_ZOOM = 22
 
 
@@ -895,13 +942,21 @@ class GDALTilesGenerator:
         # A layer's tiles may be made in several pieces: count layers, not pieces.
         owners = list(labels) if labels and len(labels) == len(commands) else list(range(len(commands)))
         retried = set()
+        free = available_memory()
+        budget = free // 2 if free else 0
+        in_memory: Dict[int, int] = {}  # running in memory: bytes it may take
         started = last_message = last_report = time.monotonic()
         try:
             while waiting or running:
                 while waiting and len(running) < slots:
                     job = waiting.pop(0)
+                    extra = []
+                    need = _MEMORY_DB_FACTOR * vrt_input_bytes(commands[job][4]) if budget else 0
+                    if need and job not in retried and need <= budget - sum(in_memory.values()):
+                        in_memory[job] = need
+                        extra = ["-dsco", f"TEMPORARY_DB=/vsimem/q2vt_{job}.db"]
                     proc = subprocess.Popen(
-                        commands[job] + ["-progress"], env=env, stdout=subprocess.PIPE,
+                        commands[job] + extra + ["-progress"], env=env, stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE, text=True, errors="replace", **self._popen_options())
                     readers = (_OutputReader(proc.stdout, True), _OutputReader(proc.stderr, False))
                     for reader in readers:
@@ -911,6 +966,7 @@ class GDALTilesGenerator:
                 for job, (proc, progress, errors) in [(j, r) for j, r in running.items()
                                                       if r[0].poll() is not None]:
                     del running[job]
+                    in_memory.pop(job, None)
                     progress.join(timeout=5)
                     errors.join(timeout=5)
                     proc.stdout.close()
@@ -926,7 +982,7 @@ class GDALTilesGenerator:
                         first = next((line for line in errors.text.splitlines() if line.strip()), "")
                         if self.feedback is not None:
                             self.feedback.pushInfo(f"   A tile job stopped with an error ({first[:200]}); "
-                                                   "running it once more.")
+                                                   "running it once more (its work database on disk).")
                         if os.path.exists(commands[job][3]):
                             os.remove(commands[job][3])  # its partial tiles
                         tracker.forget(job)

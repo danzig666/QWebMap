@@ -636,7 +636,8 @@ class RulesFlattener:
                 ("symbol_diagonal", math.sqrt(2) * max(sizes or [0.0])),
                 ("center_diagonal", math.sqrt(2) * map_units(center.size(), center.sizeUnit())
                  if center is not None else 0.0),
-                ("addition", map_units(renderer.circleRadiusAddition(), Qgis.RenderUnit.Millimeters))]
+                ("addition", map_units(renderer.circleRadiusAddition(), Qgis.RenderUnit.Millimeters)),
+                ("label_factor", float(renderer.labelDistanceFactor()))]
         return tuple(params)
 
     @staticmethod
@@ -717,6 +718,8 @@ class RulesFlattener:
         del self.flattened_rules[before:]
         points = self._group_points(layer)
         bands = {}
+        label = self._displacement_label(renderer, layer) if mode == "displacement" else None
+        labelled = []  # the bands labelled once (members split into symbol layers)
         for flat_rule in components:
             expression = flat_rule.rule.filterExpression() or ""
             role = next((r for r in self.POINT_GROUP_ROLES if self._role_filter(r) in expression),
@@ -786,11 +789,52 @@ class RulesFlattener:
                     banded.point_group = (mode, role, round((start + end) / 2, 4), params)
                     self.flattened_rules.append(banded)
                     previous = (banded, groups, moves)
+                    if role == "members" and label is not None and banded.rule.symbol() is not None \
+                            and banded.visibility not in labelled:
+                        labelled.append(banded.visibility)
+                        label_rule = self._displacement_label_rule(banded, label)
+                        if label_rule is not None:
+                            self.flattened_rules.append(label_rule)
         self.diagnostics.add(
             "Q2VT_SYMBOL_APPROXIMATE",
             f"{'Point cluster' if mode == 'cluster' else 'Point displacement'} renderer: points "
             "grouped per zoom level (QGIS groups at every scale, within the visible area).",
             layer_id=layer.id())
+
+    @staticmethod
+    def _displacement_label(renderer, layer) -> Optional[dict]:
+        """A point displacement renderer's own labels (its label attribute,
+        font and colour; QgsPointDistanceRenderer::drawLabels) or None. An
+        idea of QGIS2VectorTiles 4.1 (GallPeters/QGIS2VectorTiles)."""
+        name = renderer.labelAttributeName()
+        if not name or layer.fields().lookupField(name) < 0:
+            return None
+        font = renderer.labelFont()
+        color = renderer.labelColor()
+        return {"field": layer.fields().at(layer.fields().lookupField(name)).name(),
+                "family": font.family(), "style": font.styleName(), "bold": font.bold(),
+                "italic": font.italic(), "size_pt": float(font.pointSizeF()),
+                "color": (color.red(), color.green(), color.blue(), color.alphaF()),
+                "min_scale": float(renderer.minimumLabelScale())}
+
+    def _displacement_label_rule(self, members, label: dict):
+        """The labels of a band of displaced points: one point per member
+        where QGIS writes its label (RulesExporter._point_groups, role
+        "label"), drawn as text from the label attribute. Only at scales
+        larger than the minimum label scale (QGIS: rendererScale < it)."""
+        rule = members.derive()
+        rule.set_attr("s", 98)  # a dataset of its own
+        mode, _role, zoom, params = members.point_group
+        rule.point_group = (mode, "label", zoom, params)
+        rule.displacement_label = dict(label)
+        if label["min_scale"] > 0:
+            from .fidelity import zoom as fidelity_zoom  # pylint: disable=import-outside-toplevel
+            first = fidelity_zoom.scale_to_zoom(label["min_scale"])
+            if rule.visibility is not None:
+                rule.visibility = rule.visibility.intersect(ZoomInterval(float(first), None))
+                if rule.visibility.is_empty:
+                    return None
+        return rule
 
     def _stable_members(self, flat_rule, rule, mode: str, zoom: float, params: tuple,
                         tolerance: float):
@@ -1745,6 +1789,7 @@ class RulesFlattener:
 
         layer_count = symbol.symbolLayerCount()
         split_rules = []
+        buffered = self._split_buffer(symbol)
 
         clone_symbol = clone_symbol_layer = rule_clone = None
         for layer_idx in reversed(range(layer_count)):
@@ -1784,6 +1829,8 @@ class RulesFlattener:
                     clone_symbol.deleteSymbolLayer(remove_idx)
 
 
+            if buffered:  # drawn once, under the whole symbol (below)
+                clone_symbol.bufferSettings().setEnabled(False)
             clone_symbol_layer = clone_symbol.symbolLayers()[0]
             self._fold_enabled_property(rule_clone, clone_symbol_layer)
             draw_pass = clone_symbol_layer.renderingPass() if self._honor_passes else 0
@@ -1805,7 +1852,38 @@ class RulesFlattener:
             if rule_clone:
                 split_rules.append(rule_clone)
 
+        if buffered:
+            split_rules.append(self._buffer_rule(flat_rule, symbol, layer_count))
         return split_rules
+
+    @staticmethod
+    def _split_buffer(symbol) -> bool:
+        """A marker symbol of several enabled layers with a symbol buffer
+        (QGIS 3.40+). QGIS buffers the shape of the whole rendered symbol
+        once and draws it under all its layers (QgsSymbol::drawPreviewIcon,
+        renderFeature); kept on every split layer, each layer got a buffer
+        of its own (one around every part, over the layers below)."""
+        settings = getattr(symbol, "bufferSettings", lambda: None)()
+        if settings is None or not settings.enabled() or settings.fillSymbol() is None:
+            return False
+        if int(getattr(symbol.type(), "value", symbol.type())) != 0:
+            return False  # line and fill symbols: drawn by MapLibre, without the buffer
+        return sum(1 for layer in symbol.symbolLayers() if layer.enabled()) > 1
+
+    def _buffer_rule(self, flat_rule: FlattenedRule, symbol, layer_count: int) -> FlattenedRule:
+        """The rule drawing a split marker symbol's buffer: the whole
+        symbol, whose image is only its buffer (SymbolImage buffer_only),
+        under the layers' rules. An idea of QGIS2VectorTiles 4.2
+        (GallPeters/QGIS2VectorTiles), which keeps the buffer on the bottom
+        layer; here it surrounds the whole symbol, as in QGIS."""
+        rule = flat_rule.derive()
+        rule.set_attr("c", 0)
+        rule.set_attr("s", layer_count)  # a dataset of its own (after the layers')
+        rule.buffer_only = True
+        passes = [layer.renderingPass() for layer in symbol.symbolLayers() if layer.enabled()] \
+            if self._honor_passes else [0]
+        rule.order = (-flat_rule.get_attr("l"), min(passes or [0]), 0, self._draw_seq, -1, 0)
+        return rule
 
     def _simple_fill_rules(self, rule_clone: FlattenedRule, fill_layer, order: tuple):
         """A simple fill as its fill and its outline: QGIS strokes the polygon
@@ -1819,6 +1897,7 @@ class RulesFlattener:
             # The exported polygon is moved (outline too); no translate.
             rule_clone.shift = shift
             fill_layer.setOffset(QPointF())
+            fill_layer.setDataDefinedProperty(QgsSymbolLayer.Property.PropertyOffset, QgsProperty())
         if fill_layer.strokeStyle() != Qt.PenStyle.NoPen:
             outline_rule = rule_clone.derive()
             outline_rule.set_attr("c", 1)
@@ -1978,11 +2057,17 @@ class RulesFlattener:
         data-defined offset is shifted by its static value (reported as such
         by the converter). None when there is none, or a map unit scale
         limits it within the rule's zooms (then a zoom-curve translate draws
-        it: a translated fill is cut at the tile edges when overzoomed)."""
+        it: a translated fill is cut at the tile edges when overzoomed). A
+        data-defined offset: each feature's ("x,y" or [x, y]; not a point:
+        the static one), as QGIS (QgsSymbolLayerUtils::toPoint); an idea of
+        QGIS2VectorTiles 4.2 (GallPeters/QGIS2VectorTiles)."""
         from .fidelity.units import normalize_unit  # pylint: disable=import-outside-toplevel
         offset = fill_layer.offset()
         unit = normalize_unit(fill_layer.offsetUnit())
-        if unit not in ("map", "m") or (abs(offset.x()) <= 1e-9 and abs(offset.y()) <= 1e-9):
+        key = QgsSymbolLayer.Property.PropertyOffset
+        dd = fill_layer.dataDefinedProperties().property(key) \
+            if fill_layer.dataDefinedProperties().isActive(key) else None
+        if unit not in ("map", "m") or (dd is None and abs(offset.x()) <= 1e-9 and abs(offset.y()) <= 1e-9):
             return None
         scale = fill_layer.offsetMapUnitScale()
         min_zoom = flat_rule.get_attr("o") or 0
@@ -2004,6 +2089,14 @@ class RulesFlattener:
                 factor = context.mercator_per_meter / context.mercator_per_map_unit
             else:
                 factor = QgsUnitTypes.fromUnitToUnitFactor(Qgis.DistanceUnit.Meters, map_units)
+        if dd is not None:
+            point = (f"with_variable('q2vt_o', {enclosed(dd.asExpression())}, "
+                     "if(try(array_length(@q2vt_o)) IS NOT NULL, @q2vt_o, string_to_array(to_string(@q2vt_o), ',')))")
+            # Not a point (QgsSymbolLayerUtils::toPoint fails): the static offset.
+            ok = f"try(to_real(array_get({point}, 0))) IS NOT NULL AND try(to_real(array_get({point}, 1))) IS NOT NULL"
+            x = f"if({ok}, to_real(array_get({point}, 0)), {offset.x()!r}) * {factor!r}"
+            y = f"-if({ok}, to_real(array_get({point}, 1)), {offset.y()!r}) * {factor!r}"
+            return x, y
         return offset.x() * factor, -offset.y() * factor
 
     def _map_unit_scale_limits(self, value: float, unit: str, scale, min_zoom: int) -> bool:

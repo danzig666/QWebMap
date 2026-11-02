@@ -16,7 +16,7 @@ here are map coordinates (y up): a painter shift (dx, dy) is (dx, -dy).
 """
 
 import math
-from typing import Dict, List, Sequence, Set, Tuple
+from typing import Optional, Dict, List, Sequence, Set, Tuple
 
 Point = Tuple[float, float]
 
@@ -137,3 +137,38 @@ def grid_lines(positions: Sequence[Point], size: int) -> List[Tuple[Point, Point
         if i + size < len(positions):
             lines.append((point, positions[i + size]))
     return lines
+
+
+def label_spots(center: Point, positions: Sequence[Point], placement: int, symbol_diagonal: float,
+                factor: float, radius: Optional[float]) -> List[Tuple[Point, str]]:
+    """Where QGIS writes each displaced member's label, map units, and the
+    text's anchor there (QgsPointDisplacementRenderer::
+    calculateSymbolAndLabelPositions, QgsPointDistanceRenderer::drawLabels:
+    a label left of its point ends there, one below it hangs from it,
+    otherwise it starts there on its baseline)."""
+    cx, cy = center
+    side = math.sqrt(symbol_diagonal ** 2 / 2.0) * factor
+    spots = []
+    if len(positions) == 1:  # alone: up and to the right of the point
+        x, y = positions[0]
+        spots.append((x + side, y + side))
+    elif placement == GRID:
+        for x, y in positions:
+            spots.append((x + (side if x >= cx else -side), y + (side if y > cy else -side)))
+    else:
+        for x, y in positions:
+            dx, dy = x - cx, y - cy
+            reach = math.hypot(dx, dy)
+            if reach <= 0:
+                spots.append((x, y))
+                continue
+            grow = (reach + symbol_diagonal * factor) / reach
+            spots.append((cx + dx * grow, cy + dy * grow))
+    out = []
+    for x, y in spots:
+        horizontal = "right" if x - cx < -1e-12 else "left"
+        vertical = "top" if y - cy < -1e-12 else "bottom"
+        if len(positions) == 1:
+            horizontal, vertical = "left", "bottom"
+        out.append(((x, y), f"{vertical}-{horizontal}"))
+    return out

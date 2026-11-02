@@ -369,8 +369,9 @@ def logical_model(project: QgsProject, profile: PublicationProfile, rules, style
                 next(r for r in rule_entries if r["id"] == rid)["componentIds"].append(cid)
         component["styleLayerIds"].append(style_layer["id"])
         helper = (style_layer.get("metadata") or {}).get("q2vt:visible-polygons")
-        if helper and helper not in component["dependsOnSourceLayers"]:
-            component["dependsOnSourceLayers"].append(helper)
+        for name in ([helper] if isinstance(helper, str) else helper or []):
+            if name not in component["dependsOnSourceLayers"]:
+                component["dependsOnSourceLayers"].append(name)
     return {"groups": list(groups.values()), "layers": layers, "rules": rule_entries,
             "components": components}
 
@@ -399,7 +400,7 @@ def _raster_entry(layer, config, lid: str, path, paths, components: List[dict]) 
 
 def theme_id(name: str) -> str:
     import hashlib  # pylint: disable=import-outside-toplevel
-    return "th-" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
+    return "th-" + hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
 
 
 def theme_presets(project: QgsProject, profile: PublicationProfile, model: dict,

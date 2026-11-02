@@ -3046,7 +3046,7 @@ def test_map_unit_fill_offset_shift_or_curve(plugin, tmp_path, limits, shifted):
     """A map-unit fill offset moves the exported polygon (a translate is cut
     at the tile edges when overzoomed) unless its map unit scale limits it
     within the exported zooms (then a zoom-curve translate draws it). A
-    data-defined offset uses its static value (the converter reports it)."""
+    data-defined offset moves each polygon by its own (an expression)."""
     from qgis.core import QgsMapUnitScale, QgsProperty, QgsSimpleFillSymbolLayer, QgsSymbolLayer
     from qgis.PyQt.QtCore import QPointF
     from q2vt_plugin.src.core.rules_flattener import RulesFlattener
@@ -3072,7 +3072,11 @@ def test_map_unit_fill_offset_shift_or_curve(plugin, tmp_path, limits, shifted):
     assert sorted(r.get_attr("c") for r in rules) == [1, 2]
     assert bool(diags.by_code("Q2VT_SYMBOL_APPROXIMATE")) == (not shifted)
     for rule in rules:
-        if shifted:
+        if shifted and limits.get("ddp"):
+            from qgis.core import QgsExpression
+            assert tuple(QgsExpression(v).evaluate() for v in rule.shift) == pytest.approx((5, -5))
+            assert not rule.translate
+        elif shifted:
             assert rule.shift == pytest.approx((30, -20)) and not rule.translate
         else:
             assert not rule.shift

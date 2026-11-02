@@ -128,7 +128,12 @@ def test_memory_chains_give_the_same_tiles_and_share_steps(plugin, tmp_path, mon
     marker_layers = {name for tile in memory.values() for name in tile if "t00" in name}
     assert len(marker_layers) > 3  # fills, roads and per-zoom marker datasets were exported
     visible = {name[-3:] for tile in memory.values() for name in tile}
-    assert {"_vp", "_vl"} <= visible  # polygon and line label datasets (q2vt_part)
+    assert "_vl" in visible  # line label dataset (q2vt_part)
+    # 4.56: visible-polygon labels ride in their fill datasets (q2vt_part there), no _vp copy
+    assert "_vp" not in visible
+    parts = {name for tile in memory.values() for name, features in tile.items()
+             if any(key == "q2vt_part" for f in features for key, _ in f[2])}
+    assert any(not name.endswith("_vl") for name in parts), parts
 
 
 def test_a_failing_memory_chain_is_redone_with_files(plugin, tmp_path, monkeypatch):

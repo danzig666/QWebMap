@@ -159,7 +159,8 @@ def write_json_atomic(path: str, payload, indent: Optional[int] = None) -> None:
     tmp = f"{path}.tmp-{os.getpid()}-{os.urandom(4).hex()}"
     try:
         with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=indent, sort_keys=indent is not None)
+            json.dump(payload, handle, ensure_ascii=False, indent=indent, sort_keys=indent is not None,
+                      separators=None if indent is not None else (",", ":"))  # compact when not for reading
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)

@@ -135,6 +135,7 @@ from . import label_lines
 from . import marker_points
 from .fidelity.diagnostics import DiagnosticCollector, Severity
 from .fidelity import feature_order as fo
+from .fidelity import label_case
 from .fidelity.qgis_expr import (bind_geometry, enclosed, in_layer_crs,
                                  uses_map_scale, with_map_scale, with_variable)
 from .fidelity import zoom as fidelity_zoom
@@ -387,6 +388,9 @@ class _RuleGroupSnapshot:
     # as lines ("largest": the feature's longest ring, "every": each ring;
     # _vertex_rings); "" otherwise.
     vertex_rings: str = ""
+    # The rule's own filter, before a label's "has a text" condition: a
+    # fill of the same filter can host a label's polygons (_host_visible_polygons).
+    base_filter: str = ""
 
 
 _RING_FIELD = f"{_FIELD_PREFIX}_ring_cw"
@@ -742,6 +746,12 @@ class RulesExporter:
                 expr_fields = list(expr_fields) + [
                     (6, primary.recipe.param("x"), CALLOUT_X_FIELD),
                     (6, primary.recipe.param("y"), CALLOUT_Y_FIELD)]
+            if getattr(primary, "displacement_label", None):
+                # A displaced point's label: its text and anchor (_point_groups).
+                expr_fields = list(expr_fields) + [
+                    (10, QgsExpression.quotedColumnRef(primary.displacement_label["field"]),
+                     primary.displacement_label["field"]),
+                    (10, QgsExpression.quotedColumnRef(mat.LABEL_ANCHOR_FIELD), mat.LABEL_ANCHOR_FIELD)]
             label_text = None
             if primary.get_attr("t") == 1:
                 expr_fields = self._add_label_expression_field(
@@ -768,6 +778,7 @@ class RulesExporter:
             ]
             filter_expression = in_layer_crs(
                 primary.rule.filterExpression(), f"EPSG:{_EPSG_CRS}", layer_crs, self._planar)
+            base_filter = filter_expression
             if label_text:
                 filter_expression = self._with_label_text(
                     filter_expression,
@@ -788,8 +799,8 @@ class RulesExporter:
             # The layer's variables (@layer_name, its own ones): Processing
             # would give the temporary input layer's.
             bind = functools.partial(self._with_layer_variables, layer=primary.layer)
-            filter_expression, geom_expr, pre_generator = (
-                bind(filter_expression), bind(geom_expr), bind(pre_generator))
+            filter_expression, geom_expr, pre_generator, base_filter = (
+                bind(filter_expression), bind(geom_expr), bind(pre_generator), bind(base_filter))
             expr_fields, part_fields, generated_fields = (
                 [(ftype, bind(expr), name) for ftype, expr, name in fields]
                 for fields in (expr_fields, part_fields, generated_fields))
@@ -824,6 +835,7 @@ class RulesExporter:
                 split_generated=primary.get_attr("t") == 1 and getattr(
                     primary, "label_modes", {}).get("multipart") == MULTIPART_SPLIT
                 and bool(getattr(primary, "label_generated", False)),
+                base_filter=base_filter or "",
             ))
             if self._labels_visible_polygon(primary, geom_target):
                 rule_groups.append(self._visible_polygon_group(rule_groups[-1], primary))
@@ -831,7 +843,82 @@ class RulesExporter:
                 rule_groups.append(self._visible_line_group(rule_groups[-1], primary))
 
         self._flush_view_reports()
-        return sources, rule_groups
+        return sources, self._host_visible_polygons(rule_groups)
+
+    @staticmethod
+    def _plain_polygons_of(fill: "_RuleGroupSnapshot", polygons: "_RuleGroupSnapshot") -> bool:
+        """Whether ``fill``'s dataset holds plain polygons of the layer a
+        visible-polygon label reads (``polygons``; no generator, recipe,
+        merge, offset or feature order copy) at every zoom the label's data
+        is at."""
+        if fill.layer_id != polygons.layer_id or fill.rule_type != 0 or fill.visible_polygons \
+                or fill.geometry_target != 2 or fill.source_geometry != 2 or fill.recipe is not None \
+                or fill.pre_generator or fill.merge or fill.point_group or fill.pattern_anchor:
+            return False
+        if any(getattr(rule, "shift", None) or getattr(rule, "feature_filter", None)
+               or getattr(rule, "translate", None) for rule in fill.flat_rules):
+            return False
+        if fill.data_min_zoom > polygons.data_min_zoom:
+            return False
+        return fill.data_max_zoom is None or (
+            polygons.data_max_zoom is not None and fill.data_max_zoom >= polygons.data_max_zoom)
+
+    @classmethod
+    def _hosts_of(cls, groups, polygons: "_RuleGroupSnapshot") -> List["_RuleGroupSnapshot"]:
+        """The fills whose polygons together are a visible-polygon label's:
+        one of the label's own filter, or those whose filters the label's
+        filter joins with OR (a label of the features its categories draw:
+        RulesFlattener._renderers_label_filter), each once. [] if none."""
+        candidates = [g for g in groups if cls._plain_polygons_of(g, polygons)]
+        wanted = polygons.base_filter or ""
+        single = [g for g in candidates if (g.filter_expression or "") == wanted]
+        if single:
+            return single[:1]
+        if not wanted:
+            return []
+        terms, chosen = set(), []
+        for group in candidates:
+            term = enclosed(group.filter_expression or "")
+            if group.filter_expression and term in wanted and term not in terms:
+                terms.add(term)
+                chosen.append(group)
+        chosen.sort(key=lambda g: wanted.index(enclosed(g.filter_expression)))
+        if len(chosen) < 2 or " OR ".join(enclosed(g.filter_expression) for g in chosen) != wanted:
+            return []
+        return chosen
+
+    def _host_visible_polygons(self, groups: List["_RuleGroupSnapshot"]) -> List["_RuleGroupSnapshot"]:
+        """A visible-polygon label's polygons from a fill of the same
+        polygons (_hosts_polygons_of) instead of a copy: the label's fields
+        are added to the fill's dataset and the viewer reads the label's
+        polygons there - one copy of the polygons in the tiles, one dataset
+        less to export (an idea of QGIS2VectorTiles 4.1,
+        GallPeters/QGIS2VectorTiles: labels drawn from their features' rows)."""
+        out = list(groups)
+        for polygons in [g for g in groups if g.visible_polygons and
+                         g.output_dataset.endswith(self.VISIBLE_POLYGONS_SUFFIX)]:
+            label_name = polygons.output_dataset[:-len(self.VISIBLE_POLYGONS_SUFFIX)]
+            label = next((g for g in out if g.output_dataset == label_name), None)
+            # "Split label text lines over parts": the copy gives each part
+            # its own line of the text (_label_lines_over_parts), a fill can't.
+            hosts = [] if polygons.split_label_lines or polygons.split_generated \
+                else self._hosts_of(out, polygons)
+            if label is None or not hosts:
+                continue
+            for host in hosts:
+                names = {name for _, _, name in host.expression_fields}
+                parts = {name for _, _, name in host.part_fields}
+                out[out.index(host)] = dataclasses.replace(
+                    host, visible_polygons=True,
+                    expression_fields=list(host.expression_fields) + [
+                        f for f in polygons.expression_fields if f[2] not in names],
+                    part_fields=list(host.part_fields) + [
+                        f for f in polygons.part_fields if f[2] not in parts])
+            out.remove(polygons)
+            names = [host.output_dataset for host in hosts]
+            for rule in label.flat_rules:
+                rule.visible_polygons = names[0] if len(names) == 1 else names
+        return out
 
     def _templated_recipe(self, primary: FlattenedRule, layer_crs: str, bind) -> Optional[Recipe]:
         """The rule's recipe, with the QGIS 4 marker / hash line trim, blank
@@ -1869,6 +1956,42 @@ class RulesExporter:
 
         return expr_str
 
+    def _filter_match(self, source, expression: str) -> str:
+        """Whether a rule's filter keeps "all", "none" or "some" features of
+        a base layer, counted once per (layer, filter) without geometries:
+        a filter keeping every feature (labels of all drawn categories)
+        needs no filtered copy, and the groups of one filter share the
+        count. Evaluated as the extract step evaluates it (try(): an error
+        does not match). "some": not a base layer file, or unknown."""
+        if not isinstance(source, str) or source.startswith(_MEM_PREFIX) or not exists(source):
+            return "some"
+        key = (source, expression)
+        cache = self.__dict__.setdefault("_filter_matches", {})
+        lock = self.__dict__.setdefault("_filter_lock", threading.Lock())
+        with lock:
+            if key in cache:
+                return cache[key]
+        result = "some"
+        try:
+            layer = self._open(source, "filter_count")
+            if layer.isValid():
+                context = self._worker_expression_context()
+                context.appendScope(QgsExpressionContextUtils.layerScope(layer))
+                wrapped = f"try({expression}\n)"
+                parsed = QgsExpression(wrapped)
+                request = QgsFeatureRequest().setFilterExpression(wrapped).setExpressionContext(context)
+                request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+                if not parsed.needsGeometry() and not _uses_aggregates(expression):
+                    request.setSubsetOfAttributes(sorted(parsed.referencedColumns() - {""}),
+                                                  layer.fields())
+                    total, kept = layer.featureCount(), sum(1 for _ in layer.getFeatures(request))
+                    result = "all" if kept == total and total >= 0 else "none" if kept == 0 else "some"
+        except Exception:  # noqa: BLE001 - counted by the extract step instead
+            result = "some"
+        with lock:
+            cache[key] = result
+        return result
+
     def _export_one_rule_group(
         self, grp: _RuleGroupSnapshot, source_path: str
     ) -> Optional[str]:
@@ -1896,16 +2019,20 @@ class RulesExporter:
             if not self.validate_expression(grp, grp.filter_expression):
                 return None
 
-            filt = self._run_alg_safe(
-                "extractbyexpression", "native",
-                INPUT=current_input,
-                EXPRESSION=grp.filter_expression,
-                OUTPUT=filt_out,
-            )
-            check = self._open(filt, "check")
-            if not check.isValid() or check.featureCount() <= 0:
+            matched = self._filter_match(current_input, grp.filter_expression)
+            if matched == "none":
                 return None
-            current_input = filt
+            if matched != "all":  # a filter keeping every feature: the input as it is
+                filt = self._run_alg_safe(
+                    "extractbyexpression", "native",
+                    INPUT=current_input,
+                    EXPRESSION=grp.filter_expression,
+                    OUTPUT=filt_out,
+                )
+                check = self._open(filt, "check")
+                if not check.isValid() or check.featureCount() <= 0:
+                    return None
+                current_input = filt
 
         # Merged features / inverted polygons: the symbol's features drawn
         # together, before any recipe (a gradient fills the merged shape)
@@ -2631,6 +2758,8 @@ class RulesExporter:
         if role in ("cluster", "center"):
             fields.append(QgsField(mat.CLUSTER_SIZE_FIELD, QVariant.Int))
             fields.append(QgsField(mat.CLUSTER_COLOR_FIELD, QVariant.String))
+        if role == "label":
+            fields.append(QgsField(mat.LABEL_ANCHOR_FIELD, QVariant.String))
         kind = QgsWkbTypes.LineString if role in ("circle", "grid") else QgsWkbTypes.Point
         out = self._temp_path("groups")[:-len(_TEMP_RULE_FORMAT)] + "fgb"
         with self._temp_files_lock:
@@ -2644,13 +2773,16 @@ class RulesExporter:
         def back(x, y):
             return from_crs.transform(QgsPointXY(x, y))
 
-        def write(source_feature, geometry, size=None):
+        def write(source_feature, geometry, size=None, anchor=None):
             feature = QgsFeature(fields)
             for field in fields:
-                if field.name() not in (mat.CLUSTER_SIZE_FIELD, mat.CLUSTER_COLOR_FIELD):
+                if field.name() not in (mat.CLUSTER_SIZE_FIELD, mat.CLUSTER_COLOR_FIELD,
+                                        mat.LABEL_ANCHOR_FIELD):
                     feature[field.name()] = source_feature[field.name()]
             if size is not None:
                 feature[mat.CLUSTER_SIZE_FIELD] = size
+            if anchor is not None:
+                feature[mat.LABEL_ANCHOR_FIELD] = anchor
             feature.setGeometry(geometry)
             writer.addFeature(feature)
 
@@ -2665,6 +2797,18 @@ class RulesExporter:
                 stable = self._point_group_cache[key]
         for members in groups:
             self._check_cancel()
+            if role == "label":  # where QGIS writes each member's label
+                center = pg.centroid(points, members) if len(members) > 1 else points[members[0]]
+                positions, radius, _size = pg.displaced(
+                    center, len(members), placement, params.get("symbol_diagonal", 0.0),
+                    params.get("center_diagonal", 0.0), params.get("addition", 0.0)) \
+                    if len(members) > 1 else ([points[members[0]]], None, None)
+                spots = pg.label_spots(center, positions, placement, params.get("symbol_diagonal", 0.0),
+                                       params.get("label_factor", 0.5), radius)
+                for index, ((x, y), anchor) in zip(members, spots):
+                    write(features[index], QgsGeometry.fromPointXY(back(x, y)), anchor=anchor)
+                    written += 1
+                continue
             if len(members) < 2:
                 if role == "members" and (members[0] in stable) == only_stable:
                     write(features[members[0]], features[members[0]].geometry())
@@ -2923,11 +3067,48 @@ class RulesExporter:
         shifts = recipe.param("painter")
         target = int(recipe.param("layer", 0))
         written = 0
+        static = (start, width, head_length, thickness, offset, head_type, arrow_type)
+        dd_sizes = recipe.param("dd_sizes") or ()
+        dd_types = recipe.param("dd_types") or ()
+        if dd_sizes or dd_types:
+            from qgis.core import QgsExpression, QgsSymbolLayerUtils  # pylint: disable=import-outside-toplevel
+            context = self._worker_expression_context()
+            context.setFields(layer.fields())
+            sized = [(i, QgsExpression(e), float(per_unit)) for i, e, per_unit in dd_sizes]
+            typed = [(name, QgsExpression(e)) for name, e in dd_types]
+            for _, expression, *_ in sized + typed:
+                expression.prepare(context)
         for feature in layer.getFeatures():
             self._check_cancel()
             geometry = QgsGeometry(feature.geometry())
             if geometry.isEmpty():
                 continue
+            start, width, head_length, thickness, offset, head_type, arrow_type = static
+            if dd_sizes or dd_types:
+                # Each feature's (QgsArrowSymbolLayer::_resolveDataDefined):
+                # a number in the property's unit, a head / arrow type by
+                # its number or name; otherwise the static value.
+                context.setFeature(feature)
+                sizes = [start, width, head_length, thickness, offset]
+                for index, expression, per_unit in sized:
+                    value = expression.evaluate(context)
+                    try:
+                        sizes[index] = float(value) * per_unit / pixel
+                    except (TypeError, ValueError):
+                        pass
+                start, width, head_length, thickness, offset = sizes
+                for name, expression in typed:
+                    value = expression.evaluate(context)
+                    if value is None or (hasattr(value, "isNull") and value.isNull()):
+                        continue
+                    decode = QgsSymbolLayerUtils.decodeArrowHeadType if name == "head" \
+                        else QgsSymbolLayerUtils.decodeArrowType
+                    decoded, ok = decode(value)
+                    if ok:
+                        if name == "head":
+                            head_type = int(getattr(decoded, "value", decoded))
+                        else:
+                            arrow_type = int(getattr(decoded, "value", decoded))
             if to_crs is not None:
                 geometry.transform(to_crs)
             shapes = []
@@ -3388,7 +3569,7 @@ class RulesExporter:
             mapping.append((10, f'"{FEATURE_KEY_FIELD}"', FEATURE_KEY_FIELD))
         for name in self.extra_tile_fields.get(grp.layer_id, []):
             if name == LABEL_ANCHOR_MARKER:
-                if grp.rule_type == 1 and grp.source_geometry == 2:
+                if (grp.rule_type == 1 or grp.visible_polygons) and grp.source_geometry == 2:
                     mapping.extend(LABEL_ANCHOR_FIELDS)
                 continue
             # The base layer can hold the field under another case (OGR's
@@ -4536,6 +4717,24 @@ class RulesExporter:
                 fields.extend(tuple(f) for f in rule_fields)
         return fields
 
+    @staticmethod
+    def _label_case(settings, text: str) -> str:
+        """``text`` in the label's type case (QGIS's capitalization, also
+        data-defined: its value, unless NULL, instead)."""
+        from qgis.core import QgsPalLayerSettings  # pylint: disable=import-outside-toplevel
+        try:
+            static = int(settings.format().capitalization())
+        except (AttributeError, TypeError, ValueError):
+            static = 0
+        prop = settings.dataDefinedProperties().property(QgsPalLayerSettings.Property.FontCase)
+        if prop and prop.isActive():
+            label_case.register_expression_functions()
+            return f"q2vt_capitalize({text}, coalesce({enclosed(prop.asExpression())}, {static}))"
+        if static in (0, 1, 2):  # mixed: as it is; upper / lower: text-transform
+            return text
+        label_case.register_expression_functions()
+        return f"q2vt_capitalize({text}, {static})"
+
     def _add_label_expression_field(
         self,
         flat_rule: FlattenedRule,
@@ -4588,6 +4787,9 @@ class RulesExporter:
             spaces = TextPropertyExtractor.word_spacing_spaces(settings.format())
             if spaces:  # QGIS word spacing: wider spaces (MapLibre has none)
                 filter_exp = f"replace({filter_exp}, ' ', '{' ' * (spaces + 1)}')"
+        if not settings.format().allowHtmlFormatting():
+            filter_exp = self._label_case(settings, filter_exp)
+            filter_exp = label_case.edge_spaces_kept(filter_exp)
         fields.append((10, filter_exp, field_name))
         if settings.format().allowHtmlFormatting():
             # MapLibre has no markup: text sections with their own scale.
@@ -4682,10 +4884,12 @@ class RulesExporter:
         """``expression`` moved by (dx, dy) project map units (a fill's map
         unit offset), measured in the project CRS."""
         export_crs = f"EPSG:{_EPSG_CRS}"
+        # Numbers, or expressions of each feature's (a data-defined offset).
+        dx, dy = (repr(v) if isinstance(v, (int, float)) else enclosed(v) for v in (dx, dy))
         if self._map_crs == export_crs:
-            return f"translate({enclosed(expression)}, {dx!r}, {dy!r})"
+            return f"translate({enclosed(expression)}, {dx}, {dy})"
         return (f"transform(translate(transform({enclosed(expression)}, '{export_crs}', "
-                f"'{self._map_crs}'), {dx!r}, {dy!r}), '{self._map_crs}', '{export_crs}')")
+                f"'{self._map_crs}'), {dx}, {dy}), '{self._map_crs}', '{export_crs}')")
 
     def _clip_to_extent(self, expression: str, cut: bool = True) -> str:
         """``expression`` cut to the export extent. Geometries inside it are
@@ -4694,6 +4898,7 @@ class RulesExporter:
         vertex. ``cut`` False: those that reach into it are kept whole (an
         outline drawn on the polygons would stroke the cut)."""
         extent_wkt = self.extent.asWktPolygon()
+        box = self.extent  # a rectangle: inside it = its bounding box inside (within())
         if not cut:
             return (
                 f"with_variable('q2vt_t', {enclosed(expression)}, "
@@ -4702,7 +4907,9 @@ class RulesExporter:
         return (
             f"with_variable('q2vt_t', {enclosed(expression)}, "
             f"with_variable('q2vt_ext', geom_from_wkt('{extent_wkt}'), "
-            f"with_variable('clip', if(within(@q2vt_t, @q2vt_ext), @q2vt_t, "
+            f"with_variable('clip', if(x_min(@q2vt_t) >= {box.xMinimum()!r} AND "
+            f"x_max(@q2vt_t) <= {box.xMaximum()!r} AND y_min(@q2vt_t) >= {box.yMinimum()!r} AND "
+            f"y_max(@q2vt_t) <= {box.yMaximum()!r}, @q2vt_t, "
             f"intersection(@q2vt_t, @q2vt_ext)), "
             f"if(not is_empty_or_null(@clip), @clip, NULL))))"
         )
@@ -4963,7 +5170,8 @@ class RulesExporter:
             flat_rule.set_attr("c", 0)
             target_geom = 0
             transform_expr = self._get_polygon_centroids_expression(
-                clip=visible, roomiest=self._roomiest_placement(settings))
+                clip=visible, roomiest=self._roomiest_placement(settings),
+                force_inside=bool(getattr(settings, "centroidInside", True)))
         return [target_geom, transform_expr]
 
     @staticmethod
@@ -5166,17 +5374,28 @@ class RulesExporter:
         return placement in (_enum_value(Qgis.LabelPlacement.Horizontal),
                              _enum_value(Qgis.LabelPlacement.Free))
 
-    def _get_polygon_centroids_expression(self, clip: bool = False, roomiest: bool = False) -> str:
+    def _get_polygon_centroids_expression(self, clip: bool = False, roomiest: bool = False,
+                                          force_inside: bool = True) -> str:
+        """``force_inside``: QGIS's "Force point inside polygon"
+        (centroidInside): the centroid, unless outside the polygon, else a
+        point on its surface (pal PointSet::getCentroid); off, the centroid
+        wherever it is."""
         if clip or self.cent_source == 1:
+            # Cut only where it reaches out of the extent (its bounding box
+            # inside the rectangle: the polygon is within it).
+            box = self.extent
             polygons = (
-                f"intersection(@geometry, "
-                f"geom_from_wkt('{self.extent.asWktPolygon()}'))"
+                f"if(x_min(@geometry) >= {box.xMinimum()!r} AND x_max(@geometry) <= {box.xMaximum()!r} "
+                f"AND y_min(@geometry) >= {box.yMinimum()!r} AND y_max(@geometry) <= {box.yMaximum()!r}, "
+                f"@geometry, intersection(@geometry, geom_from_wkt('{self.extent.asWktPolygon()}')))"
             )
         else:
             polygons = "@geometry"
         if roomiest:  # 0.5 m in EPSG:3857 units (the base layers' CRS)
             return (f"with_variable('source', {polygons}, "
                     f"coalesce(pole_of_inaccessibility(@source, 0.5), point_on_surface(@source)))")
+        if not force_inside:
+            return f"centroid({polygons})"
         return (
             f"with_variable('source', {polygons}, "
             f"if(intersects(centroid(@source), @source), "

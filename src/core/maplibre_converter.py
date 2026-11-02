@@ -1319,9 +1319,21 @@ class IconPropertyExtractor:
         return False
 
     @staticmethod
-    def get_symbol_sort_key() -> float:
-        """Return ``symbol-sort-key`` (default 0; lower keys render first)."""
-        return 0
+    def get_symbol_sort_key(label_settings: QgsPalLayerSettings = None) -> Union[float, List]:
+        """Return ``symbol-sort-key`` (lower keys are placed first). A
+        data-defined label priority orders each feature's label: 10 -
+        priority (0-10, NULL: the static priority); a static one orders the
+        label layers instead (TilesStyler). An idea of QGIS2VectorTiles 4.1
+        (GallPeters/QGIS2VectorTiles)."""
+        if label_settings is None:
+            return 0
+        prop = label_settings.dataDefinedProperties().property(QgsPalLayerSettings.Property.Priority)
+        if not prop or not prop.isActive():
+            return 0
+        value = PropertyExtractor.get_value_or_expression(float(label_settings.priority), prop, "number")
+        if ex.is_number(value):
+            return 0  # feature-independent: the layer order holds it
+        return ex.add(10, ex.mul(-1, ex.clamp(value, 0, 10)))
 
     @staticmethod
     def get_symbol_z_order() -> str:
@@ -1913,6 +1925,9 @@ class TextPropertyExtractor:
         """
         if label_settings is None:
             return "none"
+        case_prop = label_settings.dataDefinedProperties().property(QgsPalLayerSettings.Property.FontCase)
+        if case_prop and case_prop.isActive() and not label_settings.format().allowHtmlFormatting():
+            return "none"  # per feature, in the exported text (RulesExporter._label_case)
         try:
             cap = PropertyExtractor.get_attribute(
                 label_settings.format(), "capitalization"
@@ -2097,6 +2112,8 @@ class QgisMapLibreStyleExporter:
         effect_roles: Optional[Dict[str, str]] = None,
         inner_effects: Optional[Dict[str, dict]] = None,
         z_orders: Optional[Dict[str, str]] = None,
+        buffer_only: Optional[set] = None,
+        displacement_labels: Optional[Dict[str, dict]] = None,
         feature_filters: Optional[Dict[str, list]] = None,
         label_windows: Optional[set] = None,
         layer_opacities: Optional[Dict[str, float]] = None,
@@ -2150,6 +2167,10 @@ class QgisMapLibreStyleExporter:
         self.inner_effects = inner_effects or {}
         # Style name -> symbol-z-order ("source": data order).
         self.z_orders = z_orders or {}
+        # Style names of rules drawing only a marker symbol's buffer.
+        self.buffer_only = buffer_only or set()
+        # Point displacement labels: {style name: label settings}.
+        self.displacement_labels = displacement_labels or {}
         # Style name -> filter of its feature-order stratum (fidelity.feature_order).
         self.feature_filters = feature_filters or {}
         # Style names of repeated curved line labels laid out at export time:
@@ -2711,7 +2732,17 @@ class QgisMapLibreStyleExporter:
                 self.context.report("Q2VT_DDP_NO_EMITTER",
                                     f"Symbol-level data-defined '{name}' is not exported.")
 
+        label = getattr(self, "displacement_labels", {}).get(self._style_base(style_name))
+        if label is not None:
+            self._displacement_label_layer(label, style_name, source_layer_name, source_name,
+                                           min_zoom, max_zoom)
+            return
         if symbol_type == QgsSymbol.SymbolType.Marker:
+            if self._style_base(style_name) in getattr(self, "buffer_only", ()):
+                # Only the buffer of the whole symbol: one image (no circles, no text).
+                self._convert_marker_symbol(symbol_layer, symbol, style_name, source_layer_name,
+                                            source_name, min_zoom, max_zoom)
+                return
             if self._classify(symbol_layer, 0) == Strategy.UNSUPPORTED:
                 return
             if symbol.symbolLayerCount() == 1 and symbol_layer.layerType() == "FontMarker" \
@@ -2779,7 +2810,8 @@ class QgisMapLibreStyleExporter:
         if request.attributes:
             return name
         key = (QgsSymbolLayerUtils.symbolProperties(request.symbol), request.bake_rotation,
-               repr(request.map_units_per_pixel), repr(request.oversampling), request.frame)
+               repr(request.map_units_per_pixel), repr(request.oversampling), request.frame,
+               request.buffer_only, request.path)
         shared = self.__dict__.setdefault("_sprite_requests", {})
         known = shared.get(key)
         if known is not None and known in self.marker_symbols:
@@ -3168,6 +3200,51 @@ class QgisMapLibreStyleExporter:
                     return False
         return True
 
+    # Where the text of a displaced point's label sits on its point (the
+    # anchor field: QgsPointDistanceRenderer::drawLabels writes it on its
+    # baseline, so "bottom" sits the box's bottom a descent lower).
+    _DISPLACEMENT_DESCENT_EM = 0.22
+
+    def _displacement_label_layer(self, label: dict, style_name, source_layer_name, source_name,
+                                  min_zoom, max_zoom):
+        """A point displacement renderer's labels: the label attribute as
+        text at the points RulesExporter wrote (role "label") in the
+        renderer's label font and colour, never hidden (QGIS draws them with
+        the symbols). An idea of QGIS2VectorTiles 4.1 (GallPeters/QGIS2VectorTiles)."""
+        from .fidelity.materialize import LABEL_ANCHOR_FIELD  # pylint: disable=import-outside-toplevel
+        layer_def = self._base_layer_def("symbol", style_name, source_layer_name, source_name,
+                                         min_zoom, max_zoom)
+        qfont = QFont(label["family"])
+        if label.get("style"):
+            qfont.setStyleName(label["style"])
+        qfont.setBold(bool(label.get("bold")))
+        qfont.setItalic(bool(label.get("italic")))
+        text_format = QgsTextFormat()
+        text_format.setFont(qfont)
+        stack = TextPropertyExtractor.get_text_font(text_format)
+        dataset = join(self.utils_dir, f"{source_layer_name}.gpkg")
+        self.glyphs.setdefault(stack, []).append((dataset, label["field"]))
+        descent = self._DISPLACEMENT_DESCENT_EM
+        anchor = ["coalesce", ["get", LABEL_ANCHOR_FIELD], "bottom-left"]
+        layer_def["layout"].update({
+            "text-field": ["to-string", ["coalesce", ["get", label["field"]], ""]],
+            "text-font": [stack],
+            "text-size": PropertyExtractor.length(label["size_pt"], Qgis.RenderUnit.Points),
+            "text-anchor": anchor,
+            "text-offset": ["match", anchor, ["bottom-left", "bottom-right"], ["literal", [0, descent]],
+                            ["literal", [0, 0]]],
+            "text-max-width": 999,
+            "text-padding": 0,
+            "text-allow-overlap": True,
+            "text-ignore-placement": True,
+            "symbol-placement": "point",
+            "symbol-z-order": IconPropertyExtractor.MARKER_Z_ORDER,
+            "visibility": "visible",
+        })
+        red, green, blue, alpha = label["color"]
+        layer_def["paint"].update({"text-color": f"rgba({red}, {green}, {blue}, {round(alpha, 3)})"})
+        self.style["layers"].append(layer_def)
+
     def _convert_font_marker(self, symbol_layer, symbol, style_name, source_layer_name,
                              source_name, min_zoom, max_zoom):
         """Export a font marker as native browser text.
@@ -3254,11 +3331,80 @@ class QgisMapLibreStyleExporter:
                                              symbol_layer.strokeWidthUnit())
             paint["text-halo-color"] = PropertyExtractor.convert_qcolor_to_maplibre(stroke)
             paint["text-halo-width"] = ex.mul(width, 0.5)  # stroke is centred on the outline
+        buffer = getattr(symbol, "bufferSettings", lambda: None)()
+        if buffer is not None and buffer.enabled() and buffer.fillSymbol() is not None:
+            # The symbol's buffer (QGIS 3.40+; a cluster's count): a halo
+            # in the buffer's colour. An idea of QGIS2VectorTiles 4.3
+            # (GallPeters/QGIS2VectorTiles).
+            if "text-halo-width" in paint:
+                self.context.report("Q2VT_SYMBOL_APPROXIMATE",
+                                    "Font marker with an outline and a symbol buffer: only the "
+                                    "outline is drawn around the character.")
+            else:
+                fill = buffer.fillSymbol()
+                color = QColor(fill.color())
+                color.setAlphaF(color.alphaF() * fill.opacity())
+                paint["text-halo-color"] = PropertyExtractor.convert_qcolor_to_maplibre(color)
+                paint["text-halo-width"] = PropertyExtractor.length(
+                    buffer.size(), buffer.sizeUnit(), None, buffer.sizeMapUnitScale())
         layer_def["paint"].update(paint)
         self.style["layers"].append(layer_def)
 
     # --- sprite variants -----------------------------------------------------------
     MAX_VARIANTS = 64
+
+    def _data_defined_fonts(self, text_format, label_settings, source_layer: str, font: str,
+                            dataset: str) -> Optional[list]:
+        """``text-font`` of a data-defined font family: the font stack of each
+        family the label's features name (the format's style kept), the
+        format's own for others; a family that is not installed keeps the
+        format's font, as QGIS (QgsTextFormat::updateDataDefinedProperties).
+        None: no data-defined family. An idea of QGIS2VectorTiles 4.2
+        (GallPeters/QGIS2VectorTiles)."""
+        from qgis.core import QgsFontUtils  # pylint: disable=import-outside-toplevel
+        prop = label_settings.dataDefinedProperties().property(QgsPalLayerSettings.Property.Family)
+        if not prop or not prop.isActive():
+            return None
+        value = PropertyExtractor.get_value_or_expression("", prop, "string")
+
+        def stack(family):
+            if not family or not QgsFontUtils.fontFamilyOnSystem(str(family)):
+                return None
+            changed = QgsTextFormat(text_format)
+            qfont = changed.font()
+            qfont.setFamily(str(family))
+            changed.setFont(qfont)
+            name = TextPropertyExtractor.get_text_font(changed)
+            self.glyphs.setdefault(name, [])
+            if dataset not in self.glyphs[name]:
+                self.glyphs[name].append(dataset)
+            return name
+
+        if isinstance(value, str):  # the same for every feature
+            name = stack(value)
+            return [name] if name else None
+        fields = sorted(set(re.findall(r"\[\"get\", \"([^\"]+)\"\]", json.dumps(value))))
+        values = self._distinct_values(source_layer, fields[:1]) if fields else None
+        if not values:
+            if values is None:
+                self.context.report(
+                    "Q2VT_LABEL_APPROXIMATE",
+                    f"Data-defined label font family: more than {self.MAX_VARIANTS} families or "
+                    "not read; the labels use the format's font.")
+            return None
+        cases = []
+        for (family,) in values:
+            name = stack(family)
+            if name and name != font and family not in cases[0::2]:
+                cases += [family, ["literal", [name]]]
+        if not cases:
+            return None
+        return ["match", ["to-string", ["get", fields[0]]], *cases, ["literal", [font]]]
+
+    @staticmethod
+    def _style_base(style_name: str) -> str:
+        """A rule's style name without the zoom band suffix of its sprites."""
+        return re.sub(r"_z\d+$", "", style_name)
 
     def _distinct_values(self, source_layer: str, fields: List[str]) -> Optional[list]:
         """Distinct value combinations of ``fields`` in an exported dataset
@@ -4247,9 +4393,11 @@ class QgisMapLibreStyleExporter:
                 return shared
             name = f"{marker_name}_v{len(names)}"
             names[combo] = name
+            base = self.marker_symbols.get(marker_name)
             self.marker_symbols[name] = SpriteRequest(
                 symbol.clone(), bake_rotation=False, map_units_per_pixel=map_units_per_pixel,
-                attributes=dict(zip(fields, combo)), oversampling=oversampling)
+                attributes=dict(zip(fields, combo)), oversampling=oversampling,
+                buffer_only=bool(base and base.buffer_only))
             shared_names[drawn + (combo,)] = name
             return name
         key, cases = self._variant_images(fields, combos, make)
@@ -4517,7 +4665,7 @@ class QgisMapLibreStyleExporter:
         animation = self._animation(sprite_symbol)
         self.marker_symbols[marker_name] = SpriteRequest(
             sprite_symbol.clone(), bake_rotation=False, map_units_per_pixel=map_units_per_pixel,
-            oversampling=oversampling)
+            oversampling=oversampling, buffer_only=self._style_base(style_name) in getattr(self, "buffer_only", ()))
         icon_image = self._marker_variants(sprite_symbol, marker_name, source_layer_name,
                                            map_units_per_pixel, oversampling, independent)
         if animation is not None and icon_image != marker_name:
@@ -5439,8 +5587,9 @@ class QgisMapLibreStyleExporter:
             if self.viewer == 0:
                 em_size = ex.div(em_size, _MAPLIBRE_LABELS_FACTOR)
         placement = TextPropertyExtractor.placement_name(label_settings)
+        fonts = self._data_defined_fonts(text_format, label_settings, source_layer_name, font, dataset)
         layer_def["layout"].update({
-            "text-font": [font],
+            "text-font": fonts or [font],
             "text-size": text_size,
             "text-anchor": TextPropertyExtractor.get_text_anchor(label_settings),
             "text-justify": TextPropertyExtractor.get_text_justify(label_settings),
@@ -5463,7 +5612,7 @@ class QgisMapLibreStyleExporter:
             "symbol-placement": IconPropertyExtractor.get_symbol_placement(label_settings),
             "symbol-spacing": IconPropertyExtractor.get_symbol_spacing(label_settings),
             "symbol-avoid-edges": IconPropertyExtractor.get_symbol_avoid_edges(),
-            "symbol-sort-key": IconPropertyExtractor.get_symbol_sort_key(),
+            "symbol-sort-key": IconPropertyExtractor.get_symbol_sort_key(label_settings),
             "symbol-z-order": IconPropertyExtractor.get_symbol_z_order(),
             "visibility": "visible",
         })
@@ -5601,6 +5750,8 @@ class QgisMapLibreStyleExporter:
                         total, layer_def["layout"].get("icon-size", 1)))
         else:
             self._apply_default_icon_props(layer_def)
+        self._apply_point_callout(layer_def, label_settings, style_name, em_size, pinned,
+                                  background.enabled())
 
         if not pinned and TextPropertyExtractor.overlap_if_required(label_settings):
             # Avoids other labels; the viewer still draws it where it cannot
@@ -5617,6 +5768,9 @@ class QgisMapLibreStyleExporter:
                 # Horizontal / Free: QGIS puts the label where it has the most
                 # room (pole of inaccessibility); around / over point: centroid.
                 "q2vt:label-anchor": "pole" if placement in ("Horizontal", "Free") else "centroid",
+                # Around / over point: the centroid moved inside the polygon
+                # only with "Force point inside polygon" (QGIS centroidInside).
+                "q2vt:label-inside": bool(getattr(label_settings, "centroidInside", True)),
                 # Who gets the best spot when labels compete (QGIS priority,
                 # then z-index): the viewer places these labels in that order.
                 "q2vt:label-rank": [label_settings.priority, label_settings.zIndex],
@@ -6259,6 +6413,167 @@ class QgisMapLibreStyleExporter:
             vx, vy = ex.evaluate_zoom_curve(x, zoom), ex.evaluate_zoom_curve(y, zoom)
             out += [zoom, ["literal", [vy, vx, vy, vx]]]
         return out
+
+    # A balloon's stretchable icon: its text area (logical px) when made,
+    # stretched to the label's text by MapLibre (icon-text-fit).
+    BALLOON_CONTENT_PX = (64, 24)
+
+    def _apply_point_callout(self, layer_def: dict, label_settings, style_name: str, em_size,
+                             pinned: bool, framed: bool) -> None:
+        """A point label's callout, for labels at their point with a fixed
+        side (fidelity.callouts): the simple, Manhattan or curved line QGIS
+        draws from the label's box to the point, drawn with the callout's
+        line symbol as the label's icon; a balloon as the label's icon
+        stretched to its text, its wedge at the point. Several candidate
+        positions around the point: the first is kept (the callout fixes the
+        side). Ideas of QGIS2VectorTiles 4.1-4.2 (GallPeters/QGIS2VectorTiles)."""
+        from .fidelity import callouts as co  # pylint: disable=import-outside-toplevel
+        callout = label_settings.callout()
+        kind = callout.type() if callout is not None and callout.enabled() else None
+        if kind not in ("simple", "manhattan", "curved", "balloon") or pinned:
+            return
+        geometry = re.search(r"g(\d+)", style_name)
+        if geometry is None or int(geometry.group(1)) != 0:
+            return  # lines and polygons: the label's place is the viewer's or MapLibre's
+        layout = layer_def["layout"]
+        if framed:
+            self.context.report("Q2VT_CALLOUT_APPROX",
+                                "Label with a background shape and a callout: the callout is not drawn.")
+            return
+        if not ex.is_number(em_size):
+            return
+        anchors = layout.get("text-variable-anchor")
+        if anchors:
+            radius = layout.get("text-radial-offset", 0)
+            if not ex.is_number(radius):
+                return
+            layout["text-anchor"] = anchors[0]
+            layout["text-offset"] = [round(v, 4) for v in co.radial_offset(anchors[0], float(radius))]
+            layout.pop("text-variable-anchor", None)
+            layout.pop("text-radial-offset", None)
+            self.context.report("Q2VT_CALLOUT_APPROX",
+                                "Label with a callout around its point: kept at its first position "
+                                "(QGIS may move it to another).")
+        anchor = layout.get("text-anchor", "center")
+        offset = layout.get("text-offset", [0, 0])
+        if not isinstance(anchor, str) or not (isinstance(offset, list) and len(offset) == 2
+                                               and all(ex.is_number(v) for v in offset)):
+            return  # data-defined: the box is not at one place
+        offset_px = (float(offset[0]) * em_size, float(offset[1]) * em_size)
+        start = co.box_point(anchor, offset_px)
+        if math.hypot(*start) < 1e-6:
+            return  # the label is over its point: no callout
+        if _enum_int(callout.labelAnchorPoint(), 0) != 0:
+            self.context.report("Q2VT_CALLOUT_APPROX",
+                                "Callout from a fixed point of the label: drawn from its nearest point.")
+
+        def px(value, unit):
+            if _is_map_unit(unit):
+                return None
+            return PropertyExtractor.static_pixels(float(value), unit)
+        if kind == "balloon":
+            self._balloon_icon(layer_def, callout, anchor, offset_px, px)
+            return
+        lengths = [px(getattr(callout, name)(), getattr(callout, f"{name}Unit")())
+                   for name in ("minimumLength", "offsetFromLabel", "offsetFromAnchor")]
+        if any(v is None for v in lengths):
+            self.context.report("Q2VT_CALLOUT_APPROX", "Callout lengths in map units are not drawn.")
+            return
+        line = co.callout_line(kind, anchor, start,
+                               float(getattr(callout, "curvature", lambda: 0.0)()),
+                               _enum_int(getattr(callout, "orientation", lambda: 0)(), 0))
+        line = co.trimmed(line, lengths[1], lengths[2], lengths[0])
+        symbol = callout.lineSymbol()
+        if not line or symbol is None:
+            return
+        name = self._next_name("callout")
+        self.marker_symbols[name] = SpriteRequest(symbol.clone(), bake_rotation=True,
+                                                  path=tuple((round(x, 3), round(y, 3)) for x, y in line))
+        name = self._shared_sprite(name)
+        layout.update({"icon-image": name, "icon-anchor": "center", "icon-allow-overlap": True,
+                       "icon-ignore-placement": True, "icon-rotation-alignment": "viewport"})
+
+    def _balloon_icon(self, layer_def: dict, callout, anchor: str, offset_px, px) -> None:
+        """A balloon callout as the label's icon fitted to its text: its
+        rounded box (the text plus the margins) and the wedge to the point,
+        drawn with the balloon's fill symbol; stretched in its middle only,
+        on each side of the wedge as the text's anchor divides it, so the
+        wedge stays on the point."""
+        from .fidelity import callouts as co  # pylint: disable=import-outside-toplevel
+        from .sprite_generator import render_ring  # pylint: disable=import-outside-toplevel
+        margins = callout.margins()
+        sizes = [px(v, callout.marginsUnit()) for v in (margins.left(), margins.top(),
+                                                         margins.right(), margins.bottom())]
+        wedge = px(callout.wedgeWidth(), callout.wedgeWidthUnit())
+        radius = px(callout.cornerRadius(), callout.cornerRadiusUnit())
+        from_anchor = px(callout.offsetFromAnchor(), callout.offsetFromAnchorUnit()) \
+            if hasattr(callout, "offsetFromAnchor") else 0.0
+        if any(v is None for v in sizes + [wedge, radius, from_anchor]) or callout.fillSymbol() is None:
+            self.context.report("Q2VT_CALLOUT_APPROX", "Balloon callout sizes in map units are not drawn.")
+            return
+        left, top, right, bottom = (max(0.0, v) for v in sizes)
+        cw, ch = self.BALLOON_CONTENT_PX
+        fx = 0.0 if "left" in anchor else 1.0 if "right" in anchor else 0.5
+        fy = 0.0 if anchor.startswith("top") else 1.0 if anchor.startswith("bottom") else 0.5
+        # Around the text's anchor point (0, 0): the text box, the point.
+        text = (-fx * cw, -fy * ch, (1 - fx) * cw, (1 - fy) * ch)
+        point = (-offset_px[0], -offset_px[1])
+        box = (text[0] - left, text[1] - top, text[2] + right, text[3] + bottom)
+        tip = point
+        if from_anchor > 0:  # QGIS shortens the wedge towards the box
+            near = co.box_point(anchor, offset_px)
+            reach = math.hypot(point[0] - (near[0] - offset_px[0]), point[1] - (near[1] - offset_px[1]))
+            if reach > 0:
+                t = min(1.0, from_anchor / reach)
+                tip = (point[0] + (near[0] - offset_px[0] - point[0]) * t,
+                       point[1] + (near[1] - offset_px[1] - point[1]) * t)
+        ring = co.balloon(tip, box, wedge, radius)
+        xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+        pad = 4.0  # the fill's stroke and anti-aliasing
+        x0, y0 = math.floor(min(xs) - pad), math.floor(min(ys) - pad)
+        width, height = math.ceil(max(xs) + pad) - x0, math.ceil(max(ys) + pad) - y0
+        shifted = [(x - x0, y - y0) for x, y in ring]
+        images = [render_ring(callout.fillSymbol(), shifted, width, height, ratio) for ratio in (1, 2)]
+        if any(image is None for image in images):
+            return
+
+        def zones(lo, hi, fraction, base):
+            """Stretchable spans of [lo, hi] (the text's span), leaving the
+            wedge's base out, as ``fraction`` (the anchor) divides them."""
+            if base is None or base[1] <= lo or base[0] >= hi:
+                return [[lo, hi]]
+            spans = [[lo, max(lo, base[0])], [min(hi, base[1]), hi]]
+            first, second = spans[0][1] - spans[0][0], spans[1][1] - spans[1][0]
+            if fraction <= 0:
+                return [spans[1]] if second > 0 else []
+            if fraction >= 1:
+                return [spans[0]] if first > 0 else []
+            # first : second = fraction : 1 - fraction
+            if first * (1 - fraction) > second * fraction:
+                spans[0][1] = spans[0][0] + second * fraction / (1 - fraction)
+            else:
+                spans[1][0] = spans[1][1] - first * (1 - fraction) / fraction
+            return [span for span in spans if span[1] - span[0] > 0.5]
+        # The wedge's base (the two ring points beside the tip).
+        index = ring.index(tip) if tip in ring else -1
+        base = (ring[index - 1], ring[index + 1]) if index > 0 else None
+        x_base = sorted((base[0][0] - x0, base[1][0] - x0)) if base and abs(base[0][1] - base[1][1]) < 1e-6 else None
+        y_base = sorted((base[0][1] - y0, base[1][1] - y0)) if base and abs(base[0][0] - base[1][0]) < 1e-6 else None
+        inner = (max(text[0], box[0] + radius) - x0, max(text[1], box[1] + radius) - y0,
+                 min(text[2], box[2] - radius) - x0, min(text[3], box[3] - radius) - y0)
+        stretch_x = zones(inner[0], inner[2], fx, x_base)
+        stretch_y = zones(inner[1], inner[3], fy, y_base)
+        if not stretch_x or not stretch_y:
+            return
+        metadata = {"stretchX": [[round(a, 2), round(b, 2)] for a, b in stretch_x],
+                    "stretchY": [[round(a, 2), round(b, 2)] for a, b in stretch_y],
+                    "content": [round(text[0] - x0, 2), round(text[1] - y0, 2),
+                                round(text[2] - x0, 2), round(text[3] - y0, 2)]}
+        name = self._next_name("frame")
+        self.pattern_images[name] = PatternImages(images[0], images[1], metadata, 1)
+        layer_def["layout"].update({"icon-image": name, "icon-text-fit": "both",
+                                    "icon-text-fit-padding": [0, 0, 0, 0], "icon-allow-overlap": True,
+                                    "icon-ignore-placement": True, "icon-rotation-alignment": "viewport"})
 
     def _apply_icon_from_background(self, layer_def: dict, background, style_name: str,
                                     label_settings=None):

@@ -62,14 +62,20 @@ export function registerPmtiles(maplibregl) {
 // header: MVT tiles, readable over HTTP ranges.
 export async function openArchives(manifest, manifestUrl, maplibregl) {
   const archives = {};
-  for (const source of manifest.sources) {
-    if (source.kind !== "pmtiles") continue;
-    const proto = registerPmtiles(maplibregl);
+  // Every archive's header requested at once (one round trip, not one per
+  // archive); checked in the manifest's order, so the first problem is reported.
+  const opened = manifest.sources.filter((source) => source.kind === "pmtiles").map((source) => {
     const url = resolveUrl(checkRelative(source.href, "source"), manifestUrl);
     const archive = new globalThis.pmtiles.PMTiles(url);
+    const header = archive.getHeader();
+    header.catch(() => {});  // reported below, in order
+    return { source, url, archive, header };
+  });
+  for (const { source, url, archive, header: pending } of opened) {
+    const proto = registerPmtiles(maplibregl);
     let header;
     try {
-      header = await archive.getHeader();
+      header = await pending;
     } catch (error) {
       const text = String(error && error.message || error);
       if (/byte serving|content-length|range/i.test(text)) {

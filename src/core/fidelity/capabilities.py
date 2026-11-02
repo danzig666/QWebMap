@@ -59,7 +59,8 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
     Capability("SimpleFill", "fill", Strategy.NATIVE,
                "Solid fill color and opacity; outline exported as a separate line layer. Qt "
                "brush styles (dense dots, hatching, crossing) as their 8 px pattern texture, "
-               "started at the corner of the view as in QGIS.",
+               "started at the corner of the view as in QGIS. A map-unit offset (data-defined "
+               "too: each feature's) moves the polygon itself.",
                ("A Qt brush style with a data-defined colour or style is drawn solid.",),
                ("tests/integration/test_converter.py", "tests/browser/test_browser_parity.py")),
     Capability("SimpleLine", "line", Strategy.NATIVE,
@@ -74,15 +75,15 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
                "simplified at the effect's size, painting each pixel once as QGIS's effect "
                "image does (no darker overlap inside sharp corners); inner shadow and inner "
                "glow are strips across the line coloured by QGIS's own rendering for the "
-               "line's direction. Trimmed lines (trim distance at start / end) are exported "
-               "trimmed: map units and percentages once, screen units per quarter of a zoom.",
+               "line's direction. Trimmed lines (trim distance at start / end, data-defined "
+               "too) are exported trimmed: map units and percentages once, screen units per "
+               "quarter of a zoom.",
                ("Map-unit widths become exponential zoom curves.",
                 "Inner effects are computed for a straight line: where lines overlap or "
                 "nearly touch, QGIS shades their union, the web map each line.",
                 "Other dashes are MapLibre dash arrays: they restart where tiles clip a line.",
                 "Aligned or corner-tweaked dash patterns use MapLibre dash arrays.",
-                "A data-defined trim, or a trim with an offset or aligned dashes, is drawn "
-                "untrimmed."),
+                "A trim with an offset or aligned dashes is drawn untrimmed."),
                ("tests/integration/test_converter.py", "tests/integration/test_materialize.py",
                 "tests/browser/test_browser_parity.py")),
     Capability("SimpleMarker", "marker", Strategy.SPRITE,
@@ -158,15 +159,15 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
                "with the arrow's fill symbol; a fill's outline is a line on the polygons' "
                "edges (its width, dashes and join). Screen sizes per eighth of a zoom. Opaque "
                "multi-layer fills keep QGIS's per-arrow drawing order; the "
-               "line keeps all its vertices. A drop shadow effect is a blurred line under "
-               "the arrow, as wide as its body.",
+               "line keeps all its vertices. Data-defined widths, head length and thickness, "
+               "offset, head type and arrow type are each feature's own. A drop shadow effect "
+               "is a blurred line under the arrow, as wide as its body.",
                ("Sizes are within +-4.5 % between eighths of a zoom; beyond the archive's "
                 "last zoom the arrows scale with the map.",
                 "Outlines are drawn above all the arrows' fills: where repeated arrows overlap, "
                 "QGIS covers an arrow's outline with the next arrow's fill.",
                 "QGIS rebuilds arrows from the line clipped to the view, so near the view's "
-                "edge its own arrows change while panning; the web map keeps the whole line.",
-                "Data-defined arrow sizes use their static values."),
+                "edge its own arrows change while panning; the web map keeps the whole line."),
                ("tests/integration/test_line_shapes.py", "tests/integration/test_materialize.py",
                 "tests/integration/test_gradient_fills.py")),
     Capability("FilledLine", "line", Strategy.MATERIALIZED,

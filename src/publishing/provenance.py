@@ -32,7 +32,7 @@ class RuleProvenance:
 
 def digest(*parts: str, length: int = 10) -> str:
     text = "\x1f".join(parts)
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:length]
+    return hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()[:length]
 
 
 def layer_logical_id(layer_id: str) -> str:

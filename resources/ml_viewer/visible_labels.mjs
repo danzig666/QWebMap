@@ -158,12 +158,18 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   const fonts = fontMetrics(style);
   const tileSource = style.sources[sourceId] || {};
   style.layers.forEach((layer, index) => {
-    const polygons = layer.metadata && layer.metadata["q2vt:visible-polygons"];
+    // The source layer(s) of the polygons: one, or several (the fills of
+    // the label's categories, which carry its fields), one group for all.
+    const named = layer.metadata && layer.metadata["q2vt:visible-polygons"];
+    const polygons = Array.isArray(named) ? named.join("\n") : named;
     if (!polygons || layer.source !== sourceId) return;
     if (!groups.has(polygons)) groups.set(polygons, { layers: [] });
     const before = style.layers.slice(index + 1).find((l) => !(l.metadata && l.metadata["q2vt:visible-polygons"]));
     groups.get(polygons).layers.push({ def: layer, before: before ? before.id : undefined });
     if (layer.metadata["q2vt:label-anchor"] === "pole") groups.get(polygons).anchor = "pole";
+    // "Force point inside polygon" off (QGIS centroidInside): the centroid
+    // even where it lies outside the polygon.
+    if (layer.metadata["q2vt:label-inside"] === false) groups.get(polygons).outsideCentroid = true;
     if (layer.metadata["q2vt:visible-kind"] === "line") groups.get(polygons).kind = "line";
     if (layer.metadata["q2vt:line-degraded"]) groups.get(polygons).degraded = true;
     // QGIS overlap handling: "Never overlap" (none), "Allow overlap if
@@ -224,12 +230,16 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
     // tile (memory) only to draw nothing. (A source layer no tile has lost
     // the polygons of overzoomed tiles.)
     const zooms = group.layers.map(({ def }) => [def.minzoom ?? 0, def.maxzoom ?? 24]);
-    map.addLayer({
-      id: LOADER_PREFIX + polygons, type: "fill", source: sourceId, "source-layer": polygons,
-      filter: ["==", ["literal", 1], 0],
-      minzoom: Math.min(...zooms.map((z) => z[0])), maxzoom: Math.max(...zooms.map((z) => z[1])),
-      paint: { "fill-opacity": 0 },
-    }, firstLayer);
+    // One loader a source layer (a fill's polygons can be several labels').
+    for (const sourceLayer of polygons.split("\n")) {
+      if (map.getLayer(LOADER_PREFIX + sourceLayer)) continue;
+      map.addLayer({
+        id: LOADER_PREFIX + sourceLayer, type: "fill", source: sourceId, "source-layer": sourceLayer,
+        filter: ["==", ["literal", 1], 0],
+        minzoom: Math.min(...zooms.map((z) => z[0])), maxzoom: Math.max(...zooms.map((z) => z[1])),
+        paint: { "fill-opacity": 0 },
+      }, firstLayer);
+    }
     if (!added.has(group.source)) added.add(group.source) && map.addSource(group.source, {
       type: "geojson", data: { type: "FeatureCollection", features: [] },
       // A curved label's piece of line whole in every tile it crosses: each
@@ -351,7 +361,12 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
     const zoom = map.getZoom();
     for (const [polygons, group] of ranked) {
       if (!states.has(polygons)) states.set(polygons, newLabelState());
-      const features = map.querySourceFeatures(sourceId, { sourceLayer: polygons });
+      // querySourceFeatures leaves sourceLayer unset: note where each came from.
+      const features = polygons.split("\n").flatMap((sourceLayer) =>
+        map.querySourceFeatures(sourceId, { sourceLayer }).map((f) => {
+          f.q2vtSourceLayer = sourceLayer;
+          return f;
+        }));
       if (features.length && !features.some((f) => f._vectorTileFeature && Number.isInteger(f._z))) {
         unsupported = true;  // private tile fields gone (MapLibre upgrade)
         if (options.onUnsupported) options.onUnsupported("tile feature fields unavailable");
@@ -359,7 +374,8 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
       }
       const data = labelPoints(features, view, maplibregl, {
         state: states.get(polygons), margin, reach, tileZoom, guard: GUARD_PX * perPx,
-        anchor: group.anchor || "centroid", precision: perPx, keepDistance: KEEP_PX * perPx,
+        anchor: group.anchor || "centroid", forceInside: !group.outsideCentroid,
+        precision: perPx, keepDistance: KEEP_PX * perPx,
         // Moving, or tiles still arriving (the visible part is not complete):
         // placed labels stay; the final position once everything is there.
         freeze: map.isMoving() || !map.isSourceLoaded(sourceId),
@@ -380,7 +396,10 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
         mergeText: group.merge ? textKey((activeLayer(group, zoom).layout || {})["text-field"]) : null,
         textAnchor: (activeLayer(group, zoom).layout || {})["text-anchor"],
         rotationField: group.orient === "free" ? FREE_ROTATION : rotationField(group, zoom),
-        eligible: eligible ? (properties) => eligible(properties, polygons) : null,
+        // Each polygon's own source layer (a label's polygons can be several fills').
+        // (A kept label's polygon has no source layer at hand: any of the group's.)
+        eligible: eligible ? (properties, sourceLayer) => (sourceLayer ? [sourceLayer] : polygons.split("\n"))
+          .some((layer) => eligible(properties, layer)) : null,
         always: !!group.always,
         around: aroundOption(group.around, zoom, perPx),
       });
@@ -546,7 +565,7 @@ export function labelPoints(features, view, maplibregl, options = {}) {
   for (const f of features) {
     if (f._z !== deepest || !f._vectorTileFeature) continue;
     loaded.add(`${f._x}/${f._y}`);
-    if (options.eligible && !options.eligible(f.properties)) {
+    if (options.eligible && !options.eligible(f.properties, f.q2vtSourceLayer || f.sourceLayer)) {
       excluded.add(String(f.properties.q2vt_orig_id ?? f.id ?? JSON.stringify(f.properties)));
       continue;
     }
@@ -922,7 +941,7 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         candidates = outsideCandidates(loaded, rings, label.text || half, half, options.around.distance,
                                        options.precision, others, view);
       } else {
-        const target = labelPoint(rings);
+        const target = labelPoint(rings, options.forceInside !== false);
         if (!target) continue;
         candidates = aroundCandidates(target, label.text || half, options.around);
       }
@@ -940,11 +959,12 @@ export function labelPoints(features, view, maplibregl, options = {}) {
       if (slot < 0) continue;
       point = kept ? old.point : candidates[slot];
     } else {
-      const target = labelPoint(rings);
+      const target = labelPoint(rings, options.forceInside !== false);
       if (!target || fit(...target) < 0) continue;
       const near = (p) => Math.hypot(p[0] - target[0], p[1] - target[1]) <= (options.keepDistance ?? Infinity);
       const keep = old && within(inner, old.point) && fit(...old.point) >= 0 && (unchecked(old.point)
-        || (inside(rings, old.point) && near(old.point) && (mayOverlap || bareClear(...old.point))));
+        || ((options.forceInside === false || inside(rings, old.point)) && near(old.point)
+          && (mayOverlap || bareClear(...old.point))));
       // Over point (QGIS): its one candidate, dropped where it would overlap
       // a label placed before it ("Never overlap").
       if (!keep && !mayOverlap && !bareClear(...target)) continue;
@@ -2854,7 +2874,10 @@ function clipRing(ring, [x0, y0, x1, y1]) {
 // Centroid of the visible area if inside it (signed ring areas: holes
 // subtract), else an interior point: the middle of the widest inside span on
 // the horizontal line through the middle of the extent (GEOS InteriorPoint).
-export function labelPoint(rings) {
+// The centroid of ``rings``; inside them (``forceInside``, the default):
+// where the centroid lies outside, the middle of the widest stretch across
+// the polygon at mid-height (as GEOS's point on surface).
+export function labelPoint(rings, forceInside = true) {
   let area = 0, cx = 0, cy = 0;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   // Relative to a vertex: in world units ([0, 1]) the cross products of a
@@ -2871,7 +2894,7 @@ export function labelPoint(rings) {
   }
   if (Math.abs(area) < 1e-22) return null;
   const centroid = [ox + cx / (3 * area), oy + cy / (3 * area)];
-  if (inside(rings, centroid)) return centroid;
+  if (!forceInside || inside(rings, centroid)) return centroid;
   const y = (minY + maxY) / 2, xs = [];
   for (const ring of rings) {
     for (let i = 0, n = ring.length; i < n; i++) {

@@ -206,6 +206,12 @@ async function start() {
     showError(error);
     return;
   }
+  // The language, the style and the archives' headers at once.
+  const styleUrl = resolveUrl(manifest.style, manifestUrl);
+  const styleRequest = fetchChecked(styleUrl);
+  styleRequest.catch(() => {});  // reported where it is used
+  const archivesRequest = openArchives(manifest, manifestUrl, maplibregl);
+  archivesRequest.catch(() => {});
   await loadLocale(manifest.locale || "en", assetsUrl).catch(() => {});
   document.title = manifest.title || document.title;
   // Embedded in another page (?embed): compact header, panel closed, a link
@@ -225,9 +231,8 @@ async function start() {
   }
   try {
     if (!webglAvailable()) throw new ViewerError("Q2VT_PUB_WEBGL", "WebGL unavailable");
-    viewer.archives = await openArchives(manifest, manifestUrl, maplibregl);
-    const styleUrl = resolveUrl(manifest.style, manifestUrl);
-    const style = bindStyle(await fetchChecked(styleUrl), manifest, manifestUrl, styleUrl, {
+    viewer.archives = await archivesRequest;
+    const style = bindStyle(await styleRequest, manifest, manifestUrl, styleUrl, {
       pixelRatio: manifest.view?.lowMemory ? cappedPixelRatio(MAX_PIXEL_RATIO) : window.devicePixelRatio || 1 });
     viewer.style = style;
     prepareShadows(style);  // feature ids for point label shadows
