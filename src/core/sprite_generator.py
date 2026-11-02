@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Union
 from PIL import Image
 from qgis.core import (Qgis, QgsEllipseSymbolLayer, QgsExpressionContext, QgsExpressionContextScope,
                        QgsExpressionContextUtils, QgsFeature, QgsFields, QgsField,
-                       QgsMapToPixel, QgsMarkerSymbol, QgsRenderContext, QgsSimpleFillSymbolLayer,
+                       QgsFillSymbol, QgsMapToPixel, QgsMarkerSymbol, QgsRenderContext, QgsSimpleFillSymbolLayer,
                        QgsSimpleLineSymbolLayer, QgsSimpleMarkerSymbolLayer, QgsSymbol,
                        QgsSymbolLayer)
 from qgis.PyQt.QtCore import qVersion
@@ -101,6 +101,10 @@ class SpriteRequest:
     # Only the symbol's buffer (QGIS 3.40+ symbol buffer settings): the
     # image under the symbol's split layers (RulesFlattener._buffer_rule).
     buffer_only: bool = False
+    # A line or fill symbol drawn along these points (CSS px around the
+    # image's centre, y down; a fill: a ring), e.g. a label's callout
+    # (fidelity.callouts); None: a marker at the centre.
+    path: Optional[tuple] = None
 
 
 @dataclass
@@ -193,6 +197,8 @@ class SymbolImage:
     frame_rate: float = 0.0
     # Only the symbol's buffer (SpriteRequest.buffer_only).
     buffer_only: bool = False
+    # The points a line / fill symbol is drawn along (SpriteRequest.path).
+    path: Optional[tuple] = None
     img: Img = field(init=False)
     width: int = field(init=False)
     height: int = field(init=False)
@@ -330,6 +336,34 @@ class SymbolImage:
             painter.end()
         return image
 
+    def _render_path(self, symbol, points) -> QImage:
+        """A line symbol along ``points`` (a fill symbol: in the ring), CSS
+        px around the image's centre, y down, as QGIS draws it there (its
+        own pen, dashes, effects)."""
+        from qgis.PyQt.QtGui import QPolygonF  # pylint: disable=import-outside-toplevel
+        reach = max((max(abs(x), abs(y)) for x, y in points), default=0.0)
+        # Room for the stroke and its effects around the path.
+        canvas = min(_MAX_CANVAS_PX, int(2 * (reach + 32) * self.scale_factor) + 2)
+        image = QImage(canvas, canvas, _ARGB)
+        image.fill(0)
+        painter = QPainter(image)
+        painter.setRenderHint(_ANTIALIAS)
+        context = self._context(painter)
+        feature, expression_context = self._feature_context()
+        context.setExpressionContext(QgsExpressionContext(expression_context))
+        polygon = QPolygonF([QPointF(canvas / 2.0 + x * self.scale_factor, canvas / 2.0 + y * self.scale_factor)
+                             for x, y in points])
+        try:
+            symbol.startRender(context, QgsFields())
+            if isinstance(symbol, QgsFillSymbol):
+                symbol.renderPolygon(polygon, None, feature, context)
+            else:
+                symbol.renderPolyline(polygon, feature, context)
+            symbol.stopRender(context)
+        finally:
+            painter.end()
+        return image
+
     def _render_buffer(self, symbol: QgsMarkerSymbol) -> QImage:
         """Only the buffer QGIS draws under ``symbol`` (its symbol buffer
         settings): the symbol drawn with its buffer and without it, on one
@@ -387,7 +421,9 @@ class SymbolImage:
         if self.scale_factor != 1 and isinstance(symbol, QgsMarkerSymbol):
             _pixels_to_millimeters(symbol)
         canvas = int(_BASE_CANVAS_PX * max(1.0, self.scale_factor / 3.0))
-        if isinstance(symbol, QgsMarkerSymbol) and self.buffer_only:
+        if self.path is not None:
+            qt_img = self._render_path(symbol, self.path)
+        elif isinstance(symbol, QgsMarkerSymbol) and self.buffer_only:
             qt_img = self._render_buffer(symbol)
         elif isinstance(symbol, QgsMarkerSymbol):
             qt_img = self._render_marker(symbol)
@@ -458,6 +494,7 @@ class SpriteGenerator:
             quality = request.oversampling or self.scale_factor
             frame = {"frame": request.frame, "frame_rate": request.frame_rate}
             frame["buffer_only"] = request.buffer_only
+            frame["path"] = request.path
             one = SymbolImage(request.symbol, name, quality, request.bake_rotation,
                               request.map_units_per_pixel, request.attributes, **frame)
             two = SymbolImage(request.symbol, name, quality * self.lower_factor,
@@ -541,3 +578,28 @@ class SpriteGenerator:
 
 if __name__ == "__console__":
     pass
+
+
+def render_ring(symbol, ring, width: int, height: int, pixel_ratio: float):
+    """A fill symbol drawn in ``ring`` (logical px, y down) on a ``width``
+    x ``height`` logical px image at ``pixel_ratio`` (a PIL image; None
+    when QGIS drew nothing): a balloon callout's stretchable icon."""
+    from qgis.PyQt.QtGui import QPolygonF  # pylint: disable=import-outside-toplevel
+    image = QImage(max(1, round(width * pixel_ratio)), max(1, round(height * pixel_ratio)), _ARGB)
+    image.fill(0)
+    painter = QPainter(image)
+    painter.setRenderHint(_ANTIALIAS)
+    context = with_map_distances(QgsRenderContext.fromQPainter(painter))
+    context.setScaleFactor(_PX_PER_MM * pixel_ratio)
+    context.setFlag(Qgis.RenderContextFlag.Antialiasing, True)
+    context.setExpressionContext(QgsExpressionContext([QgsExpressionContextUtils.globalScope()]))
+    symbol = symbol.clone()
+    try:
+        symbol.startRender(context, QgsFields())
+        symbol.renderPolygon(QPolygonF([QPointF(x * pixel_ratio, y * pixel_ratio) for x, y in ring]),
+                             None, None, context)
+        symbol.stopRender(context)
+    finally:
+        painter.end()
+    out = SymbolImage._qt_to_pil(image)  # pylint: disable=protected-access
+    return out if out.getbbox() is not None else None

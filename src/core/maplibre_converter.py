@@ -2811,7 +2811,7 @@ class QgisMapLibreStyleExporter:
             return name
         key = (QgsSymbolLayerUtils.symbolProperties(request.symbol), request.bake_rotation,
                repr(request.map_units_per_pixel), repr(request.oversampling), request.frame,
-               request.buffer_only)
+               request.buffer_only, request.path)
         shared = self.__dict__.setdefault("_sprite_requests", {})
         known = shared.get(key)
         if known is not None and known in self.marker_symbols:
@@ -5750,6 +5750,8 @@ class QgisMapLibreStyleExporter:
                         total, layer_def["layout"].get("icon-size", 1)))
         else:
             self._apply_default_icon_props(layer_def)
+        self._apply_point_callout(layer_def, label_settings, style_name, em_size, pinned,
+                                  background.enabled())
 
         if not pinned and TextPropertyExtractor.overlap_if_required(label_settings):
             # Avoids other labels; the viewer still draws it where it cannot
@@ -6411,6 +6413,167 @@ class QgisMapLibreStyleExporter:
             vx, vy = ex.evaluate_zoom_curve(x, zoom), ex.evaluate_zoom_curve(y, zoom)
             out += [zoom, ["literal", [vy, vx, vy, vx]]]
         return out
+
+    # A balloon's stretchable icon: its text area (logical px) when made,
+    # stretched to the label's text by MapLibre (icon-text-fit).
+    BALLOON_CONTENT_PX = (64, 24)
+
+    def _apply_point_callout(self, layer_def: dict, label_settings, style_name: str, em_size,
+                             pinned: bool, framed: bool) -> None:
+        """A point label's callout, for labels at their point with a fixed
+        side (fidelity.callouts): the simple, Manhattan or curved line QGIS
+        draws from the label's box to the point, drawn with the callout's
+        line symbol as the label's icon; a balloon as the label's icon
+        stretched to its text, its wedge at the point. Several candidate
+        positions around the point: the first is kept (the callout fixes the
+        side). Ideas of QGIS2VectorTiles 4.1-4.2 (GallPeters/QGIS2VectorTiles)."""
+        from .fidelity import callouts as co  # pylint: disable=import-outside-toplevel
+        callout = label_settings.callout()
+        kind = callout.type() if callout is not None and callout.enabled() else None
+        if kind not in ("simple", "manhattan", "curved", "balloon") or pinned:
+            return
+        geometry = re.search(r"g(\d+)", style_name)
+        if geometry is None or int(geometry.group(1)) != 0:
+            return  # lines and polygons: the label's place is the viewer's or MapLibre's
+        layout = layer_def["layout"]
+        if framed:
+            self.context.report("Q2VT_CALLOUT_APPROX",
+                                "Label with a background shape and a callout: the callout is not drawn.")
+            return
+        if not ex.is_number(em_size):
+            return
+        anchors = layout.get("text-variable-anchor")
+        if anchors:
+            radius = layout.get("text-radial-offset", 0)
+            if not ex.is_number(radius):
+                return
+            layout["text-anchor"] = anchors[0]
+            layout["text-offset"] = [round(v, 4) for v in co.radial_offset(anchors[0], float(radius))]
+            layout.pop("text-variable-anchor", None)
+            layout.pop("text-radial-offset", None)
+            self.context.report("Q2VT_CALLOUT_APPROX",
+                                "Label with a callout around its point: kept at its first position "
+                                "(QGIS may move it to another).")
+        anchor = layout.get("text-anchor", "center")
+        offset = layout.get("text-offset", [0, 0])
+        if not isinstance(anchor, str) or not (isinstance(offset, list) and len(offset) == 2
+                                               and all(ex.is_number(v) for v in offset)):
+            return  # data-defined: the box is not at one place
+        offset_px = (float(offset[0]) * em_size, float(offset[1]) * em_size)
+        start = co.box_point(anchor, offset_px)
+        if math.hypot(*start) < 1e-6:
+            return  # the label is over its point: no callout
+        if _enum_int(callout.labelAnchorPoint(), 0) != 0:
+            self.context.report("Q2VT_CALLOUT_APPROX",
+                                "Callout from a fixed point of the label: drawn from its nearest point.")
+
+        def px(value, unit):
+            if _is_map_unit(unit):
+                return None
+            return PropertyExtractor.static_pixels(float(value), unit)
+        if kind == "balloon":
+            self._balloon_icon(layer_def, callout, anchor, offset_px, px)
+            return
+        lengths = [px(getattr(callout, name)(), getattr(callout, f"{name}Unit")())
+                   for name in ("minimumLength", "offsetFromLabel", "offsetFromAnchor")]
+        if any(v is None for v in lengths):
+            self.context.report("Q2VT_CALLOUT_APPROX", "Callout lengths in map units are not drawn.")
+            return
+        line = co.callout_line(kind, anchor, start,
+                               float(getattr(callout, "curvature", lambda: 0.0)()),
+                               _enum_int(getattr(callout, "orientation", lambda: 0)(), 0))
+        line = co.trimmed(line, lengths[1], lengths[2], lengths[0])
+        symbol = callout.lineSymbol()
+        if not line or symbol is None:
+            return
+        name = self._next_name("callout")
+        self.marker_symbols[name] = SpriteRequest(symbol.clone(), bake_rotation=True,
+                                                  path=tuple((round(x, 3), round(y, 3)) for x, y in line))
+        name = self._shared_sprite(name)
+        layout.update({"icon-image": name, "icon-anchor": "center", "icon-allow-overlap": True,
+                       "icon-ignore-placement": True, "icon-rotation-alignment": "viewport"})
+
+    def _balloon_icon(self, layer_def: dict, callout, anchor: str, offset_px, px) -> None:
+        """A balloon callout as the label's icon fitted to its text: its
+        rounded box (the text plus the margins) and the wedge to the point,
+        drawn with the balloon's fill symbol; stretched in its middle only,
+        on each side of the wedge as the text's anchor divides it, so the
+        wedge stays on the point."""
+        from .fidelity import callouts as co  # pylint: disable=import-outside-toplevel
+        from .sprite_generator import render_ring  # pylint: disable=import-outside-toplevel
+        margins = callout.margins()
+        sizes = [px(v, callout.marginsUnit()) for v in (margins.left(), margins.top(),
+                                                         margins.right(), margins.bottom())]
+        wedge = px(callout.wedgeWidth(), callout.wedgeWidthUnit())
+        radius = px(callout.cornerRadius(), callout.cornerRadiusUnit())
+        from_anchor = px(callout.offsetFromAnchor(), callout.offsetFromAnchorUnit()) \
+            if hasattr(callout, "offsetFromAnchor") else 0.0
+        if any(v is None for v in sizes + [wedge, radius, from_anchor]) or callout.fillSymbol() is None:
+            self.context.report("Q2VT_CALLOUT_APPROX", "Balloon callout sizes in map units are not drawn.")
+            return
+        left, top, right, bottom = (max(0.0, v) for v in sizes)
+        cw, ch = self.BALLOON_CONTENT_PX
+        fx = 0.0 if "left" in anchor else 1.0 if "right" in anchor else 0.5
+        fy = 0.0 if anchor.startswith("top") else 1.0 if anchor.startswith("bottom") else 0.5
+        # Around the text's anchor point (0, 0): the text box, the point.
+        text = (-fx * cw, -fy * ch, (1 - fx) * cw, (1 - fy) * ch)
+        point = (-offset_px[0], -offset_px[1])
+        box = (text[0] - left, text[1] - top, text[2] + right, text[3] + bottom)
+        tip = point
+        if from_anchor > 0:  # QGIS shortens the wedge towards the box
+            near = co.box_point(anchor, offset_px)
+            reach = math.hypot(point[0] - (near[0] - offset_px[0]), point[1] - (near[1] - offset_px[1]))
+            if reach > 0:
+                t = min(1.0, from_anchor / reach)
+                tip = (point[0] + (near[0] - offset_px[0] - point[0]) * t,
+                       point[1] + (near[1] - offset_px[1] - point[1]) * t)
+        ring = co.balloon(tip, box, wedge, radius)
+        xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+        pad = 4.0  # the fill's stroke and anti-aliasing
+        x0, y0 = math.floor(min(xs) - pad), math.floor(min(ys) - pad)
+        width, height = math.ceil(max(xs) + pad) - x0, math.ceil(max(ys) + pad) - y0
+        shifted = [(x - x0, y - y0) for x, y in ring]
+        images = [render_ring(callout.fillSymbol(), shifted, width, height, ratio) for ratio in (1, 2)]
+        if any(image is None for image in images):
+            return
+
+        def zones(lo, hi, fraction, base):
+            """Stretchable spans of [lo, hi] (the text's span), leaving the
+            wedge's base out, as ``fraction`` (the anchor) divides them."""
+            if base is None or base[1] <= lo or base[0] >= hi:
+                return [[lo, hi]]
+            spans = [[lo, max(lo, base[0])], [min(hi, base[1]), hi]]
+            first, second = spans[0][1] - spans[0][0], spans[1][1] - spans[1][0]
+            if fraction <= 0:
+                return [spans[1]] if second > 0 else []
+            if fraction >= 1:
+                return [spans[0]] if first > 0 else []
+            # first : second = fraction : 1 - fraction
+            if first * (1 - fraction) > second * fraction:
+                spans[0][1] = spans[0][0] + second * fraction / (1 - fraction)
+            else:
+                spans[1][0] = spans[1][1] - first * (1 - fraction) / fraction
+            return [span for span in spans if span[1] - span[0] > 0.5]
+        # The wedge's base (the two ring points beside the tip).
+        index = ring.index(tip) if tip in ring else -1
+        base = (ring[index - 1], ring[index + 1]) if index > 0 else None
+        x_base = sorted((base[0][0] - x0, base[1][0] - x0)) if base and abs(base[0][1] - base[1][1]) < 1e-6 else None
+        y_base = sorted((base[0][1] - y0, base[1][1] - y0)) if base and abs(base[0][0] - base[1][0]) < 1e-6 else None
+        inner = (max(text[0], box[0] + radius) - x0, max(text[1], box[1] + radius) - y0,
+                 min(text[2], box[2] - radius) - x0, min(text[3], box[3] - radius) - y0)
+        stretch_x = zones(inner[0], inner[2], fx, x_base)
+        stretch_y = zones(inner[1], inner[3], fy, y_base)
+        if not stretch_x or not stretch_y:
+            return
+        metadata = {"stretchX": [[round(a, 2), round(b, 2)] for a, b in stretch_x],
+                    "stretchY": [[round(a, 2), round(b, 2)] for a, b in stretch_y],
+                    "content": [round(text[0] - x0, 2), round(text[1] - y0, 2),
+                                round(text[2] - x0, 2), round(text[3] - y0, 2)]}
+        name = self._next_name("frame")
+        self.pattern_images[name] = PatternImages(images[0], images[1], metadata, 1)
+        layer_def["layout"].update({"icon-image": name, "icon-text-fit": "both",
+                                    "icon-text-fit-padding": [0, 0, 0, 0], "icon-allow-overlap": True,
+                                    "icon-ignore-placement": True, "icon-rotation-alignment": "viewport"})
 
     def _apply_icon_from_background(self, layer_def: dict, background, style_name: str,
                                     label_settings=None):

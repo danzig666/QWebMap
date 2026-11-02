@@ -103,8 +103,9 @@ What carries over:
 - **Labels:** your installed fonts (glyphs are generated from them, bold, italic and weights such
   as DemiBold, Medium and Light included), buffers, background shapes, letter and word spacing, curved,
   parallel, Free (angled) and around-point placement, scale-based visibility, data-defined
-  positions (their callouts as straight leaders to the label's anchor, reported), and an option
-  to label every feature.
+  positions (their callouts as straight leaders to the label's anchor, reported), callouts of
+  point labels (simple, Manhattan, curved and balloon, as QGIS draws them), and an option to
+  label every feature.
 - **Data-defined properties:** evaluated by QGIS for each feature (`@symbol_color` included, and
   `rand()` gives every marker of a pattern fill its own value, as in QGIS); a property with no
   browser equivalent keeps its static value and is reported.
@@ -162,9 +163,10 @@ generated table of every symbol layer type's strategy and limits is in
 - **Map-unit pattern fills:** markers on the polygon edge are drawn whole instead of clipped,
   rotated map-unit point patterns are not rotated, and in a rotated map-unit SVG fill each tile is
   turned but the grid is not (reported).
-- **Label callouts:** callouts of labels with data-defined positions are straight leaders to the
-  label's anchor (reported). Callouts of labels that QGIS places itself are left out, without a
-  report entry.
+- **Label callouts:** callouts of point labels are drawn as QGIS draws them; a label placed
+  around its point keeps its first position (QGIS may move it), reported. Callouts of labels
+  with data-defined positions are straight leaders to the label's anchor (reported). Callouts of
+  line and polygon labels, which the browser places itself, are left out without a report entry.
 - **Label placement:** close to QGIS's, but the browser places labels itself, so in crowded areas
   other labels can win.
 - **Feature order across rules:** overlapping features of different rules keep QGIS's order up to
@@ -192,7 +194,7 @@ Processing tool, and for *Publish Web Map* in the work folder
 code (`Q2VT_*`), where it happened (the layer, plus the rule or symbol layer when known), the
 export strategy when one applies, and usually a suggested fix, so missing hatches or unsupported
 symbols are visible without reading the log. A few differences are not in the report: the
-callouts of labels that QGIS places itself are left out without an
+callouts of line and polygon labels are left out without an
 entry, and blend modes on vector layers only get a warning in the Publish window.
 
 Both the Processing tool (*Fidelity Mode*, *Beyond Maximum Zoom*) and the Publish Web Map window
