@@ -11,7 +11,7 @@ import sys
 import pytest
 from qgis.core import (QgsFeature, QgsFillSymbol, QgsGeometry, QgsMarkerSymbol, QgsSimpleMarkerSymbolLayer,
                        QgsSingleSymbolRenderer, QgsVectorLayer)
-from qgis.PyQt.QtCore import QPointF
+from qgis.PyQt.QtCore import QPointF, Qt
 from qgis.PyQt.QtGui import QColor, QImage
 
 from q2vt_fixtures import to_geopackage
@@ -31,9 +31,9 @@ def _buffered_points(tmp_path):
     layer.dataProvider().addFeatures([feature])
     layer = to_geopackage(layer, str(tmp_path / "trees.gpkg"))
     big = QgsSimpleMarkerSymbolLayer(size=6, color=QColor(0, 120, 0))
-    big.setStrokeStyle(0)  # Qt.NoPen
+    big.setStrokeStyle(Qt.PenStyle.NoPen)
     small = QgsSimpleMarkerSymbolLayer(size=2, color=QColor(200, 0, 0))
-    small.setStrokeStyle(0)
+    small.setStrokeStyle(Qt.PenStyle.NoPen)
     small.setOffset(QPointF(4, 0))  # sticks out of the big circle on the right
     symbol = QgsMarkerSymbol([big, small])
     buffer = QgsSymbolBufferSettings()

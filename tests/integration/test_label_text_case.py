@@ -110,7 +110,11 @@ def test_data_defined_font_family(tmp_path):
     result = export_local(project, profile, EXTENT)
     layer = next(layer for layer in _label_layers(result) if layer["id"].startswith("l00"))
     fonts = layer["layout"]["text-font"]
-    assert fonts[0] == "match" and fonts[2] == "DejaVu Sans Mono", fonts  # "No Such Font": the format's
-    assert fonts[3][1][0].startswith("DejaVu Sans Mono") and len(fonts) == 5, fonts  # one family case
+    assert fonts[0] == "match", fonts
+    cases = dict(zip(fonts[2:-1:2], (case[1][0] for case in fonts[3:-1:2])))
+    assert cases["DejaVu Sans Mono"].startswith("DejaVu Sans Mono"), cases
+    # "No Such Font": the format's font (Qt 5: not on the system), or the
+    # face Qt substitutes, which QGIS draws (Qt 6 reports every family).
+    assert cases.get("No Such Font", fonts[-1][1][0]) != cases["DejaVu Sans Mono"]
     glyphs = os.listdir(os.path.join(result.release.release_dir, "glyphs"))
-    assert fonts[3][1][0] in glyphs and fonts[4][1][0] in glyphs, glyphs
+    assert all(stack in glyphs for stack in list(cases.values()) + [fonts[-1][1][0]]), glyphs
