@@ -18,14 +18,14 @@ from test_publishing_pipeline import _parcels, _profile  # noqa: E402  pylint: d
 EXTENT = QgsRectangle(2119000, 6019000, 2123000, 6023000)
 
 
-def _export(tmp_path, mode):
+def _export(tmp_path, mode, below=13):
     from publishing import mvt
     os.makedirs(tmp_path, exist_ok=True)
     project = reset_project()
     parcels = _parcels(str(tmp_path / "parcels.gpkg"))
     project.addMapLayer(parcels)
     profile = _profile(parcels, tmp_path)  # zooms 11-13, labelled parcels
-    profile.layers[0].zoomed_out, profile.layers[0].zoomed_out_below = mode, 13
+    profile.layers[0].zoomed_out, profile.layers[0].zoomed_out_below = mode, below
     result = export_local(project, profile, EXTENT)
     release = result.release.release_dir
     manifest = json.load(open(os.path.join(release, "manifest.json"), encoding="utf-8"))
@@ -89,3 +89,12 @@ def test_merged_mode_tiles_the_fills_from_merged_copies_below_the_zoom(plugin, t
                     ids.setdefault(z, set()).update("q2vt_orig_id" in f["properties"] for f in layer["features"])
     assert ids[11] == {False} and ids[12] == {False} and ids[13] == {True}
     assert any(name.endswith("_vp") for z in names for name in names[z])
+
+
+def test_labels_starting_at_the_zoom_stay_on_the_fills(plugin, tmp_path):
+    """Labels shown only from the zoomed-out zoom on ride in the layer's own
+    fill tiles, as without the setting: no extra polygon copy for them."""
+    _, _, names, _ = _export(tmp_path, "merged", below=11)  # labels from zoom 11
+    _, _, plain, _ = _export(tmp_path / "plain", "full")
+    assert not any(name.endswith("_vp") for z in names for name in names[z])
+    assert names == plain

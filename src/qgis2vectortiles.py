@@ -727,8 +727,8 @@ class QGIS2VectorTiles:
             feature_keys=self.feature_keys, extra_tile_fields=self.extra_tile_fields,
             cache=self.cache, light_results=True,
             # Merged or drawn as images zoomed out: no fills to host their
-            # visible-polygon labels there.
-            unhosted_layers=set(self.zoomed_out),
+            # visible-polygon labels below that zoom.
+            unhosted_layers={lid: below for lid, (_, below) in self.zoomed_out.items()},
         )
         result = exporter.export()
         self.dataset_keys = dict(exporter.dataset_keys)
