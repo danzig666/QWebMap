@@ -58,7 +58,13 @@ def terrain_zooms(layer, profile_min_zoom: int, latitude: float) -> Tuple[int, i
 
 def render_terrain(layer, extent_3857, min_zoom: int, max_zoom: int, output: str,
                    progress: Optional[Progress] = None) -> Optional[ArchiveDescriptor]:
-    """Terrain-RGB PMTiles of ``layer`` over ``extent_3857`` (x0, y0, x1, y1)."""
+    """Terrain-RGB PMTiles of ``layer`` over ``extent_3857`` (x0, y0, x1, y1).
+
+    Each zoom is warped from the DEM (from a pyramid of it built once, so a
+    zoomed-out level does not read the whole DEM). Holes and the area beyond
+    the DEM take the nearest edge heights: filled (GDAL) at the lowest zoom,
+    each higher zoom takes them from the one below, resampled (filling every
+    zoom anew cost minutes at the highest one)."""
     from osgeo import gdal  # pylint: disable=import-outside-toplevel
     import numpy as np  # pylint: disable=import-outside-toplevel
     progress = progress or Progress()
@@ -69,55 +75,110 @@ def render_terrain(layer, extent_3857, min_zoom: int, max_zoom: int, output: str
                                                   "(online services cannot be used as terrain).")
     band = dataset.GetRasterBand(1)
     source_nodata = band.GetNoDataValue()
+    has_overviews = band.GetOverviewCount() > 0
     dataset = None
     # The CRS QGIS uses for the layer (a file without one, or one set in QGIS).
     source_srs = layer.crs().toWkt() if layer.crs().isValid() else None
+    pyramid = None if has_overviews else _pyramid(source, output + ".dem.vrt")
     zooms = list(range(int(min_zoom), int(max_zoom) + 1))
-    with TileSink(output) as sink:
-        for step, z in enumerate(zooms):
-            progress.check()
-            x0, y0, x1, y1 = tile_span(extent_3857, z)
-            nx, ny = x1 - x0 + 1, y1 - y0 + 1
-            if nx <= 0 or ny <= 0:
-                continue
-            if nx * ny * TILE * TILE > MAX_PIXELS:
-                progress.info(f"Terrain: zoom {z} and above left out (area too large)")
-                break
-            size = 2 * ORIGIN / (1 << z)
-            bounds = (-ORIGIN + x0 * size, ORIGIN - (y1 + 1) * size, -ORIGIN + (x1 + 1) * size, ORIGIN - y0 * size)
-            options = gdal.WarpOptions(format="MEM", outputBounds=bounds, width=nx * TILE, height=ny * TILE,
-                                       dstSRS="EPSG:3857", resampleAlg="bilinear", outputType=gdal.GDT_Float32,
-                                       dstNodata=NODATA, srcNodata=source_nodata, srcSRS=source_srs,
-                                       multithread=True)
-            warped = gdal.Warp("", source, options=options)
-            if warped is None:
-                raise PublishingError("Q2VT_PUB_TERRAIN", f'Terrain: "{layer.name()}" could not be resampled.')
-            band = warped.GetRasterBand(1)
-            heights = band.ReadAsArray()
-            valid = np.isfinite(heights) & (heights > NODATA + 1)
-            heights = None
-            if not valid.any():
-                continue
-            # Holes and the area beyond the DEM take the nearest edge heights
-            # (no cliff at the DEM's edge in the relief or a profile).
-            gdal.FillNodata(targetBand=band, maskBand=None, maxSearchDist=max(nx, ny) * TILE,
-                            smoothingIterations=0)
-            heights = band.ReadAsArray().astype(np.float64)
-            warped = None
-            filled = np.isfinite(heights) & (heights > NODATA + 1)
-            heights[~filled] = float(heights[filled].mean())
-            for ty in range(ny):
-                for tx in range(nx):
-                    window = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
-                    if not valid[window].any():
-                        continue
-                    sink.add(z, x0 + tx, y0 + ty, _png(encode_heights(heights[window]), TILE, TILE))
-            progress.update(0.9 * (step + 1) / len(zooms), f"Terrain: zoom {z}, {sink.count} tiles")
-        if not sink.count:
+    below = None  # the zoom below, filled: (MEM dataset)
+    try:
+        with TileSink(output) as sink:
+            for step, z in enumerate(zooms):
+                progress.check()
+                x0, y0, x1, y1 = tile_span(extent_3857, z)
+                nx, ny = x1 - x0 + 1, y1 - y0 + 1
+                if nx <= 0 or ny <= 0:
+                    continue
+                if nx * ny * TILE * TILE > MAX_PIXELS:
+                    progress.info(f"Terrain: zoom {z} and above left out (area too large)")
+                    break
+                size = 2 * ORIGIN / (1 << z)
+                bounds = (-ORIGIN + x0 * size, ORIGIN - (y1 + 1) * size,
+                          -ORIGIN + (x1 + 1) * size, ORIGIN - y0 * size)
+                options = gdal.WarpOptions(format="MEM", outputBounds=bounds, width=nx * TILE,
+                                           height=ny * TILE, dstSRS="EPSG:3857", resampleAlg="bilinear",
+                                           outputType=gdal.GDT_Float32, dstNodata=NODATA,
+                                           srcNodata=source_nodata, srcSRS=source_srs, multithread=True)
+                warped = gdal.Warp("", pyramid or source, options=options)
+                if warped is None:
+                    raise PublishingError("Q2VT_PUB_TERRAIN",
+                                          f'Terrain: "{layer.name()}" could not be resampled.')
+                band = warped.GetRasterBand(1)
+                heights = band.ReadAsArray().astype(np.float64)
+                valid = np.isfinite(heights) & (heights > NODATA + 1)
+                if not valid.any():
+                    continue
+                if valid.all():
+                    pass
+                elif below is None:
+                    # The lowest zoom with heights: small; filled from the edges.
+                    gdal.FillNodata(targetBand=band, maskBand=None, maxSearchDist=max(nx, ny) * TILE,
+                                    smoothingIterations=0)
+                    heights = band.ReadAsArray().astype(np.float64)
+                else:
+                    filler = gdal.Warp("", below, options=gdal.WarpOptions(
+                        format="MEM", outputBounds=bounds, width=nx * TILE, height=ny * TILE,
+                        resampleAlg="bilinear", outputType=gdal.GDT_Float32))
+                    fill = filler.GetRasterBand(1).ReadAsArray().astype(np.float64)
+                    filler = None
+                    heights[~valid] = fill[~valid]
+                    band.WriteArray(heights.astype(np.float32))
+                filled = np.isfinite(heights) & (heights > NODATA + 1)
+                if not filled.all():
+                    heights[~filled] = float(heights[filled].mean())
+                    band.WriteArray(heights.astype(np.float32))
+                band.SetNoDataValue(-1e38)  # filled: every value is a height for the zoom above
+                below = warped
+                for ty in range(ny):
+                    for tx in range(nx):
+                        window = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
+                        if not valid[window].any():
+                            continue
+                        sink.add(z, x0 + tx, y0 + ty, _png(encode_heights(heights[window]), TILE, TILE))
+                progress.update(0.9 * (step + 1) / len(zooms), f"Terrain: zoom {z}, {sink.count} tiles")
+            below = None
+            if not sink.count:
+                return None
+            metadata = {"name": layer.name(), "format": "png", "type": "baselayer",
+                        "description": "Terrain-RGB heights (mapbox encoding) by QWebMap", "encoding": "mapbox"}
+            return sink.write(TileType.PNG, Compression.NONE, metadata, progress=progress.sub(0.9, 1.0))
+    finally:
+        below = None
+        if pyramid is not None:
+            import os  # pylint: disable=import-outside-toplevel
+            for path in (pyramid, pyramid + ".ovr"):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+
+def _pyramid(source: str, path: str) -> Optional[str]:
+    """A VRT of ``source`` with averaged overviews (heights, nodata left out)
+    at ``path``, or None (then the DEM itself is read)."""
+    from osgeo import gdal  # pylint: disable=import-outside-toplevel
+    try:
+        vrt = gdal.BuildVRT(path, [source])
+        if vrt is None:
             return None
-        metadata = {"name": layer.name(), "format": "png", "type": "baselayer",
-                    "description": "Terrain-RGB heights (mapbox encoding) by QWebMap", "encoding": "mapbox"}
-        return sink.write(TileType.PNG, Compression.NONE, metadata, progress=progress.sub(0.9, 1.0))
+        width, height = vrt.RasterXSize, vrt.RasterYSize
+        levels, factor = [], 2
+        while max(width, height) / factor >= 256:
+            levels.append(factor)
+            factor *= 2
+        if not levels:
+            vrt = None
+            return None
+        gdal.SetConfigOption("COMPRESS_OVERVIEW", "ZSTD")
+        try:
+            vrt.BuildOverviews("AVERAGE", levels)
+        finally:
+            gdal.SetConfigOption("COMPRESS_OVERVIEW", None)
+        vrt = None
+        return path
+    except RuntimeError:  # GDAL (exceptions on): the DEM itself is read
+        return None
 
 
 def grow(extent_3857, fraction: float = 0.2):

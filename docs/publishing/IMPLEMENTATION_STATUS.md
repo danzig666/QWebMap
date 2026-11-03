@@ -2272,3 +2272,16 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   layer's resampling for non-paletted images; an alpha band (8-bit) or an unused nodata value keeps
   the area around the image transparent; None (render as before) past 1.5 Gpx, without disk room or
   a free value. Synthetic polar image to zoom 7: 29 s -> 11 s (tests/integration/test_publishing_raster.py).
+
+## 4.56.2 — terrain speed; removable elevation layer; raster copies where they help
+
+* `terrain.render_terrain`: `gdal.FillNodata` only at the lowest zoom with heights; each zoom above
+  takes its holes and surroundings from the zoom below (bilinear); zoomed-out levels warp from
+  `_pyramid` (a VRT with averaged ZSTD overviews, removed afterwards) unless the DEM has overviews.
+  Synthetic 1 m EOV DEM, zooms 0-15: 185 s -> 16 s; heights inside the DEM within 0.1 m
+  (tests/integration/test_terrain_export.py).
+* `layer_search.searchable`: a box that allows no layer takes an emptied text as none; clear button
+  (tests/integration/test_publish_dialog.py).
+* `raster_tiles.warped_copy`: only when `_curved_to_mercator` (an affine fit of the extent's 7x7 grid
+  misses by > 0.2 % of its size); never for hillshade / contour renderers
+  (tests/integration/test_publishing_raster.py).

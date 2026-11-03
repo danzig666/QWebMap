@@ -473,3 +473,27 @@ def test_a_reprojected_raster_is_warped_once_with_the_same_tiles(tmp_path, monke
     # Web Mercator: nothing to warp.
     flat = QgsRasterLayer(make_raster(tmp_path / "flat.tif"), "Flat")
     assert raster_tiles.warped_copy(flat, plan, 256, str(tmp_path / "x.tif")) is None
+    # A hillshade: shaded by its pixels' size in its own CRS, never from a copy.
+    if kind == "nodata":
+        from qgis.core import QgsHillshadeRenderer
+        layer.setRenderer(QgsHillshadeRenderer(layer.dataProvider(), 1, 315, 45))
+        assert raster_tiles.warped_copy(layer, plan, 256, str(tmp_path / "h.tif")) is None
+
+
+def test_no_copy_where_qgis_reprojects_a_raster_fast(tmp_path):
+    """A national grid over a town (EOV) is nearly linear to Web Mercator:
+    QGIS reprojects it fast, and a copy at the finest zoom (a 1 m DEM: zoom
+    18) took longer than it saved. Only curved reprojections are warped."""
+    from q2vt_plugin.src.publishing import raster_tiles  # pylint: disable=import-error
+    path = str(tmp_path / "eov.tif")
+    ds = gdal.GetDriverByName("GTiff").Create(path, 200, 200, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform([727000, 5, 0, 285000, 0, -5])
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(23700)
+    ds.SetProjection(srs.ExportToWkt())
+    ds.GetRasterBand(1).Fill(120)
+    ds = None
+    layer = QgsRasterLayer(path, "EOV")
+    assert layer.isValid() and not raster_tiles._curved_to_mercator(layer)  # pylint: disable=protected-access
+    plan = raster_tiles.RasterPlan(layer.id(), 10, 16, 100, (8.2e6, 6.0e6, 8.3e6, 6.1e6))
+    assert raster_tiles.warped_copy(layer, plan, 256, str(tmp_path / "w.tif")) is None
