@@ -263,6 +263,8 @@ Before each export, the plugin checks the zoomed-out load. If some layers are he
 A raster layer of more than 400 000 tiles takes hours to export and makes a very large web map. There is no limit, but before the export a "Very large raster layer" warning names the layer, the setting that makes it large (its <em>Sharpest detail</em>, or the Map tab's <em>Maximum tile zoom</em> for "Like the map") and what brings it down: each coarser <em>Sharpest detail</em> step is about a quarter of the tiles, or a smaller extent. <strong>Export anyway</strong> goes on, Cancel stops. The count is an upper bound (every tile of the area at every zoom): 400 000 is roughly 15 × 15 km at zoom 20 (about 0.1 m detail), 30 × 30 km at zoom 19. A higher <em>Shown from zoom</em> barely helps: the sharpest zoom holds three quarters of the tiles.
 </li><li>
 If QGIS cannot write WebP, the tiles are written as PNG (larger) and a warning is shown.
+</li><li>
+To see the zoom while checking scale limits or styles, add <code>?debug</code> to the map's address (<code>…/index.html?debug</code>, before any <code>#</code>): a box above the scale bar shows the map's zoom and the zoom of the vector tiles drawn there ("overzoomed" past the last tile zoom). <code>?debug=tiles</code> also draws the tile boundaries. Visitors do not see it unless they add it themselves.
 </li></ul>
 <p><strong>Errors</strong></p>
 <ul><li>

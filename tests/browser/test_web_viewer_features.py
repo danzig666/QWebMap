@@ -401,3 +401,24 @@ def test_search_is_a_magnifier_until_tapped(site, tmp_path):
     ], tmp_path)
     assert wide[0]["toggle"] and not wide[0]["field"], wide
     assert wide[1]["field"] and wide[1]["focused"], wide
+
+
+def test_debug_address_shows_the_zoom_and_tile_zoom(site, tmp_path):
+    """?debug in the address: a readout of the map's zoom and the zoom of
+    the vector tiles drawn there (overzoomed past the last tile zoom);
+    ?debug=tiles also draws the tile boundaries. Without it, nothing."""
+    base = site["url"]
+    actions = [{"wait": 800},
+               {"eval": "const b = document.getElementById('q2vt-debug'); "
+                        "return b ? b.textContent : null;"},
+               {"eval": "q2vtViewer.map.jumpTo({ zoom: 22 }); return 1;"},
+               {"wait": 300},
+               {"eval": "return [document.getElementById('q2vt-debug').textContent, "
+                        "q2vtViewer.map.showTileBoundaries];"}]
+    shown = _run(base + "?debug", actions, tmp_path)  # one result per "eval"
+    assert shown[0].startswith("zoom ") and " · tiles z" in shown[0]
+    assert "(overzoomed)" in shown[2][0] and shown[2][0].startswith("zoom 22.00") and shown[2][1] is False
+    tiles = _run(base + "?debug=tiles", actions, tmp_path)
+    assert tiles[2][1] is True
+    plain = _run(base, [{"wait": 800}, {"eval": "return document.getElementById('q2vt-debug');"}], tmp_path)
+    assert plain[0] is None

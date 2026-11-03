@@ -302,6 +302,12 @@ async function start() {
     screenHairlines(map);
     // The vector map's labels (none on a map of raster layers only).
     const vector = manifest.sources.find((source) => source.role !== "raster");
+    // ?debug: the zoom readout (debug.mjs; loaded only when asked for).
+    if (new URLSearchParams(location.search).has("debug")) {
+      import("./debug.mjs").then(({ debugMode, installDebug }) => {
+        viewer.debug = installDebug(map, debugMode(), vector ? vector.id : "q2vt_tiles");
+      }).catch((error) => diagnostics.warnings.push({ key: "debug", detail: String(error).slice(0, 200) }));
+    }
     // Layers whose every feature keeps its label (shrunk where it does not fit).
     const always = new Set();
     for (const layer of manifest.layers || []) {
