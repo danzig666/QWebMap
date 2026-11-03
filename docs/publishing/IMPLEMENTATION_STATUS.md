@@ -2316,3 +2316,13 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
 * `RulesExporter.unhosted_layers` is {layer id: zoom}; a layer's visible-polygon labels get a polygon copy
   (`_vp`) only when they start below that zoom, else they ride in its fills as without the setting
   (tests/integration/test_zoomed_out_modes.py).
+
+## 4.58.0 — zoomed-out load suggests merged / image drawing
+
+* `zoom_load.LayerLoad`: `zoomed_out` / `zoomed_out_below` (read from the layer config), `drawn(zoom, mode, below)`
+  (merged: `MERGED_SHARE` of the tile, image: none), `heavy(..., mode)`, `modes()` (merged for polygons only),
+  `suggested_mode` / `suggested_mode_below` (first zoom light with every feature) and `mode_needed`
+  (heavy zooms drawn below it that the suggested limit does not hide), filled by `_suggest`.
+* `zoom_load_dialog._ModePick` (*Drawn zoomed out* column), `ZoomLoadDialog.chosen_modes()`;
+  `PublishDialog.apply_zoomed_out` writes them into the Zoomed out column; the export check lists them
+  (tests/integration/test_publish_scale_limits.py).

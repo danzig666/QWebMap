@@ -399,3 +399,96 @@ def test_an_answered_zoomed_out_check_is_not_run_again_until_something_changes(p
         dialog.close()
     finally:
         QgsSettings().remove(key)
+
+
+def _heavy_load(layer_id="p", kind="polygon", **extra):
+    """Visible features (1 px at zoom 0) too many per tile up to zoom 11:
+    light from zoom 12 on (12 500 features, 375 KB)."""
+    from publishing import zoom_load
+    features = {z: 200000 // 4 ** (z - 10) for z in range(10, 19)}
+    extra.setdefault("feature_px", 1.0)
+    return zoom_load.LayerLoad(layer_id, "Telkek", kind, 200000, 10, tile_features=features,
+                               tile_bytes={z: n * 30 for z, n in features.items()}, **extra)
+
+
+def test_zoomed_out_load_suggests_merged_or_images_for_heavy_visible_layers(plugin):
+    """Heavy where its features are still visible: not hidden, but drawn
+    merged (polygons) or as images (points, lines) below the first light
+    zoom; a mode already set counts in the load and only its zoom moves."""
+    from publishing import zoom_load
+    polygons, points = _heavy_load(), _heavy_load("q", "point")
+    zoom_load.resuggest([polygons, points], 18, zoom_load.BALANCED)
+    assert polygons.suggested_from is None  # visible: not hidden
+    assert (polygons.suggested_mode, polygons.suggested_mode_below) == ("merged", 12)
+    assert polygons.mode_suggested() and polygons.modes() == ("full", "merged", "image")
+    assert points.suggested_mode == "image" and points.modes() == ("full", "image")
+    # Set already, and light: no suggestion; the load counts the merged copies.
+    done = _heavy_load(zoomed_out="merged", zoomed_out_below=12)
+    zoom_load.resuggest([done], 18, zoom_load.BALANCED)
+    assert not done.heavy(10) and done.heavy(10, mode="full") and done.drawn(10)[1] == 6_000_000 * zoom_load.MERGED_SHARE
+    assert done.suggested_mode is None and not done.mode_suggested()
+    # Set too low: the same mode from a closer zoom.
+    low = _heavy_load(zoomed_out="image", zoomed_out_below=11)
+    zoom_load.resuggest([low], 18, zoom_load.BALANCED)
+    assert (low.suggested_mode, low.suggested_mode_below) == ("image", 12) and low.mode_suggested()
+    # Hidden there by a suggested limit: offered, not ticked.
+    specks = _heavy_load(feature_px=1e-3)  # 2 px only from zoom 11
+    zoom_load.resuggest([specks], 18, zoom_load.BALANCED)
+    assert specks.suggested_from == 11 and specks.suggested_mode == "merged"
+    assert specks.mode_suggested()  # zoom 11 is still drawn, and heavy
+    specks.tile_bytes[11] = specks.tile_features[11] = 0
+    zoom_load.resuggest([specks], 18, zoom_load.BALANCED)
+    assert specks.suggested_mode == "merged" and not specks.mode_suggested()
+
+
+def test_zoomed_out_load_dialog_applies_the_drawing_mode(plugin, monkeypatch, tmp_path):
+    for name in ("warning", "information", "critical"):
+        monkeypatch.setattr(QMessageBox, name, lambda *a, **k: None)
+    project = reset_project()
+    parcels = _parcels(str(tmp_path / "parcels.gpkg"))
+    project.addMapLayer(parcels)
+    from q2vt_plugin.src.gui.publish_dialog import COL_ZOOMED, PublishDialog  # pylint: disable=import-error
+    from q2vt_plugin.src.gui.zoom_load_dialog import ZoomLoadDialog, _ModePick  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing import zoom_load  # pylint: disable=import-error
+    dialog = PublishDialog(iface=None)
+    dialog.profile.view.extent = [EXTENT.xMinimum(), EXTENT.yMinimum(), EXTENT.xMaximum(), EXTENT.yMaximum()]
+    item = next(dialog._tree_items())  # pylint: disable=protected-access
+    item.setCheckState(1, Qt.CheckState.Checked)
+    load = _heavy_load(parcels.id())
+    zoom_load.resuggest([load], 18, zoom_load.BALANCED)
+    monkeypatch.setattr(zoom_load, "analyse", lambda *a: ([load], 1.1e8))
+
+    def accept(window):
+        pick = window.picks[parcels.id()]["mode"]
+        assert isinstance(pick, _ModePick) and pick.check.isChecked()
+        assert (pick.mode.currentData(), pick.spin.value()) == ("merged", 12)
+        assert "With the checked limits" in window.summary.text()
+        pick.spin.setValue(13)
+        return True
+
+    assert dialog.analyse_zoom_load(accept)
+    assert item.text(COL_ZOOMED) == "merged < z13"
+    config = dialog.collect().layer(parcels.id())
+    assert (config.zoomed_out, config.zoomed_out_below) == ("merged", 13)
+    assert dialog._item_scales(item)[0] == 0.0  # no limit: still visible  # pylint: disable=protected-access
+    # Unticked: nothing changes; a mode set back to every feature is removed.
+    window = ZoomLoadDialog(None, [load], 1.1e8, (10, 18))
+    window.picks[parcels.id()]["mode"].check.setChecked(False)
+    assert window.chosen_modes() == {}
+    done = _heavy_load(parcels.id(), zoomed_out="merged", zoomed_out_below=12)
+    zoom_load.resuggest([done], 18, zoom_load.BALANCED)
+    window = ZoomLoadDialog(None, [done], 1.1e8, (10, 18))
+    pick = window.picks[parcels.id()]["mode"]
+    assert not pick.check.isChecked() and (pick.mode.currentData(), pick.spin.value()) == ("merged", 12)
+    assert "merged" in window.table.item(0, 2).text()
+    pick.mode.setCurrentIndex(0)
+    assert window.chosen_modes() == {parcels.id(): ("full", None)}
+    # The analysis reads the mode set in the layer list.
+    from qgis.core import QgsRectangle
+    profile = dialog.collect()
+    dialog.close()
+    monkeypatch.undo()
+    for name in ("warning", "information", "critical"):
+        monkeypatch.setattr(QMessageBox, name, lambda *a, **k: None)
+    loads, _factor = zoom_load.analyse(project, profile, QgsRectangle(EXTENT))
+    assert (loads[0].zoomed_out, loads[0].zoomed_out_below) == ("merged", 13)

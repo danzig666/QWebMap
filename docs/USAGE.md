@@ -83,11 +83,12 @@ With several rows selected, a limit appears only if every row has the same value
 - **Find a layer…** — Filters the rows by layer name. Hidden rows keep their ticks.
 - **Zoomed out, the web map should be:** — Slider from "slow, showing much" to "fast, showing little": Very slow, Slow, Balanced (the default), Fast, Very fast. Moving it recalculates the suggestions and replaces zooms you set by hand. The position is remembered.
 - **Layer** / **Features** — Layer name and its feature count in the extent.
-- **Busiest tile, zoomed out** — The layer's share of the heaviest tile at its current first zoom, in features and KB/MB.
+- **Busiest tile, zoomed out** — The layer's share of the heaviest tile at its current first zoom, in features and KB/MB. A layer already drawn merged or as images there shows that ("merged, 30 KB", "image, no vector data").
 - **Features from** — Tick box and zoom: hides the layer (features and labels) when zoomed out beyond this zoom. Suggested changes come ticked. Changing the zoom ticks the box. The lowest zoom means no limit.
+- **Drawn zoomed out** — Tick box, mode and zoom: keeps a heavy layer visible but lighter below the zoom (sets the Zoomed out column): **Merged** (polygon layers) or **Image**. Suggested where the layer is heavy but its features are not specks, below the first zoom where every feature is light enough; it comes ticked when it draws zooms that Features from does not hide. Untick Features from to keep the layer visible at every zoom out. **Every feature** removes a mode already set.
 - **Labels, zoomed out** — Labels in the heaviest tile and about how many fit.
 - **Labels from** — Tick box and zoom: hides only the labels when zoomed out beyond this zoom.
-- **Apply the checked limits** — Writes the ticked zooms into the Scales column as scales. The summary line compares the heaviest tile before and after.
+- **Apply the checked settings** — Writes the ticked zooms into the Scales column as scales and the ticked drawing modes into the Zoomed out column. The summary line compares the heaviest tile before and after.
 
 **Pitfalls**
 

@@ -52,6 +52,10 @@ HEAVY_BYTES = 400 * 1024           # a layer's part of one tile that slows the m
 HEAVY_FEATURES = 15000             # features of one layer in one tile
 POINT_CELL_PX = 6                  # points denser than one per 6×6 px are a solid mass
 HEAVY_LABELS = 1500                # labels of one layer laid out in one tile
+# Share of a layer's tile left when its features are merged per style
+# (LayerConfig.zoomed_out "merged"): measured on 100 000 parcels in six
+# categories, 1-4 % at zooms 10-14; images ("image") leave no vector data.
+MERGED_SHARE = 0.05
 
 
 @dataclass(frozen=True)
@@ -100,10 +104,36 @@ class LayerLoad:
     label_bytes: Dict[int, int] = field(default_factory=dict)
     label_width_px: float = 0.0     # a typical label's width
     suggested_labels_from: Optional[int] = None
+    zoomed_out: str = "full"        # how it is drawn zoomed out now: "full" | "merged" | "image"
+    zoomed_out_below: Optional[int] = None
+    suggested_mode: Optional[str] = None    # "merged" | "image" below suggested_mode_below
+    suggested_mode_below: Optional[int] = None
+    mode_needed: bool = False
 
-    def heavy(self, zoom: int, factor: float = 1.0) -> bool:
-        return self.tile_bytes.get(zoom, 0) >= HEAVY_BYTES * factor or \
-            self.tile_features.get(zoom, 0) >= HEAVY_FEATURES * factor
+    def drawn(self, zoom: int, mode: Optional[str] = None, below: Optional[int] = None) -> Tuple[float, float]:
+        """(features, bytes) of the busiest tile at a zoom drawn in a mode
+        (None: as it is set now; "full": every feature)."""
+        if mode is None:
+            mode, below = self.zoomed_out, self.zoomed_out_below
+        count, size = self.tile_features.get(zoom, 0), self.tile_bytes.get(zoom, 0)
+        if mode in ("merged", "image") and below and zoom < below:
+            share = MERGED_SHARE if mode == "merged" else 0.0
+            return count * share, size * share
+        return count, size
+
+    def heavy(self, zoom: int, factor: float = 1.0, mode: Optional[str] = None,
+              below: Optional[int] = None) -> bool:
+        count, size = self.drawn(zoom, mode, below)
+        return size >= HEAVY_BYTES * factor or count >= HEAVY_FEATURES * factor
+
+    def modes(self) -> Tuple[str, ...]:
+        """The zoomed-out modes for this layer: merging joins polygons only."""
+        return ("full", "merged", "image") if self.kind == "polygon" else ("full", "image")
+
+    def mode_suggested(self) -> bool:
+        """The suggested mode is worth applying (_suggest): the layer is
+        heavy at zooms it draws that are not hidden by the suggested limit."""
+        return self.mode_needed and self.suggested_mode is not None
 
     def label_count(self, zoom: int) -> float:
         """Labels of the busiest tile (features with a label text)."""
@@ -238,6 +268,9 @@ def analyse_layer(layer: QgsVectorLayer, config, extent_3857: QgsRectangle, zoom
     load = LayerLoad(layer.id(), layer.name(), kind, len(ids),
                      _visible_from(layer, config, factor, min_zoom),
                      draws_features=renderer is not None and renderer.type() != "nullSymbol")
+    mode, below = getattr(config, "zoomed_out", "full"), getattr(config, "zoomed_out_below", None)
+    if mode in ("merged", "image") and below:
+        load.zoomed_out, load.zoomed_out_below = mode, int(below)
     scale_up = len(ids) / len(centres)
     typical = statistics.median(sizes) if kind != "point" else 0.0
     load.feature_px = typical / pixel_size(0)
@@ -290,12 +323,26 @@ def _feature_visible(load: LayerLoad, zoom: int, speed: Speed = SPEEDS[BALANCED]
 def _suggest(load: LayerLoad, max_zoom: int, speed: Speed = SPEEDS[BALANCED]) -> None:
     """Fill the suggestions (None: leave as it is)."""
     load.suggested_from = load.suggested_labels_from = None
+    load.suggested_mode = load.suggested_mode_below = None
+    load.mode_needed = False
     start = load.shown_from
     if load.draws_features and load.heavy(start, speed.heavy) and not _feature_visible(load, start, speed):
         for zoom in range(start + 1, max_zoom + 1):
             if _feature_visible(load, zoom, speed):
                 load.suggested_from = zoom
                 break
+    if load.draws_features and load.heavy(start, speed.heavy, "full"):
+        # Kept visible but lighter: merged (polygons) or images below the
+        # first zoom every feature is light enough at (the last zoom when
+        # none is); the mode already set is kept, only its zoom moves.
+        below = next((z for z in range(start + 1, max_zoom + 1)
+                      if not load.heavy(z, speed.heavy, "full")), max_zoom)
+        if below > start and below > (load.zoomed_out_below or 0):
+            load.suggested_mode = load.zoomed_out if load.zoomed_out in load.modes() and \
+                load.zoomed_out != "full" else ("merged" if load.kind == "polygon" else "image")
+            load.suggested_mode_below = below
+            first = load.suggested_from if load.suggested_from is not None else start
+            load.mode_needed = any(load.heavy(z, speed.heavy) for z in range(first, below))
     if not load.labels:
         return
     begin = max(load.labels_from, load.suggested_from or start)

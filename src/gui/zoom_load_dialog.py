@@ -11,7 +11,7 @@ to "very fast" (hide small features and crowded labels early).
 from qgis.PyQt.QtCore import QCoreApplication, Qt
 from qgis.PyQt.QtGui import QGuiApplication
 from qgis.core import QgsSettings
-from qgis.PyQt.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox,
+from qgis.PyQt.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                  QHBoxLayout, QHeaderView, QLabel, QLineEdit, QSlider, QSpinBox,
                                  QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -19,7 +19,8 @@ from ..publishing import zoom_load
 from .layer_search import matches
 from .scale_range import scale_text
 
-COL_LAYER, COL_COUNT, COL_NOW, COL_FROM, COL_LABELS_NOW, COL_LABELS_FROM = range(6)
+COL_LAYER, COL_COUNT, COL_NOW, COL_FROM, COL_MODE, COL_LABELS_NOW, COL_LABELS_FROM = range(7)
+COLUMNS = 7
 
 
 def tr(text: str) -> str:
@@ -87,6 +88,53 @@ class _ZoomPick(QWidget):
         return self.spin.value() if self.check.isChecked() else None
 
 
+class _ModePick(QWidget):
+    """How a layer is drawn zoomed out: "☑ [Merged ▾] below z15". Ticked
+    by itself where the mode is suggested; changing it ticks it."""
+
+    def __init__(self, modes, mode: str, below: int, low: int, high: int, checked: bool, on_change):
+        super().__init__()
+        from .zoomed_out_dialog import mode_labels  # pylint: disable=import-outside-toplevel
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        self.check = QCheckBox()
+        self.check.setChecked(checked)
+        self.check.setToolTip(tr("Ticked: applied to the Zoomed out column with the button below"))
+        self.mode = QComboBox()
+        short = {"full": tr("Every feature"), "merged": tr("Merged"), "image": tr("Image")}
+        for key in modes:
+            self.mode.addItem(short[key], key)
+            self.mode.setItemData(self.mode.count() - 1, mode_labels()[key], Qt.ItemDataRole.ToolTipRole)
+        self.mode.setCurrentIndex(max(0, self.mode.findData(mode)))
+        self.mode.setToolTip(tr(
+            "Merged: the features of one style joined per tile (no inner outlines or popups there). "
+            "Image: rendered by QGIS (no popups there). Both keep the layer visible and its labels "
+            "as text; from the zoom set here on every feature is drawn"))
+        self.spin = QSpinBox()
+        self.spin.setRange(max(1, low + 1), max(low + 1, high))
+        self.spin.setPrefix(tr("below z"))
+        self.spin.setValue(max(self.spin.minimum(), min(self.spin.maximum(), int(below))))
+        for signal in (self.mode.currentIndexChanged, self.spin.valueChanged):
+            signal.connect(lambda *_: self.check.setChecked(True))
+            signal.connect(lambda *_: self._sync())
+            signal.connect(lambda *_: on_change())
+        self.check.toggled.connect(lambda *_: on_change())
+        layout.addWidget(self.check)
+        layout.addWidget(self.mode)
+        layout.addWidget(self.spin)
+        self._sync()
+
+    def _sync(self):
+        self.spin.setEnabled(self.mode.currentData() != "full")
+
+    def chosen(self):
+        """(mode, below zoom or None) when ticked, else None."""
+        if not self.check.isChecked():
+            return None
+        mode = self.mode.currentData()
+        return (mode, int(self.spin.value())) if mode != "full" else ("full", None)
+
+
 SPEED_KEY = "QWebMap/zoomLoadSpeed"
 
 
@@ -116,8 +164,10 @@ class ZoomLoadDialog(QDialog):
             "tile holds a whole area: every feature in it is loaded and drawn, even when it is "
             "smaller than a pixel, and every label is laid out though few of them fit. The ticked "
             "zooms hide the features, or only the labels, when zoomed out beyond them; they are not "
-            "tiled there either. Every zoom can be changed by hand (changing it ticks it); the lowest "
-            "zoom removes a limit. Only the web map changes, not the QGIS project."))
+            "tiled there either. A layer that is heavy but still worth seeing is drawn merged per tile "
+            "or as images below a zoom instead (Drawn zoomed out). Every zoom can be changed by hand "
+            "(changing it ticks it); the lowest zoom removes a limit. Only the web map changes, not "
+            "the QGIS project."))
         intro.setWordWrap(True)
         layout.addWidget(intro)
         self.find = QLineEdit()
@@ -145,10 +195,14 @@ class ZoomLoadDialog(QDialog):
         self.speed_name.setMinimumWidth(80)
         speed_row.addWidget(self.speed_name)
         layout.addLayout(speed_row)
-        self.table = QTableWidget(len(self.loads), 6)
+        self.table = QTableWidget(len(self.loads), COLUMNS)
         self.table.setHorizontalHeaderLabels([
             tr("Layer"), tr("Features"), tr("Busiest tile, zoomed out"), tr("Features from"),
-            tr("Labels, zoomed out"), tr("Labels from")])
+            tr("Drawn zoomed out"), tr("Labels, zoomed out"), tr("Labels from")])
+        self.table.horizontalHeaderItem(COL_MODE).setToolTip(tr(
+            "Suggested: the layer kept visible but lighter below a zoom, merged per tile (polygons) "
+            "or as images rendered by QGIS, where it is heavy but its features are not specks. "
+            "Untick Features from to keep it visible, so drawn, at every zoom out"))
         self.table.horizontalHeaderItem(COL_NOW).setToolTip(tr(
             "The layer's part of the heaviest tile at the most zoomed-out zoom it is shown at now"))
         self.table.horizontalHeaderItem(COL_FROM).setToolTip(tr(
@@ -163,13 +217,13 @@ class ZoomLoadDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         header = self.table.horizontalHeader()
-        for column in range(6):
+        for column in range(COLUMNS):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self.picks = {}
         for row, load in enumerate(self.loads):
             self._fill_row(row, load)
         self._show_speed_name()
-        for column, kind in ((COL_FROM, "features"), (COL_LABELS_FROM, "labels")):
+        for column, kind in ((COL_FROM, "features"), (COL_MODE, "mode"), (COL_LABELS_FROM, "labels")):
             # Resizing to contents does not see the cell widgets.
             widths = [picks[kind].sizeHint().width() + 8 for picks in self.picks.values() if kind in picks]
             if widths:
@@ -180,14 +234,14 @@ class ZoomLoadDialog(QDialog):
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.apply_button = buttons.addButton(tr("Apply the checked limits"),
+        self.apply_button = buttons.addButton(tr("Apply the checked settings"),
                                               QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self._update_summary()
         self.speed.valueChanged.connect(self._speed_changed)
-        width = sum(header.sectionSize(c) for c in range(6)) + 60   # the whole table, no scrolling
+        width = sum(header.sectionSize(c) for c in range(COLUMNS)) + 60   # the whole table, no scrolling
         screen = QGuiApplication.primaryScreen()
         if screen is not None:
             width = min(width, screen.availableGeometry().width() - 40)
@@ -205,7 +259,7 @@ class ZoomLoadDialog(QDialog):
         QgsSettings().setValue(SPEED_KEY, int(value))
         zoom_load.resuggest(self.loads, self.zooms[1], value)
         for row, load in enumerate(self.loads):
-            for column in (COL_FROM, COL_LABELS_FROM):
+            for column in (COL_FROM, COL_MODE, COL_LABELS_FROM):
                 self.table.removeCellWidget(row, column)
             self._fill_row(row, load)
         self._filter_rows(self.find.text())
@@ -234,10 +288,12 @@ class ZoomLoadDialog(QDialog):
         item.setData(Qt.ItemDataRole.UserRole, load.name)  # the whole name, for the search
         self._item(row, COL_COUNT, count_text(load.features))
         start = load.shown_from
-        feature_bytes = load.tile_bytes.get(start, 0)
-        count = load.tile_features.get(start, 0)
+        count, feature_bytes = load.drawn(start)
         if not load.draws_features:
             text = tr("z{}: labels only").format(start)
+        elif load.zoomed_out != "full" and load.zoomed_out_below and start < load.zoomed_out_below:
+            text = tr("z{}: {}, {}").format(start, tr("merged") if load.zoomed_out == "merged" else tr("image"),
+                                           size_text(feature_bytes) if feature_bytes else tr("no vector data"))
         elif count == 1:
             text = tr("z{}: 1 feature, {}").format(start, size_text(feature_bytes))
         else:
@@ -258,6 +314,19 @@ class ZoomLoadDialog(QDialog):
             self.table.setCellWidget(row, COL_FROM, picks["features"])
         else:
             self._item(row, COL_FROM, "—", tr("Labels only"))
+        if load.draws_features:
+            suggested = load.suggested_mode is not None
+            mode = load.suggested_mode if suggested else load.zoomed_out
+            below = load.suggested_mode_below if suggested else (load.zoomed_out_below or high)
+            picks["mode"] = _ModePick(load.modes(), mode, below, low, high,
+                                      load.mode_suggested(), self._update_summary)
+            if not load.mode_suggested():
+                picks["mode"].setToolTip(
+                    tr("Light enough") if not suggested
+                    else tr("Hidden there by the suggested limit; untick it to keep the layer visible this way"))
+            self.table.setCellWidget(row, COL_MODE, picks["mode"])
+        else:
+            self._item(row, COL_MODE, "—", tr("Labels only"))
         if load.labels and load.label_share > 0:
             begin = load.labels_from
             labels = load.tile_features.get(begin, 0) * load.label_share
@@ -279,6 +348,12 @@ class ZoomLoadDialog(QDialog):
         self.picks[load.layer_id] = picks
 
     # ------------------------------------------------------------------ result
+    def _mode(self, load):
+        """(mode, below) with the checked pick applied."""
+        pick = self.picks.get(load.layer_id, {}).get("mode")
+        chosen = pick.chosen() if pick is not None else None
+        return chosen if chosen is not None else (load.zoomed_out, load.zoomed_out_below)
+
     def _limits(self, load):
         """(features from, labels from) zooms with the checked picks applied."""
         picks = self.picks.get(load.layer_id, {})
@@ -292,7 +367,7 @@ class ZoomLoadDialog(QDialog):
         for load in self.loads:
             start, labels_start = self._limits(load) if after else (load.shown_from, load.labels_from)
             if zoom >= start:
-                total += load.tile_bytes.get(zoom, 0)
+                total += load.drawn(zoom, *(self._mode(load) if after else (None, None)))[1]
             if load.labels and zoom >= labels_start:
                 total += load.label_bytes.get(zoom, 0)
         return total
@@ -304,7 +379,7 @@ class ZoomLoadDialog(QDialog):
         worst_after = max(range(low, high + 1), key=lambda z: self._tile_bytes(z, True))
         text = tr("Heaviest tile now: about {} (zoom {}, all layers together).").format(
             size_text(now), worst_now)
-        if self.chosen():
+        if self.chosen() or self.chosen_modes():
             text += " " + tr("With the checked limits: about {} (zoom {}); {} at zoom {}.").format(
                 size_text(self._tile_bytes(worst_after, True)), worst_after, size_text(after), worst_now)
         self.summary.setText(text)
@@ -324,4 +399,15 @@ class ZoomLoadDialog(QDialog):
             result[load.layer_id] = (
                 picks["features"].scale() if features is not None else None,
                 picks["labels"].scale() if labels is not None else None)
+        return result
+
+    def chosen_modes(self):
+        """{layer id: (mode, below zoom or None)} of the ticked Drawn zoomed
+        out picks that change the layer's mode."""
+        result = {}
+        for load in self.loads:
+            pick = self.picks.get(load.layer_id, {}).get("mode")
+            chosen = pick.chosen() if pick is not None else None
+            if chosen is not None and chosen != (load.zoomed_out, load.zoomed_out_below):
+                result[load.layer_id] = chosen
         return result
