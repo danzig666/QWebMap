@@ -189,6 +189,8 @@ mark { background: #f6e27a; color: #1d2418; }
 <strong>Legend</strong> — The layer is shown in the web map's legend. This is the same setting as "Show in the legend" in the Interaction tab. Layers only.
 </li><li>
 <strong>Scales</strong> — Web map only: hides the layer when zoomed out or in beyond a scale. "labels 1:… –" hides only its labels. Grey "(QGIS …)" shows the layer's own QGIS scale range. Double-click the cell to edit it.
+</li><li>
+<strong>Zoomed out</strong> — Vector layers: how a dense layer (parcels, buildings) is drawn when zoomed out beyond a zoom, instead of hiding it. Empty: every feature. "merged &lt; z13": below zoom 13 the features of one style (and the same filter values) are joined into one shape per tile — much lighter; the outlines between them and their popups are gone there. "image &lt; z13": below zoom 13 QGIS renders the layer's symbols as images, exactly as in QGIS — the lightest; no popups or highlighting there, and the layer's category switches do not affect the images (its switch and opacity do). The labels stay as text in both. Double-click the cell to set it.
 </li></ul>
 <p>Right-click / <strong>Selected layers</strong> menu (a selected group applies to all its visible rows):</p>
 <ul><li>
@@ -201,6 +203,8 @@ mark { background: #f6e27a; color: #1d2418; }
 <strong>Show in the legend</strong> / <strong>Hide from the legend</strong> — Sets the Legend column.
 </li><li>
 <strong>Visible scales…</strong> — Opens the scale dialog for all selected layers.
+</li><li>
+<strong>Zoomed out…</strong> — Sets how the selected vector layers are drawn zoomed out (see the Zoomed out column).
 </li></ul>
 <ul><li>
 <strong>Map themes offered as views in the web map:</strong> — Ticked QGIS map themes become views that visitors can switch between. Ticking a theme also publishes its layers.

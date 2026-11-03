@@ -710,6 +710,9 @@ def _add_raster_layers(style: dict, bundle: ExportBundle, staging: str, progress
             layer_def["minzoom"] = entry["minZoom"]
         if entry.get("maxZoom") is not None:
             layer_def["maxzoom"] = entry["maxZoom"]
+        if raster.get("styleMaxZoom") is not None:  # a vector layer's images: below that zoom only
+            layer_def["maxzoom"] = min(layer_def.get("maxzoom", 24), raster["styleMaxZoom"])
+            layer_def["metadata"]["q2vt:image-of-layer"] = raster["layerId"]
         position = len(style["layers"])
         for index, existing in enumerate(style["layers"]):
             above = owner.get(existing.get("id"))

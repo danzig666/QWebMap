@@ -374,7 +374,8 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
             view_max_zoom=profile.view.max_view_zoom,
             min_label_px=profile.output.min_label_px,
             min_feature_px=profile.output.min_feature_px,
-            cap_tiles=True)
+            cap_tiles=True,
+            zoomed_out=qgis_model.zoomed_out_layers(vector_profile))
     progress.check()
     # The tiles are made in the background (ogr2ogr processes) while the
     # stages after the datasets run: finish_tiles() before BUILD_RELEASE.
@@ -482,6 +483,10 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         split = 0.6 if raster_configs and profile.terrain.layer_id else (1.0 if raster_configs else 0.0)
         bundle.raster_archives = _render_rasters(project, profile, raster_configs, raster_plans,
                                                  work_dir, progress.sub(0.0, split), bundle.warnings, cache)
+        images = _render_vector_images(project, profile, vector_profile, extent_3857, work_dir,
+                                       progress, bundle.warnings, cache)
+        bundle.raster_archives.extend(images)
+        _add_image_components(bundle, images)
         bundle.live_rasters = live_rasters
         bundle.warnings.extend(_vector_blend_warnings(project, profile))
         bundle.terrain = _render_terrain(project, profile, extent_3857, work_dir, progress.sub(split, 1.0),
@@ -770,6 +775,62 @@ def _render_rasters(project, profile, configs, plans, work_dir, progress, warnin
                     "styleLayerId": raster_style_layer_id(lid), "path": descriptor.path,
                     "descriptor": descriptor, "tileSize": 256})
     return out
+
+
+def _render_vector_images(project, profile, vector_profile, extent_3857, work_dir, progress, warnings,
+                          cache=None) -> List[dict]:
+    """The vector layers drawn as images zoomed out (LayerConfig.zoomed_out
+    "image"): their symbols (not their labels) rendered by QGIS into
+    ``<work>/images/<id>.pmtiles`` for the zooms below the chosen one, drawn
+    there at the layer's place (its features are tiled from that zoom on)."""
+    from . import qgis_model  # pylint: disable=import-outside-toplevel
+    from .provenance import layer_logical_id  # pylint: disable=import-outside-toplevel
+    from .raster_tiles import blend_name, plan_vector_image, raster_source_id, raster_style_layer_id  # pylint: disable=import-outside-toplevel
+    chosen = {lid: below for lid, (mode, below) in qgis_model.zoomed_out_layers(vector_profile).items()
+              if mode == "image"}
+    if not chosen:
+        return []
+    folder = os.path.join(work_dir, "images")
+    if os.path.isdir(folder):
+        shutil.rmtree(folder)
+    os.makedirs(folder)
+    threads = max(1, int((os.cpu_count() or 1) * profile.output.cpu_percent / 100))
+    out = []
+    for lid, below in chosen.items():
+        layer = project.mapLayer(lid)
+        if layer is None:
+            continue
+        plan = plan_vector_image(project, layer, profile, extent_3857, below)
+        if plan is None or not plan.tiles:
+            continue
+        config = vector_profile.layer(lid)
+        logical = layer_logical_id(lid)
+        progress.info(f'"{layer.name()}": images for zooms {plan.min_zoom}-{plan.max_zoom} (about {plan.tiles} tiles)')
+        blend = _raster_blend(project, profile, layer, blend_name(layer), plan.warnings)
+        descriptor = _cached_raster(cache, project, layer, config, plan, blend,
+                                    os.path.join(folder, f"{logical}.pmtiles"), progress, threads)
+        warnings.extend(plan.warnings)
+        if descriptor is None:
+            continue
+        out.append({"layerId": logical, "sourceId": raster_source_id(logical),
+                    "styleLayerId": raster_style_layer_id(logical), "path": descriptor.path,
+                    "descriptor": descriptor, "tileSize": 256, "styleMaxZoom": int(below),
+                    "image": True})
+    return out
+
+
+def _add_image_components(bundle, images: List[dict]) -> None:
+    """Each layer drawn as images zoomed out gets an ``image`` component (its
+    raster style layer): the layer's switch and opacity apply to it too."""
+    for image in images:
+        lid = image["layerId"]
+        cid = f"c-image-{lid}"
+        bundle.components.append({"id": cid, "role": "image", "layerId": lid, "ruleIds": [],
+                                  "styleLayerIds": [image["styleLayerId"]], "sourceId": image["sourceId"],
+                                  "dependsOnSourceLayers": []})
+        for layer in bundle.layers:
+            if layer["id"] == lid and cid not in layer.setdefault("componentIds", []):
+                layer["componentIds"].append(cid)
 
 
 def _cached_raster(cache, project, layer, config, plan, blend: str, output: str, progress,

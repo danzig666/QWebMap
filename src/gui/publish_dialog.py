@@ -55,6 +55,8 @@ LAYER_ROLE = Qt.ItemDataRole.UserRole
 GROUP_ROLE = Qt.ItemDataRole.UserRole + 1
 SCALES_ROLE = Qt.ItemDataRole.UserRole + 2  # [min scale, max scale, labels min scale], web only
 COL_PUBLISH, COL_VISIBLE, COL_TOGGLE, COL_LEGEND, COL_SCALES = 1, 2, 3, 4, 5
+COL_ZOOMED = 6  # vector layers: drawn merged / as images zoomed out (zoomed_out_dialog)
+ZOOMED_ROLE = Qt.ItemDataRole.UserRole + 5  # [mode, below zoom or None]
 
 
 def publishable(layer) -> bool:
@@ -550,7 +552,11 @@ class PublishDialog(QDialog):
         self.tree = QTreeWidget()
         # Short headers (the layer names need the room); the meaning in tooltips.
         self.tree.setHeaderLabels([tr("Layer"), tr("Publish"), tr("At start"), tr("Switchable"),
-                                   tr("Legend"), tr("Scales")])
+                                   tr("Legend"), tr("Scales"), tr("Zoomed out")])
+        self.tree.headerItem().setToolTip(COL_ZOOMED, tr(
+            "Vector layers: drawn lighter when zoomed out beyond a zoom - the features of one style "
+            "merged per tile, or images rendered by QGIS - instead of every feature. Double-click a "
+            "cell, or select rows → Selected layers → Zoomed out…"))
         self.tree.headerItem().setToolTip(COL_LEGEND, tr("Shown in the web map's legend"))
         self.tree.headerItem().setToolTip(COL_PUBLISH, tr("Published in the web map"))
         self.tree.headerItem().setToolTip(COL_VISIBLE, tr("Visible when the web map opens"))
@@ -560,7 +566,7 @@ class PublishDialog(QDialog):
             "out, smaller export. Double-click a cell, or select rows → Selected layers → Visible "
             "scales…"))
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in (COL_PUBLISH, COL_VISIBLE, COL_TOGGLE, COL_LEGEND, COL_SCALES):
+        for column in (COL_PUBLISH, COL_VISIBLE, COL_TOGGLE, COL_LEGEND, COL_SCALES, COL_ZOOMED):
             self.tree.header().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.itemDoubleClicked.connect(self._tree_double_clicked)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -599,6 +605,7 @@ class PublishDialog(QDialog):
             menu.addAction(text, lambda c=column, v=value: self.apply_to_selection(c, v))
         menu.addSeparator()
         menu.addAction(tr("Visible scales…"), self.edit_scales)
+        menu.addAction(tr("Zoomed out…"), self.edit_zoomed_out)
         return menu
 
     def _selected_layer_items(self):
@@ -612,6 +619,12 @@ class PublishDialog(QDialog):
         return items
 
     def _tree_double_clicked(self, item, column):
+        if column == COL_ZOOMED and (item.data(0, LAYER_ROLE) or item.data(0, GROUP_ROLE)):
+            if not item.isSelected():
+                self.tree.clearSelection()
+                item.setSelected(True)
+            self.edit_zoomed_out()
+            return
         if column == COL_SCALES and (item.data(0, LAYER_ROLE) or item.data(0, GROUP_ROLE)):
             if not item.isSelected():
                 self.tree.clearSelection()
@@ -647,6 +660,41 @@ class PublishDialog(QDialog):
         for item in items:
             self._set_item_scales(item, *values)
         return True
+
+    def edit_zoomed_out(self, values=None) -> bool:
+        """How the selected vector layers are drawn zoomed out (``values``:
+        (mode, below zoom) instead of asking). Raster layers keep theirs."""
+        from .zoomed_out_dialog import ZoomedOutDialog  # pylint: disable=import-outside-toplevel
+        items = [item for item in self._selected_layer_items()
+                 if not isinstance(self.project.mapLayer(item.data(0, LAYER_ROLE)), QgsRasterLayer)]
+        if not items:
+            self.status.setText(tr("Select vector layers (or groups) in the list first."))
+            return False
+        if values is None:
+            mode, below = self._item_zoomed(items[0])
+            dialog = ZoomedOutDialog(self, mode, below, len(items), self.e_max_zoom.value())
+            if not dialog.exec():
+                return False
+            values = dialog.values()
+        for item in items:
+            self._set_item_zoomed(item, *values)
+        return True
+
+    @staticmethod
+    def _item_zoomed(item):
+        """(mode, below zoom or None) of a layer row."""
+        mode, below = (list(item.data(COL_ZOOMED, ZOOMED_ROLE) or ()) + ["full", None])[:2]
+        return (mode, int(below)) if mode in ("merged", "image") and below else ("full", None)
+
+    def _set_item_zoomed(self, item, mode, below):
+        from .zoomed_out_dialog import zoomed_out_text  # pylint: disable=import-outside-toplevel
+        if mode not in ("merged", "image") or not below:
+            mode, below = "full", None
+        item.setData(COL_ZOOMED, ZOOMED_ROLE, [mode, below])
+        item.setText(COL_ZOOMED, zoomed_out_text(mode, below))
+        item.setToolTip(COL_ZOOMED, tr("Every feature at every zoom") if mode == "full" else (
+            tr("Below zoom {}: the features of one style merged per tile").format(below) if mode == "merged"
+            else tr("Below zoom {}: images rendered by QGIS").format(below)))
 
     @staticmethod
     def _item_scales(item):
@@ -1326,6 +1374,8 @@ class PublishDialog(QDialog):
                     item.setCheckState(COL_LEGEND, _check(config.legend))
                     self._set_item_scales(item, config.min_scale, config.max_scale,
                                           config.labels_min_scale)
+                    if not raster:
+                        self._set_item_zoomed(item, config.zoomed_out, config.zoomed_out_below)
         add(self.project.layerTreeRoot(), self.tree.invisibleRootItem(), ())
         self._sync_group_publish(self.tree.invisibleRootItem())
         self.tree.blockSignals(False)
@@ -3009,6 +3059,7 @@ class PublishDialog(QDialog):
             if config.included and not config.toggleable:
                 config.initially_visible = True
             config.min_scale, config.max_scale, config.labels_min_scale = self._item_scales(item)
+            config.zoomed_out, config.zoomed_out_below = self._item_zoomed(item)
             config.legend = item.checkState(COL_LEGEND) == CHECKED
             layers.append(config)
         profile.layers = layers

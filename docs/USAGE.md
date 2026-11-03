@@ -56,6 +56,7 @@ Layer list columns:
 - **Switchable** — Visitors can switch the layer or group off.
 - **Legend** — The layer is shown in the web map's legend. This is the same setting as "Show in the legend" in the Interaction tab. Layers only.
 - **Scales** — Web map only: hides the layer when zoomed out or in beyond a scale. "labels 1:… –" hides only its labels. Grey "(QGIS …)" shows the layer's own QGIS scale range. Double-click the cell to edit it.
+- **Zoomed out** — Vector layers: how a dense layer (parcels, buildings) is drawn when zoomed out beyond a zoom, instead of hiding it. Empty: every feature. "merged < z13": below zoom 13 the features of one style (and the same filter values) are joined into one shape per tile — much lighter; the outlines between them and their popups are gone there. "image < z13": below zoom 13 QGIS renders the layer's symbols as images, exactly as in QGIS — the lightest; no popups or highlighting there, and the layer's category switches do not affect the images (its switch and opacity do). The labels stay as text in both. Double-click the cell to set it.
 
 Right-click / **Selected layers** menu (a selected group applies to all its visible rows):
 
@@ -64,6 +65,7 @@ Right-click / **Selected layers** menu (a selected group applies to all its visi
 - **Can be switched off by visitors** / **Always shown (cannot be switched off)** — Sets the Switchable column.
 - **Show in the legend** / **Hide from the legend** — Sets the Legend column.
 - **Visible scales…** — Opens the scale dialog for all selected layers.
+- **Zoomed out…** — Sets how the selected vector layers are drawn zoomed out (see the Zoomed out column).
 
 - **Map themes offered as views in the web map:** — Ticked QGIS map themes become views that visitors can switch between. Ticking a theme also publishes its layers.
 - **Start with:** — The view the map opens with. **(the layer settings above)** (the default) uses the At start column. Only ticked themes are listed.

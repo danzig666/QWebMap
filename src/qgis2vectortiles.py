@@ -193,6 +193,7 @@ class QGIS2VectorTiles:
         min_label_px: float = 0.0,
         min_feature_px: float = 0.0,
         cap_tiles: bool = False,
+        zoomed_out=None,
     ):
         """``cache``: a core.export_cache.ExportCache — datasets and tiles of
         layers unchanged since an earlier export are reused (None: off, as
@@ -245,6 +246,11 @@ class QGIS2VectorTiles:
         # Far too many tiles of coarse data: end them at its detail
         # (fidelity.tile_budget; only while the web map overzooms).
         self.cap_tiles = cap_tiles
+        # {QGIS layer id: ("merged" | "image", below zoom)}: drawn lighter
+        # zoomed out (LayerConfig.zoomed_out): merged per tile by the tile
+        # generator, or rendered by QGIS as images (the publishing workflow;
+        # here: the layer's features only from that zoom on).
+        self.zoomed_out = dict(zoomed_out or {})
         self._pending: Optional[_Conversion] = None
         self.dataset_keys: Dict[str, str] = {}
         # Results of the last run (the publishing workflow builds its
@@ -654,6 +660,7 @@ class QGIS2VectorTiles:
             layer_ids=self.layer_ids, scale_limits=self.scale_limits, extent=self.extent,
             fast_markers=self.fast_markers, lengths=self.lengths, overzoom=self.profile.overzoom,
             overzoom_to=self.view_max_zoom, min_label_px=self.min_label_px,
+            features_from={lid: below for lid, (mode, below) in self.zoomed_out.items() if mode == "image"},
         ).flatten_all_rules()
 
     # Largest symbol reach considered for the extent buffer (CSS px).
@@ -719,6 +726,9 @@ class QGIS2VectorTiles:
             progress_range=(5.0, self._bar(30)), parallel=self.parallel,
             feature_keys=self.feature_keys, extra_tile_fields=self.extra_tile_fields,
             cache=self.cache, light_results=True,
+            # Merged or drawn as images zoomed out: no fills to host their
+            # visible-polygon labels there.
+            unhosted_layers=set(self.zoomed_out),
         )
         result = exporter.export()
         self.dataset_keys = dict(exporter.dataset_keys)
@@ -760,6 +770,7 @@ class QGIS2VectorTiles:
             exact_datasets={rule.output_dataset for rule in rules or []
                             if materialize.color_bands_disjoint(rule.recipe)},
             min_feature_px=self.min_feature_px, small_datasets=self._small_datasets(rules or []),
+            merged={lid: below for lid, (mode, below) in self.zoomed_out.items() if mode == "merged"},
         )
         self.min_zoom = generator._get_global_min_zoom()  # pylint: disable=protected-access
         return generator

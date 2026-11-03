@@ -103,6 +103,13 @@ class LayerConfig:
     # 1:labels_min_scale (0 = no limit); its features are still drawn there.
     # Labels are not tiled where hidden.
     labels_min_scale: float = 0.0
+    # Vector layers: how the layer is drawn zoomed out, below zoom
+    # zoomed_out_below (None: never): "full" (every feature), "merged" (the
+    # features of one style merged per tile: lighter, no inner outlines, no
+    # popups there) or "image" (rendered by QGIS as images: exact, the
+    # lightest, no popups there; labels stay).
+    zoomed_out: str = "full"
+    zoomed_out_below: Optional[int] = None
     # Raster layers only (rendered by QGIS into their own raster PMTiles archive):
     raster_format: str = "webp"        # RASTER_FORMATS; webp and png keep transparency
     raster_min_zoom: Optional[int] = None   # None = the publication's tile zooms

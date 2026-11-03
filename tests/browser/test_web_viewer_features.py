@@ -467,3 +467,53 @@ def test_map_only_shows_nothing_but_the_map(map_only_site, tmp_path):
     assert shown["canvas"] and not shown["side"] and shown["buttons"] == 0 and not shown["scale"]
     assert shown["attribution"] == ["© Test office"] and shown["popups"] is False
     assert results[1] == 0 and results[2] is True
+
+
+@pytest.fixture(scope="module")
+def image_site(tmp_path_factory):
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "integration"))
+    from test_publishing_pipeline import _parcels, _profile  # pylint: disable=import-error
+    from q2vt_fixtures import reset_project
+    base = tmp_path_factory.mktemp("image")
+    parcels = _parcels(str(base / "parcels.gpkg"))
+    project = reset_project()
+    project.addMapLayer(parcels)
+    profile = _profile(parcels, base)  # zooms 11-13, a zone filter
+    profile.layers[0].initially_visible = True
+    profile.layers[0].zoomed_out, profile.layers[0].zoomed_out_below = "image", 13
+    result = export_local(project, profile, EXTENT)
+    with PreviewServer(os.path.dirname(result.publication_dir)) as server:
+        yield server.url(f"{profile.slug}/index.html")
+
+
+def test_a_layer_drawn_as_images_follows_its_switch_opacity_and_filter(image_site, tmp_path):
+    """Zoomed out "image": below its zoom the layer is QGIS's images, at the
+    layer's place; its switch hides them, its opacity applies, and a filter
+    of the layer (which images cannot follow) does not break them."""
+    results = _run(image_site + "#v=1&map=11.5/47.69/19.06", [
+        {"idle": True},
+        {"eval": PRELUDE + """
+          const image = man.components.find((c) => c.role === 'image');
+          const id = image.styleLayerIds[0], lid = man.layers[0].id;
+          const out = { type: m.getLayer(id).type, maxzoom: m.getLayer(id).maxzoom,
+                        visible: m.getLayoutProperty(id, 'visibility') !== 'none' };
+          s.setIn('opacity', lid, 0.5);
+          out.opacity = m.getPaintProperty(id, 'raster-opacity');
+          s.set({ filters: { [lid]: { zone: { values: ['K2'], nulls: false } } } });
+          s.setIn('layers', lid, false);
+          out.off = m.getLayoutProperty(id, 'visibility');
+          s.reset();
+          out.on = m.getLayoutProperty(id, 'visibility') !== 'none';
+          return out;"""},
+        {"idle": True},
+        {"eval": PRELUDE + """
+          const image = man.components.find((c) => c.role === 'image');
+          const href = man.sources.find((x) => x.id === image.sourceId).href.split('/').pop();
+          return { loaded: m.isSourceLoaded(image.sourceId),
+                   reads: performance.getEntriesByType('resource').filter((e) => e.name.includes(href)).length };"""},
+    ], tmp_path)
+    r = results[0]
+    assert r["type"] == "raster" and r["maxzoom"] == 13 and r["visible"]
+    assert r["opacity"] == pytest.approx(0.5) and r["off"] == "none" and r["on"]
+    assert results[1]["loaded"] and results[1]["reads"] > 0  # the images read at zoom 11.5

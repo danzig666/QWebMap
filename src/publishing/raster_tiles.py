@@ -234,6 +234,25 @@ def plan_layer(project, layer, config: LayerConfig, profile: PublicationProfile,
     return RasterPlan(layer.id(), low, high, tiles, box, online, warnings, native_m, latitude, hidpi)
 
 
+def plan_vector_image(project, layer, profile: PublicationProfile, extent_3857: QgsRectangle,
+                      below: int) -> Optional[RasterPlan]:
+    """Image tiles of a vector layer drawn as images zoomed out
+    (LayerConfig.zoomed_out "image"): the publication's first zoom up to
+    the zoom below ``below``, over the export extent ∩ the layer's extent
+    (and its web scale range, as plan_layer). None: no such zoom."""
+    config = LayerConfig(layer.id(), raster_match_native=False, raster_min_zoom=int(profile.view.min_zoom),
+                         raster_max_zoom=int(below) - 1)
+    if config.raster_max_zoom < config.raster_min_zoom:
+        return None
+    plan = plan_layer(project, layer, config, profile, extent_3857)
+    if plan.max_zoom >= below or plan.min_zoom > plan.max_zoom:
+        plan.max_zoom = min(plan.max_zoom, int(below) - 1)
+        if plan.min_zoom > plan.max_zoom:
+            return None
+        plan.tiles = count_tiles(plan.extent_3857, plan.min_zoom, plan.max_zoom)
+    return plan
+
+
 def _metres(value: float) -> str:
     return f"{value:.2f} m" if value < 10 else f"{value:.0f} m"
 
@@ -719,7 +738,7 @@ _RASTER_SIDECARS = (".aux.xml", ".ovr", ".msk", ".tfw", ".tifw", ".wld", ".jgw",
 def _raster_files(layer) -> Optional[List[str]]:
     """The local files of a GDAL raster layer (with its sidecars), or None
     when it is not a plain local file (web, database, virtual sources)."""
-    if layer.providerType() != "gdal":
+    if layer.providerType() not in ("gdal", "ogr"):  # ogr: a vector layer drawn as images
         return None
     path = layer.source().split("|")[0]
     if not path or not os.path.isfile(path):
