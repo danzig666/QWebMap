@@ -554,7 +554,12 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.56.0**. Newest first:
+This README describes QWebMap **4.56.1**. Newest first:
+
+**4.56.1** — no hillshade crash; save-as keeps the settings; zoomed-out check runs once
+- Raster tiles are rendered with QGIS's OpenCL off: its hillshade renderer could crash QGIS during the export.
+- A project saved as another file keeps every publication setting and the same web map; the window asks only where to export (keep the folder, `web_maps` next to the new file, or a chosen folder).
+- The zoomed-out check before an export is not run again while nothing it reads changed, and not asked again once answered.
 
 **4.56.0** — ideas from the original plugin: symbol buffers, label case and callouts, data-defined trims, offsets and arrows, faster start-up and export
 Ideas taken from recent versions of [GallPeters/QGIS2VectorTiles](https://github.com/GallPeters/QGIS2VectorTiles), reimplemented here:

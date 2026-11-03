@@ -2243,3 +2243,19 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   archive headers and locales fetched concurrently (test_publishing_web_builder.py).
 * Bandit (upstream): export worker unpickler allow-list; `hashlib.sha1(usedforsecurity=False)`.
 * Not taken: data-defined *CentroidWhole*; GDAL-built base layers (fidelity loss); leaf prefetch.
+
+## 4.56.1 — hillshade crash; save-as keeps the settings; zoomed-out check once
+
+* `raster_tiles.opencl_off()` around `render_layer`: `core/OpenClEnabled` off while the tiles render,
+  restored afterwards (also on failure). QGIS's OpenCL `QgsHillshadeRenderer::block` copies row 1 of
+  a block one pixel high (null) and crashes; its program cache is shared by concurrent renders
+  (tests/integration/test_publishing_raster.py).
+* `PublishDialog._moved_project_folder`: a profile saved from another project file keeps its ids and
+  settings; only the export folder is asked (keep / `web_maps` next to the new file / chosen), not
+  when that folder is the same; the profile is saved with the new file at once
+  (tests/integration/test_publish_dialog.py).
+* `zoom_load.fingerprint` (extent, zooms, scale factor; per included vector layer: CRS, source,
+  filter, feature count, file mtime, QGIS scale range, style hash; the layer web settings; None with
+  unsaved edits): `_estimate_zoom_load` reuses an estimate of the same state, and
+  `_check_zoom_load_before_export` skips a state already answered (as-is, applied limits, or seen
+  with the button) (tests/integration/test_publish_scale_limits.py).
