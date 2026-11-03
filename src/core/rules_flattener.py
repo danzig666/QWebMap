@@ -1916,9 +1916,22 @@ class RulesFlattener:
                 outline_rule.rule.setSymbol(outline_symbol)
                 rules.append(outline_rule)
                 fill_layer.setStrokeStyle(Qt.PenStyle.NoPen)
-        if fill_layer.brushStyle() != Qt.BrushStyle.NoBrush:
+        if fill_layer.brushStyle() != Qt.BrushStyle.NoBrush and not self._transparent_fill(fill_layer):
             rules.append(rule_clone)
         return rules
+
+    @staticmethod
+    def _transparent_fill(fill_layer) -> bool:
+        """A fill of a fully transparent colour (not data-defined) draws
+        nothing in QGIS, like "No brush": no polygon is exported for it.
+        Exported, an outline-only polygon covering a large area put a
+        full-tile polygon into every tile inside it, up to the last zoom
+        (hundreds of millions of tiles for an Arctic map); its outline
+        stays, as lines."""
+        if fill_layer.color().alpha() > 0:
+            return False
+        properties = fill_layer.dataDefinedProperties()
+        return not properties.isActive(QgsSymbolLayer.Property.PropertyFillColor)
 
     def _vector_field_rules(self, flat_rule: FlattenedRule, field_layer, layer_idx: int):
         """A vector field marker: QGIS draws its line sub-symbol from each
