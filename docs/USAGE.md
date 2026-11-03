@@ -136,6 +136,7 @@ With several rows selected, a limit appears only if every row has the same value
 - **Print** — Prints a map extract of the current view at a chosen scale on A4 or A3, with legend, scale bar and header. Default: on.
 - **Legend: only what is visible in the current view** — The legend starts in "only visible" mode. Visitors can switch it off. Default: off.
 - **Layers tab (off: the legend only)** — Off: visitors get only the legend, with an on/off switch per layer. Default: on.
+- **Map only: nothing on screen but the map** — The published page shows only the map: no title, panel, legend, buttons, scale bar, popups or search. Visitors can still pan and zoom. The attribution of the map and its basemap stays in a corner when there is one (their licences require it). The other viewer options have no effect while it is on. Default: off.
 - **Map panel closed at start** — The web map opens with its panel closed, so more of the map shows. The menu button opens it. Default: off.
 - **My location button** — Shows the visitor's location. Needs https and the browser's permission. Outside the map extent it shows a message and does not move the map. Default: off.
 - **Search street names (OpenStreetMap)** — The search also finds named OSM streets inside the extent layer (Map tab), or inside the export extent if there is none. Only names, a point and bounds are published. Default: off.

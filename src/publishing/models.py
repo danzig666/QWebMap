@@ -279,6 +279,9 @@ class InteractionConfig:
     legend_visible_only: bool = False  # legend lists only what is drawn in the current view
     layers_panel: bool = True          # the Layers tab (off: visitors see the legend only)
     panel_closed: bool = False         # the map panel starts closed (more of the map on screen)
+    # Nothing on screen but the map: no header, panel, buttons, scale bar,
+    # popups or search (the attribution stays when there is one).
+    map_only: bool = False
     geolocation: bool = False          # a "my location" button (only inside the map extent)
     # Named OpenStreetMap streets inside the extent layer in the search (read
     # from the basemap; without a basemap from its source: needs internet).

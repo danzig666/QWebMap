@@ -422,3 +422,48 @@ def test_debug_address_shows_the_zoom_and_tile_zoom(site, tmp_path):
     assert tiles[2][1] is True
     plain = _run(base, [{"wait": 800}, {"eval": "return document.getElementById('q2vt-debug');"}], tmp_path)
     assert plain[0] is None
+
+
+@pytest.fixture(scope="module")
+def map_only_site(tmp_path_factory):
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "integration"))
+    from test_publishing_pipeline import _parcels, _profile  # pylint: disable=import-error
+    from q2vt_fixtures import reset_project
+    base = tmp_path_factory.mktemp("maponly")
+    parcels = _parcels(str(base / "parcels.gpkg"))
+    project = reset_project()
+    project.addMapLayer(parcels)
+    profile = _profile(parcels, base)
+    profile.layers[0].initially_visible = True
+    profile.interaction.map_only = True
+    profile.attribution = "© Test office"
+    result = export_local(project, profile, EXTENT)
+    with PreviewServer(os.path.dirname(result.publication_dir)) as server:
+        yield server.url(f"{profile.slug}/index.html")
+
+
+def test_map_only_shows_nothing_but_the_map(map_only_site, tmp_path):
+    """Map only (Interaction tab): no header, panel, map buttons, scale bar,
+    popups or search; the attribution stays (its licence asks for it);
+    panning and zooming still work."""
+    results = _run(map_only_site, [
+        {"eval": """
+          const shown = (el) => !!el && getComputedStyle(el).display !== 'none' && el.offsetParent !== null;
+          const m = q2vtViewer.map;
+          return {
+            side: shown(document.getElementById('q2vt-side')),
+            buttons: [...document.querySelectorAll('.maplibregl-ctrl button')].filter(shown).length,
+            scale: shown(document.querySelector('.maplibregl-ctrl-scale')),
+            attribution: [...document.querySelectorAll('.q2vt-attribution')].filter(shown).map((n) => n.textContent),
+            canvas: shown(m.getCanvas()), popups: q2vtViewer.manifest.interaction.popups,
+          };"""},
+        {"click": [500, 350]}, {"wait": 500},
+        {"eval": "return document.querySelectorAll('.maplibregl-popup').length;"},
+        {"eval": "const z = q2vtViewer.map.getZoom(); q2vtViewer.map.zoomIn({ duration: 0 }); "
+                 "return q2vtViewer.map.getZoom() > z;"},
+    ], tmp_path)
+    shown = results[0]
+    assert shown["canvas"] and not shown["side"] and shown["buttons"] == 0 and not shown["scale"]
+    assert shown["attribution"] == ["© Test office"] and shown["popups"] is False
+    assert results[1] == 0 and results[2] is True

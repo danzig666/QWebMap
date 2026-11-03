@@ -697,3 +697,12 @@ body.q2vt-printing #q2vt-map { position: fixed; left: 0; top: 0; width: var(--q2
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
+
+/* Map only (applyMapOnly): the map and, when there is one, its attribution. */
+.q2vt-map-only #q2vt-side,
+.q2vt-map-only .maplibregl-ctrl-top-left,
+.q2vt-map-only .maplibregl-ctrl-top-right,
+.q2vt-map-only .maplibregl-ctrl-bottom-left,
+.q2vt-map-only .maplibregl-ctrl-bottom-right > :not(.q2vt-attribution),
+.q2vt-map-only .maplibregl-popup { display: none !important; }
+.q2vt-map-only .q2vt-attribution:empty { display: none !important; }

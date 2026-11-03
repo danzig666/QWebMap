@@ -1452,6 +1452,7 @@ class PublishDialog(QDialog):
         viewer = QVBoxLayout(options)
         self.i_flags = {}
         for key, label in ([
+                ("map_only", tr("Map only: nothing on screen but the map")),
                 ("labels_toggle", tr("Labels switch")), ("opacity_controls", tr("Opacity sliders")),
                 ("search", tr("Search")), ("filters", tr("Attribute filters")),
                 ("popups", tr("Popups")), ("permalinks", tr("Shareable links")),
@@ -1483,6 +1484,12 @@ class PublishDialog(QDialog):
             "your site's address (HTTP referrers) and to these two APIs.")
         self.i_flags["street_view"].setToolTip(street_view_help)
         self.i_google_key.setToolTip(street_view_help)
+        self.i_flags["map_only"].setToolTip(tr(
+            "The published page shows only the map: no title, panel, legend, buttons, scale bar, "
+            "popups or search; visitors can still pan and zoom. The attribution of the map and its "
+            "basemap stays in a corner when there is one (their licences require it). The other "
+            "viewer options have no effect then."))
+        self.i_flags["map_only"].toggled.connect(self._map_only_toggled)
         self.i_flags["panel_closed"].setToolTip(tr(
             "The web map opens with its panel (layers, legend, tools) closed, so more of the map "
             "is on screen; the menu button opens it."))
@@ -2050,6 +2057,16 @@ class PublishDialog(QDialog):
     # Layer combo boxes follow the project's layers and fire when it is
     # cleared, also for a closed window; bound methods (not closures over
     # self) let a closed window be freed with its combo boxes.
+    def _map_only_toggled(self, on: bool) -> None:
+        """Map only: the other viewer options are kept but have no effect."""
+        for key, box in self.i_flags.items():
+            if key != "map_only":
+                box.setEnabled(not on)
+        if not on and "street_view" in self.i_flags:
+            self.i_google_key.setEnabled(self.i_flags["street_view"].isChecked())
+        else:
+            self.i_google_key.setEnabled(False)
+
     def _terrain_chosen(self, layer):
         self.t_hillshade.setEnabled(layer is not None)
         self.t_exaggeration.setEnabled(layer is not None)

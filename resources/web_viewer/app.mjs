@@ -218,7 +218,11 @@ async function start() {
   // to the full map, and the page keeps the scroll wheel (Ctrl + scroll or
   // two fingers zoom the map).
   const embedded = new URLSearchParams(location.search).has("embed");
-  if (embedded) mountEmbed();
+  // Map only (Publish window, Interaction tab): nothing on screen but the
+  // map; the tools that would open something on it are off too.
+  const mapOnly = manifest.interaction?.mapOnly === true;
+  if (mapOnly) applyMapOnly(manifest);
+  if (embedded && !mapOnly) mountEmbed();
   setText("q2vt-title", manifest.title || "");
   setText("q2vt-description", manifest.description || "");
   setText("q2vt-release", `${t("app.release")}: ${manifest.releaseId}`);
@@ -271,8 +275,10 @@ async function start() {
     viewer.diagrams = installDiagrams(map, style);
     viewer.labelShadows = installShadows(map, style);
     if (stay) stay.attach(map);
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-    map.addControl(new maplibregl.FullscreenControl(), "top-right");
+    if (!mapOnly) {
+      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+      map.addControl(new maplibregl.FullscreenControl(), "top-right");
+    }
     if (manifest.interaction?.geolocation === true && window.isSecureContext && navigator.geolocation) {
       map.addControl(locateControl(map, maplibregl, view.bounds), "top-right");
     }
@@ -492,6 +498,19 @@ export function extentLimit(view, maplibregl) {
   };
 }
 
+
+// Map only: the body class hides the header, the panel and the map's
+// buttons and scale (styles.css); the attribution stays when there is one
+// (the basemap's and the map's own: their licences ask for it). The viewer
+// switches that would show something on the map are switched off.
+const MAP_ONLY_OFF = ["popups", "search", "streetSearch", "measure", "coordinates", "geolocation",
+  "overviewMap", "threeD", "drawing", "streetView", "print"];
+
+function applyMapOnly(manifest) {
+  document.body.classList.add("q2vt-map-only");
+  manifest.interaction = { ...manifest.interaction };
+  for (const key of MAP_ONLY_OFF) manifest.interaction[key] = false;
+}
 
 // Embedded mode: the body class compacts the layout (styles.css) and the
 // controls keep the panel closed; "Open the full map" opens this view

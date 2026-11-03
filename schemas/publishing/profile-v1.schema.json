@@ -148,6 +148,9 @@
         "panelClosed": {
           "type": "boolean"
         },
+        "mapOnly": {
+          "type": "boolean"
+        },
         "streetSearch": {
           "type": "boolean"
         },
