@@ -30,6 +30,13 @@ These are the "balanced" thresholds; a speed (``SPEEDS``, the window's
 slider) from "very slow" to "very fast" scales them: faster hides small
 features and crowded labels from closer zooms. Only where a layer starts
 changes: zoomed in, everything is shown.
+
+A layer heavy where its features are still worth seeing is kept visible but
+lighter below a zoom (LayerConfig.zoomed_out): merged per style and tile, or
+as images. Merging suits polygons whose symbols are plain fills of a few
+styles; outlines (the inner ones are lost), pattern and other complex fills,
+effects, per-feature (data-defined) styles or many styles get images
+(``merge_fit``).
 """
 
 import math
@@ -56,6 +63,10 @@ HEAVY_LABELS = 1500                # labels of one layer laid out in one tile
 # (LayerConfig.zoomed_out "merged"): measured on 100 000 parcels in six
 # categories, 1-4 % at zooms 10-14; images ("image") leave no vector data.
 MERGED_SHARE = 0.05
+MERGED_STYLES = 6                  # the styles MERGED_SHARE was measured with
+MAX_MERGED_STYLES = 64             # more styles: merging joins too little
+# Fill symbol layers merging keeps as they are (one colour per shape).
+PLAIN_FILLS = ("SimpleFill",)
 
 
 @dataclass(frozen=True)
@@ -109,6 +120,8 @@ class LayerLoad:
     suggested_mode: Optional[str] = None    # "merged" | "image" below suggested_mode_below
     suggested_mode_below: Optional[int] = None
     mode_needed: bool = False
+    styles: int = 1                 # distinct symbols of the renderer
+    merge_note: str = ""            # why merging does not suit it ("": it does)
 
     def drawn(self, zoom: int, mode: Optional[str] = None, below: Optional[int] = None) -> Tuple[float, float]:
         """(features, bytes) of the busiest tile at a zoom drawn in a mode
@@ -117,7 +130,7 @@ class LayerLoad:
             mode, below = self.zoomed_out, self.zoomed_out_below
         count, size = self.tile_features.get(zoom, 0), self.tile_bytes.get(zoom, 0)
         if mode in ("merged", "image") and below and zoom < below:
-            share = MERGED_SHARE if mode == "merged" else 0.0
+            share = self.merged_share() if mode == "merged" else 0.0
             return count * share, size * share
         return count, size
 
@@ -125,6 +138,13 @@ class LayerLoad:
               below: Optional[int] = None) -> bool:
         count, size = self.drawn(zoom, mode, below)
         return size >= HEAVY_BYTES * factor or count >= HEAVY_FEATURES * factor
+
+    def merged_share(self) -> float:
+        """Share of the tile left merged: more styles, more pieces."""
+        return min(1.0, MERGED_SHARE * max(1.0, self.styles / MERGED_STYLES))
+
+    def mergeable(self) -> bool:
+        return self.kind == "polygon" and not self.merge_note
 
     def modes(self) -> Tuple[str, ...]:
         """The zoomed-out modes for this layer: merging joins polygons only."""
@@ -268,6 +288,8 @@ def analyse_layer(layer: QgsVectorLayer, config, extent_3857: QgsRectangle, zoom
     load = LayerLoad(layer.id(), layer.name(), kind, len(ids),
                      _visible_from(layer, config, factor, min_zoom),
                      draws_features=renderer is not None and renderer.type() != "nullSymbol")
+    if kind == "polygon" and renderer is not None:
+        load.styles, load.merge_note = merge_fit(renderer)
     mode, below = getattr(config, "zoomed_out", "full"), getattr(config, "zoomed_out_below", None)
     if mode in ("merged", "image") and below:
         load.zoomed_out, load.zoomed_out_below = mode, int(below)
@@ -313,6 +335,68 @@ def analyse_layer(layer: QgsVectorLayer, config, extent_3857: QgsRectangle, zoom
     return load
 
 
+def _symbols(renderer) -> list:
+    from qgis.core import QgsRenderContext  # pylint: disable=import-outside-toplevel
+    try:
+        return list(renderer.symbols(QgsRenderContext()))
+    except Exception:  # noqa: BLE001 - a renderer without a symbol list
+        return []
+
+
+def _effect_on(item) -> bool:
+    """A paint effect that changes the look (not the default stack)."""
+    from qgis.core import QgsPaintEffectRegistry  # pylint: disable=import-outside-toplevel
+    effect = item.paintEffect() if hasattr(item, "paintEffect") else None
+    return effect is not None and effect.enabled() and not QgsPaintEffectRegistry.isDefaultStack(effect)
+
+
+def _data_defined(item) -> bool:
+    properties = item.dataDefinedProperties() if hasattr(item, "dataDefinedProperties") else None
+    return properties is not None and properties.hasActiveProperties()
+
+
+def merge_fit(renderer) -> Tuple[int, str]:
+    """(distinct symbols, why merging the features of one style per tile
+    does not suit this polygon renderer; "" when it does). Merging joins the
+    features of one symbol into one shape: an outline is drawn only around
+    the joined shape (the ones between the features are lost), a pattern or
+    gradient is laid out once over it, and per-feature styles or many styles
+    leave little to join."""
+    from qgis.core import QgsLineSymbolLayer  # pylint: disable=import-outside-toplevel
+    kind = renderer.type()
+    if kind in ("invertedPolygonRenderer", "25dRenderer", "heatmapRenderer", "pointDisplacement",
+                "pointCluster", "embeddedSymbol"):
+        return 1, tr_note("its renderer draws more than the features' own shapes")
+    symbols = _symbols(renderer)
+    styles = max(1, len(symbols))
+    if styles > MAX_MERGED_STYLES:
+        return styles, tr_note("{} styles: too many to join").format(styles)
+    for symbol in symbols:
+        if _data_defined(symbol) or _effect_on(symbol):
+            return styles, tr_note("data-defined or effect styling")
+        for layer in symbol.symbolLayers():
+            if not layer.enabled():
+                continue
+            if _data_defined(layer):
+                return styles, tr_note("per-feature (data-defined) styling")
+            if _effect_on(layer):
+                return styles, tr_note("draw effects")
+            if isinstance(layer, QgsLineSymbolLayer):
+                return styles, tr_note("outlines (the ones between features would be lost)")
+            if layer.layerType() not in PLAIN_FILLS:
+                return styles, tr_note("{} fills (laid out once over the joined shape)").format(layer.layerType())
+            from qgis.PyQt.QtCore import Qt  # pylint: disable=import-outside-toplevel
+            pen = layer.strokeStyle() if hasattr(layer, "strokeStyle") else Qt.PenStyle.NoPen
+            if pen != Qt.PenStyle.NoPen and layer.strokeColor().alpha() > 0:
+                return styles, tr_note("outlines (the ones between features would be lost)")
+    return styles, ""
+
+
+def tr_note(text: str) -> str:
+    from qgis.PyQt.QtCore import QCoreApplication  # pylint: disable=import-outside-toplevel
+    return QCoreApplication.translate("ZoomLoad", text)
+
+
 def _feature_visible(load: LayerLoad, zoom: int, speed: Speed = SPEEDS[BALANCED]) -> bool:
     if load.kind == "point":
         cells = (TILE_PX / speed.point_cell_px) ** 2
@@ -339,7 +423,7 @@ def _suggest(load: LayerLoad, max_zoom: int, speed: Speed = SPEEDS[BALANCED]) ->
                       if not load.heavy(z, speed.heavy, "full")), max_zoom)
         if below > start and below > (load.zoomed_out_below or 0):
             load.suggested_mode = load.zoomed_out if load.zoomed_out in load.modes() and \
-                load.zoomed_out != "full" else ("merged" if load.kind == "polygon" else "image")
+                load.zoomed_out != "full" else ("merged" if load.mergeable() else "image")
             load.suggested_mode_below = below
             first = load.suggested_from if load.suggested_from is not None else start
             load.mode_needed = any(load.heavy(z, speed.heavy) for z in range(first, below))

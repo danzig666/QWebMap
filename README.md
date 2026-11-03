@@ -554,7 +554,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.0**. Newest first:
+This README describes QWebMap **4.58.1**. Newest first:
+
+**4.58.1** — Zoomed-out load suggests Merged only where merging keeps the look
+- Plain fills of up to 64 styles: Merged; outlines, special fills, data-defined styling, effects or more styles: Image (the tooltip says why).
 
 **4.58.0** — Zoomed-out load suggests merged or image drawing
 - A layer heavy zoomed out but still worth seeing gets a *Drawn zoomed out* suggestion (merged for polygons, image otherwise) below the zoom it is light enough at; *Apply the checked settings* sets the *Zoomed out* column.

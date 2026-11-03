@@ -320,7 +320,13 @@ class ZoomLoadDialog(QDialog):
             below = load.suggested_mode_below if suggested else (load.zoomed_out_below or high)
             picks["mode"] = _ModePick(load.modes(), mode, below, low, high,
                                       load.mode_suggested(), self._update_summary)
-            if not load.mode_suggested():
+            if load.kind == "polygon" and load.merge_note:
+                note = tr("Image rather than merged: {}").format(load.merge_note)
+                picks["mode"].setToolTip(note)
+                index = picks["mode"].mode.findData("merged")
+                if index >= 0:
+                    picks["mode"].mode.setItemData(index, note, Qt.ItemDataRole.ToolTipRole)
+            elif not load.mode_suggested():
                 picks["mode"].setToolTip(
                     tr("Light enough") if not suggested
                     else tr("Hidden there by the suggested limit; untick it to keep the layer visible this way"))
