@@ -322,6 +322,44 @@ def resuggest(loads: List[LayerLoad], max_zoom: int, speed: int) -> None:
         _suggest(load, max_zoom, SPEEDS[max(0, min(len(SPEEDS) - 1, speed))])
 
 
+def fingerprint(project, profile, extent_3857: QgsRectangle) -> Optional[str]:
+    """What ``analyse`` reads, as one string: equal strings give the same
+    estimate, so a finished estimate need not run again. The view zooms,
+    the extent, the project's scale factor, and for every included vector
+    layer its web settings, CRS, source, filter, feature count, the file's
+    modification time, its QGIS scale range and its whole style (symbology,
+    labels). None (never equal) while a layer has unsaved edits."""
+    import hashlib  # pylint: disable=import-outside-toplevel
+    import json  # pylint: disable=import-outside-toplevel
+    import os  # pylint: disable=import-outside-toplevel
+    from qgis.core import QgsProviderRegistry, QgsReadWriteContext  # pylint: disable=import-outside-toplevel
+    from qgis.PyQt.QtXml import QDomDocument  # pylint: disable=import-outside-toplevel
+    from .profile import dumps  # pylint: disable=import-outside-toplevel
+    box = extent_3857 if isinstance(extent_3857, QgsRectangle) else QgsRectangle(*extent_3857)
+    parts = [int(profile.view.min_zoom), int(profile.view.max_zoom),
+             [round(v, 3) for v in (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())],
+             project.crs().authid(), zoom_scale_factor(project, box)]
+    for config in profile.layers:
+        layer = project.mapLayer(config.layer_id)
+        if not (config.included and isinstance(layer, QgsVectorLayer) and layer.isSpatial()):
+            continue
+        if layer.isEditable() and layer.isModified():
+            return None
+        path = QgsProviderRegistry.instance().decodeUri(layer.providerType(), layer.source()).get("path") or ""
+        try:
+            modified = os.path.getmtime(path) if path else 0
+        except OSError:
+            modified = 0
+        document = QDomDocument()
+        layer.exportNamedStyle(document, QgsReadWriteContext())
+        style = hashlib.sha1(document.toString().encode("utf-8"), usedforsecurity=False).hexdigest()
+        parts.append([layer.id(), layer.crs().authid(), layer.source(), layer.subsetString(),
+                      layer.featureCount(), modified, layer.hasScaleBasedVisibility(),
+                      layer.minimumScale(), layer.maximumScale(), style])
+    configs = json.loads(dumps(profile)).get("layers", [])
+    return json.dumps([parts, configs], sort_keys=True, default=str)
+
+
 def analyse(project, profile, extent_3857: QgsRectangle,
             progress=None) -> Optional[Tuple[List[LayerLoad], float]]:
     """(loads of the published vector layers, busiest first; the zoom-0

@@ -258,7 +258,7 @@ Web-only scales add to the layer's own QGIS scale range; they cannot show a laye
 </li><li>
 Zoomed-out load is an estimate from a sample of up to 2000 features per layer. It covers only published vector layers with features in the extent. If a "Labels from" zoom is not past the "Features from" zoom, it is dropped (the layer is hidden there anyway). A zoomed-out limit is not applied if it would conflict with an existing zoomed-in limit.
 </li><li>
-Before each export, the plugin checks the zoomed-out load. If some layers are heavy, it asks: <strong>Make it faster…</strong> opens the dialog and then exports, <strong>Export as it is</strong> exports unchanged, and Cancel stops. "Don't check this before exports (the Map tab's Zoomed-out load… button still does)" turns the check off for good (QGIS setting).
+Before each export, the plugin checks the zoomed-out load. If some layers are heavy, it asks: <strong>Make it faster…</strong> opens the dialog and then exports, <strong>Export as it is</strong> exports unchanged, and Cancel stops. "Don't check this before exports (the Map tab's Zoomed-out load… button still does)" turns the check off for good (QGIS setting). Once you have answered it (or looked at the estimate with <strong>Zoomed-out load…</strong>), it is not checked again until something it reads changes: the extent, the zooms, a published vector layer's data, style or scales, or the web layer settings.
 </li><li>
 A raster layer of more than 400 000 tiles takes hours to export and makes a very large web map. There is no limit, but before the export a "Very large raster layer" warning names the layer, the setting that makes it large (its <em>Sharpest detail</em>, or the Map tab's <em>Maximum tile zoom</em> for "Like the map") and what brings it down: each coarser <em>Sharpest detail</em> step is about a quarter of the tiles, or a smaller extent. <strong>Export anyway</strong> goes on, Cancel stops. The count is an upper bound (every tile of the area at every zoom): 400 000 is roughly 15 × 15 km at zoom 20 (about 0.1 m detail), 30 × 30 km at zoom 19. A higher <em>Shown from zoom</em> barely helps: the sharpest zoom holds three quarters of the tiles.
 </li><li>
@@ -1018,7 +1018,7 @@ Online map services (WMS/XYZ rasters) are flagged: check their licence allows re
 <ul><li>
 Settings live in the project: after Save settings, also save the project file.
 </li><li>
-If the project was saved elsewhere, the window asks: Yes = keep updating the same web map (same address), No = new separate map. Choose No for a copy, or both projects will overwrite one map.
+If the project was saved under another name or in another folder, every setting is kept, and so is the web map (same address). The window asks only where to export: <strong>Keep the folder</strong>, <strong>Next to this project</strong> (its <code>web_maps</code> folder) or <strong>Choose a folder…</strong> (not asked when the new file is in the same folder). Both projects now publish one map: for a separate one, use <em>Settings file… › Export settings to a file…</em>, then <em>Import settings from a file…</em> and answer No (a new web map).
 </li><li>
 Invalid settings are not saved on Close; the last valid ones stay.
 </li><li>

@@ -378,8 +378,9 @@ into a public, self-contained web map. The window title shows the plugin version
   has them: keep it private; never an SSH password) and
   imports them into another project, matching layers by name. The Google Street View key is a
   project setting and is visible in the published page, so restrict it in Google Cloud.
-- When the settings come from another project file, the window asks whether to keep updating the
-  same web map or start a new one. *Preset…* fills the settings from domain conventions (only in
+- When the project was saved as another file, all settings and the same web map are kept; the window
+  asks only where to export (keep the folder, `web_maps` next to the new file, or a chosen folder).
+  A separate web map: export the settings to a file and import them as a new web map. *Preset…* fills the settings from domain conventions (only in
   editions that ship presets).
 
 ### The web viewer
