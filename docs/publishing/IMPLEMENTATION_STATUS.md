@@ -2339,3 +2339,13 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
 * `raster_tiles.vector_image_hidpi(profile)` (= `output.thin_hairlines`): `plan_vector_image(..., hidpi)` and
   `controller._render_vector_images` render the image tiles with `raster_hidpi` (512 px, 192 DPI; source
   tileSize 256), part of the raster cache key (tests/integration/test_zoomed_out_modes.py).
+
+## 4.58.3 — visible-polygon labels zoomed out
+
+* `visible_labels.labelPoints`: labels in advance keep clear of each other and of the placed ones
+  (`advanceIndex` over the reach; the screen's labels do not keep clear of them); a per-tile cache
+  (`state.tiles`) of each piece: wholly in its tile → extent, area, centroid, label box per zoom (no geometry
+  read on later updates); only in the buffer → skipped; across the tile edge → its piece cut to the tile;
+  at the screen / reach edge → decoded geometry. Over point / centroid only. Parallel arrays instead of an
+  object per polygon; `clipRing` copies a ring wholly inside; updates while moving wait 2x the last one
+  (tests/browser/test_visible_labels.py).
