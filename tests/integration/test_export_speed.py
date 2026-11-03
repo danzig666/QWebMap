@@ -9,6 +9,8 @@ import sqlite3
 import sys
 import tempfile
 
+import pytest
+
 from osgeo import ogr
 from qgis.core import (QgsCoordinateTransformContext, QgsFeature, QgsField, QgsFields, QgsGeometry,
                        QgsVectorFileWriter, QgsVectorLayer, QgsWkbTypes, QgsCoordinateReferenceSystem)
@@ -318,3 +320,121 @@ def test_features_under_half_a_pixel_are_left_out_below_the_last_tile_zoom(tmp_p
         assert found[(small, zoom)] == {k for k in found[(kept, zoom)] if sizes[k] >= limit}, zoom
         assert found[(small, zoom)] < found[(kept, zoom)], zoom
     assert (small, 5) not in found and (kept, 5) in found  # all under the limit there
+
+
+def test_a_line_cut_on_the_grid_keeps_its_course(plugin):
+    """_cut_on_grid: the pieces lie each in one grid cell, follow the line
+    end to end (each starts where the last ended) and add up to its length."""
+    import math as _math  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core import tiles_generator  # pylint: disable=import-error
+    size = 1000.0
+    line = [(-2500.0, -300.0), (3700.0, 4100.0), (3700.0, 9000.0), (-1999.0, 9000.0)]
+    pieces = tiles_generator._cut_on_grid(line, size)  # pylint: disable=protected-access
+    half = tiles_generator.WORLD_HALF
+    assert len(pieces) > 10 and pieces[0][0] == line[0] and pieces[-1][-1] == line[-1]
+    for before, after in zip(pieces, pieces[1:]):
+        assert before[-1] == after[0]
+    for piece in pieces:
+        xs = [_math.floor((x + half) / size + 1e-9 * (1 if x == piece[0][0] else 0)) for x, _ in piece]
+        cx = {_math.floor(((a[0] + b[0]) / 2 + half) / size) for a, b in zip(piece, piece[1:])}
+        cy = {_math.floor(((a[1] + b[1]) / 2 + half) / size) for a, b in zip(piece, piece[1:])}
+        assert len(cx) == 1 and len(cy) == 1, piece
+        assert xs
+    length = lambda pts: sum(_math.dist(a, b) for a, b in zip(pts, pts[1:]))  # noqa: E731
+    assert sum(length(p) for p in pieces) == pytest.approx(length(line))
+
+
+def test_long_lines_are_tiled_from_grid_cut_pieces_with_the_same_tiles(plugin, tmp_path, monkeypatch):
+    """GDAL cuts a feature at every tile of its bounding box: long diagonal
+    lines (sea routes, outlines of large polygons) took hours. From the zoom
+    where that is far more tiles than the lines pass, they are tiled from a
+    copy cut along the tile grid: every tile has the same line inside it,
+    with the same properties."""
+    import math as _math  # pylint: disable=import-outside-toplevel
+    import random as _random  # pylint: disable=import-outside-toplevel
+    from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core import tiles_generator  # pylint: disable=import-error
+    from q2vt_plugin.src.core.datasets import ExportedDataset  # pylint: disable=import-error
+    from publishing import mvt  # pylint: disable=import-outside-toplevel
+    name = "l00t00d01r00g01c01o03i11s00"
+    fields = QgsFields()
+    fields.append(QgsField("k", QVariant.Int))
+    monkeypatch.setattr(tiles_generator, "_LONG_LINE_TILES", 2000)
+
+    def tiles(folder, cut):
+        os.makedirs(folder, exist_ok=True)
+        rng = _random.Random(3)
+        path = os.path.join(folder, f"{name}.gpkg")
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = "GPKG"
+        writer = QgsVectorFileWriter.create(path, fields, QgsWkbTypes.LineString,
+                                            QgsCoordinateReferenceSystem("EPSG:3857"),
+                                            QgsCoordinateTransformContext(), options)
+        features = []
+        for number in range(12):
+            x, y = 2000000 + rng.uniform(0, 50000), 6000000 + rng.uniform(0, 50000)
+            points = [(x + i * 6000 + rng.uniform(-900, 900), y + i * 5000 + rng.uniform(-900, 900))
+                      for i in range(40)]
+            feature = QgsFeature(fields)
+            feature.setAttributes([number])
+            feature.setGeometry(QgsGeometry.fromWkt(
+                "LINESTRING(" + ", ".join(f"{a} {b}" for a, b in points) + ")"))
+            features.append(feature)
+        writer.addFeatures(features)
+        del writer
+        if not cut:
+            monkeypatch.setattr(tiles_generator, "long_line_zoom", lambda *a: None)
+        else:
+            monkeypatch.undo()
+            monkeypatch.setattr(tiles_generator, "_LONG_LINE_TILES", 2000)
+            original = tiles_generator.grid_cut_lines
+            monkeypatch.setattr(tiles_generator, "grid_cut_lines",
+                                lambda *a, **k: cut_zooms.append(a[3]) or original(*a, **k))
+        assert (tiles_generator.long_line_zoom(path, None, 3, 11) is not None) == cut
+        style = {"layers": [{"id": "l", "type": "line", "source": "t", "source-layer": name}]}
+        generator = tiles_generator.GDALTilesGenerator(
+            [ExportedDataset(path, name, 12, None)], style, folder,
+            QgsRectangle(1990000, 5990000, 2320000, 6260000), 100, None,
+            layer_zooms={name: (3, 11)}, layer_groups={"one": [name]})
+        generator.generate()
+        out = {}
+        with sqlite3.connect(os.path.join(folder, "tiles.mbtiles")) as conn:
+            for z, x, y, data in conn.execute("SELECT * FROM tiles"):
+                for layer in mvt.decode(data, geometry=True).values():
+                    for feature in layer["features"]:
+                        key = (z, x, y, feature["properties"]["k"])
+                        out[key] = out.get(key, 0.0) + _inside_length(mvt.lines(feature["geometry"]), layer["extent"])
+        return {key: value for key, value in out.items() if value > 1}
+
+    cut_zooms = []
+    whole = tiles(str(tmp_path / "whole"), False)
+    pieces = tiles(str(tmp_path / "pieces"), True)
+    assert cut_zooms and max(cut_zooms) == 11 and min(cut_zooms) > 3  # the low zooms whole
+    assert whole.keys() == pieces.keys() and len(whole) > 500
+    for key, value in whole.items():
+        assert pieces[key] == pytest.approx(value, rel=0.03, abs=8), key
+    assert max(_math.floor(k[0]) for k in whole) == 11
+
+
+def _inside_length(geometry, extent):
+    """Length of a decoded MVT line inside its tile (not its buffer)."""
+    import math as _math  # pylint: disable=import-outside-toplevel
+    total = 0.0
+    for line in geometry:
+        for (x0, y0), (x1, y1) in zip(line, line[1:]):
+            # Clip the segment to [0, extent] (Liang-Barsky).
+            t0, t1, dx, dy = 0.0, 1.0, x1 - x0, y1 - y0
+            for p, q in ((-dx, x0), (dx, extent - x0), (-dy, y0), (dy, extent - y0)):
+                if p == 0:
+                    if q < 0:
+                        break
+                    continue
+                r = q / p
+                if p < 0:
+                    t0 = max(t0, r)
+                else:
+                    t1 = min(t1, r)
+            else:
+                if t1 > t0:
+                    total += (t1 - t0) * _math.hypot(dx, dy)
+    return total
