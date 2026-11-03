@@ -492,3 +492,45 @@ def test_zoomed_out_load_dialog_applies_the_drawing_mode(plugin, monkeypatch, tm
         monkeypatch.setattr(QMessageBox, name, lambda *a, **k: None)
     loads, _factor = zoom_load.analyse(project, profile, QgsRectangle(EXTENT))
     assert (loads[0].zoomed_out, loads[0].zoomed_out_below) == ("merged", 13)
+
+
+def test_merging_suits_only_plain_fills_of_a_few_styles(plugin):
+    """merge_fit: plain fills without outlines, a few categories: merged;
+    outlines, pattern fills, data-defined colours, effects or too many
+    styles: images (merging would lose or distort them)."""
+    from qgis.core import (QgsCategorizedSymbolRenderer, QgsFillSymbol, QgsLinePatternFillSymbolLayer,
+                           QgsProperty, QgsRendererCategory, QgsSingleSymbolRenderer, QgsSymbolLayer)
+    from qgis.PyQt.QtGui import QColor
+    from publishing import zoom_load
+
+    def fill(outline=False):
+        return QgsFillSymbol.createSimple({"color": "200,180,120,255",
+                                           "outline_style": "solid" if outline else "no"})
+
+    def categories(count, outline=False):
+        return QgsCategorizedSymbolRenderer("zone", [QgsRendererCategory(str(i), fill(outline), str(i))
+                                                     for i in range(count)])
+    assert zoom_load.merge_fit(categories(6)) == (6, "")
+    assert zoom_load.merge_fit(QgsSingleSymbolRenderer(fill())) == (1, "")
+    styles, note = zoom_load.merge_fit(categories(6, outline=True))
+    assert styles == 6 and "outlines" in note
+    see_through = fill()
+    see_through.symbolLayer(0).setStrokeStyle(Qt.PenStyle.SolidLine)
+    see_through.symbolLayer(0).setStrokeColor(QColor(0, 0, 0, 0))
+    assert zoom_load.merge_fit(QgsSingleSymbolRenderer(see_through)) == (1, "")  # an invisible outline
+    pattern = fill()
+    pattern.appendSymbolLayer(QgsLinePatternFillSymbolLayer())
+    assert "LinePatternFill" in zoom_load.merge_fit(QgsSingleSymbolRenderer(pattern))[1]
+    coloured = fill()
+    fill_color = getattr(QgsSymbolLayer, "PropertyFillColor", None) or QgsSymbolLayer.Property.FillColor
+    coloured.symbolLayer(0).setDataDefinedProperty(fill_color,
+                                                   QgsProperty.fromExpression("color_rgb(\"v\", 0, 0)"))
+    assert "data-defined" in zoom_load.merge_fit(QgsSingleSymbolRenderer(coloured))[1]
+    many = zoom_load.merge_fit(categories(zoom_load.MAX_MERGED_STYLES + 1))
+    assert many[0] == zoom_load.MAX_MERGED_STYLES + 1 and "too many" in many[1]
+    # The suggestion follows it; more styles leave more of the tile merged.
+    plain, outlined = _heavy_load(), _heavy_load(merge_note="outlines")
+    zoom_load.resuggest([plain, outlined], 18, zoom_load.BALANCED)
+    assert plain.suggested_mode == "merged" and outlined.suggested_mode == "image"
+    assert outlined.modes() == ("full", "merged", "image")  # still offered by hand
+    assert _heavy_load(styles=12).merged_share() == 2 * plain.merged_share()
