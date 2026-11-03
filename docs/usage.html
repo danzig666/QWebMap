@@ -228,15 +228,17 @@ mark { background: #f6e27a; color: #1d2418; }
 </li><li>
 <strong>Layer</strong> / <strong>Features</strong> — Layer name and its feature count in the extent.
 </li><li>
-<strong>Busiest tile, zoomed out</strong> — The layer's share of the heaviest tile at its current first zoom, in features and KB/MB.
+<strong>Busiest tile, zoomed out</strong> — The layer's share of the heaviest tile at its current first zoom, in features and KB/MB. A layer already drawn merged or as images there shows that ("merged, 30 KB", "image, no vector data").
 </li><li>
 <strong>Features from</strong> — Tick box and zoom: hides the layer (features and labels) when zoomed out beyond this zoom. Suggested changes come ticked. Changing the zoom ticks the box. The lowest zoom means no limit.
+</li><li>
+<strong>Drawn zoomed out</strong> — Tick box, mode and zoom: keeps a heavy layer visible but lighter below the zoom (sets the Zoomed out column): <strong>Merged</strong> (polygon layers) or <strong>Image</strong>. Suggested where the layer is heavy but its features are not specks, below the first zoom where every feature is light enough; it comes ticked when it draws zooms that Features from does not hide. Untick Features from to keep the layer visible at every zoom out. <strong>Every feature</strong> removes a mode already set.
 </li><li>
 <strong>Labels, zoomed out</strong> — Labels in the heaviest tile and about how many fit.
 </li><li>
 <strong>Labels from</strong> — Tick box and zoom: hides only the labels when zoomed out beyond this zoom.
 </li><li>
-<strong>Apply the checked limits</strong> — Writes the ticked zooms into the Scales column as scales. The summary line compares the heaviest tile before and after.
+<strong>Apply the checked settings</strong> — Writes the ticked zooms into the Scales column as scales and the ticked drawing modes into the Zoomed out column. The summary line compares the heaviest tile before and after.
 </li></ul>
 <p><strong>Pitfalls</strong></p>
 <ul><li>

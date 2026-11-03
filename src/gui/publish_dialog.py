@@ -720,7 +720,11 @@ class PublishDialog(QDialog):
         dialog = ZoomLoadDialog(self, loads, factor, (profile.view.min_zoom, profile.view.max_zoom))
         accepted = accept(dialog) if accept is not None else dialog.exec()
         if accepted:
-            self.apply_zoom_limits(dialog.chosen())
+            limits = self.apply_zoom_limits(dialog.chosen())
+            modes = self.apply_zoomed_out(dialog.chosen_modes())
+            if limits and modes:
+                self.status.setText(tr("Zoomed-out limits set for {} layer(s) (Scales column), drawing "
+                                       "for {} (Zoomed out column).").format(limits, modes))
         # Seen (and its limits applied or not): the export does not check
         # this state again (_check_zoom_load_before_export).
         self._zoom_load_handled = self._zoom_load_fingerprint()
@@ -749,8 +753,8 @@ class PublishDialog(QDialog):
             speed = zoom_load.BALANCED
         if speed != zoom_load.BALANCED:
             zoom_load.resuggest(loads, int(profile.view.max_zoom), speed)
-        slow = [load for load in loads
-                if load.suggested_from is not None or load.suggested_labels_from is not None]
+        slow = [load for load in loads if load.suggested_from is not None
+                or load.suggested_labels_from is not None or load.mode_suggested()]
         if not slow:
             self._zoom_load_handled = current
             return True
@@ -835,6 +839,9 @@ class PublishDialog(QDialog):
             parts = []
             if load.suggested_from is not None:
                 parts.append(tr("features from zoom {} (now {})").format(load.suggested_from, load.shown_from))
+            if load.mode_suggested():
+                parts.append((tr("merged below zoom {}") if load.suggested_mode == "merged"
+                              else tr("as images below zoom {}")).format(load.suggested_mode_below))
             if load.suggested_labels_from is not None:
                 parts.append(tr("labels from zoom {} (now {})").format(load.suggested_labels_from,
                                                                        load.labels_from))
@@ -846,7 +853,7 @@ class PublishDialog(QDialog):
         box.setWindowTitle(tr("Zoomed-out load"))
         box.setText(tr("The web map will be slow when zoomed out: {} layer(s) put more into a tile "
                        "than is worth loading and drawing there. Hiding them when zoomed out beyond "
-                       "these zooms makes the map faster:").format(len(slow)) + "\n\n" + "\n".join(lines))
+                       "these zooms, or drawing them merged or as images there, makes the map faster:").format(len(slow)) + "\n\n" + "\n".join(lines))
         faster = box.addButton(tr("Make it faster…"), QMessageBox.ButtonRole.AcceptRole)
         as_is = box.addButton(tr("Export as it is"), QMessageBox.ButtonRole.DestructiveRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
@@ -920,6 +927,19 @@ class PublishDialog(QDialog):
             changed += 1
         if changed:
             self.status.setText(tr("Zoomed-out limits set for {} layer(s) (Scales column).").format(changed))
+        return changed
+
+    def apply_zoomed_out(self, chosen) -> int:
+        """Set {layer id: (mode, below zoom or None)} in the Zoomed out
+        column; returns the rows changed."""
+        changed = 0
+        for item in self._tree_items():
+            values = chosen.get(item.data(0, LAYER_ROLE))
+            if values:
+                self._set_item_zoomed(item, *values)
+                changed += 1
+        if changed:
+            self.status.setText(tr("Zoomed-out drawing set for {} layer(s) (Zoomed out column).").format(changed))
         return changed
 
     def _set_item_scales(self, item, low, high, labels_low=None):
