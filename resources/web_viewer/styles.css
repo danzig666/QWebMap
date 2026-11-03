@@ -682,3 +682,27 @@ body.q2vt-printing #q2vt-map { position: fixed; left: 0; top: 0; width: var(--q2
   .q2vt-reader-tools button:not(.q2vt-reader-size) .q2vt-btn-text { display: none; }
 }
 @media print { .q2vt-reader-backdrop, .q2vt-rich-open { display: none !important; } }
+
+/* ?debug: the zoom readout (debug.mjs), above the scale bar. */
+#q2vt-debug {
+  position: fixed;
+  right: 10px;
+  bottom: calc(44px + env(safe-area-inset-bottom, 0px));
+  z-index: 5;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(17, 24, 39, 0.82);
+  color: #f9fafb;
+  font: 600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* Map only (applyMapOnly): the map and, when there is one, its attribution. */
+.q2vt-map-only #q2vt-side,
+.q2vt-map-only .maplibregl-ctrl-top-left,
+.q2vt-map-only .maplibregl-ctrl-top-right,
+.q2vt-map-only .maplibregl-ctrl-bottom-left,
+.q2vt-map-only .maplibregl-ctrl-bottom-right > :not(.q2vt-attribution),
+.q2vt-map-only .maplibregl-popup { display: none !important; }
+.q2vt-map-only .q2vt-attribution:empty { display: none !important; }

@@ -2285,3 +2285,12 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
 * `raster_tiles.warped_copy`: only when `_curved_to_mercator` (an affine fit of the extent's 7x7 grid
   misses by > 0.2 % of its size); never for hillshade / contour renderers
   (tests/integration/test_publishing_raster.py).
+
+## 4.56.3 — Map only; ?debug
+
+* `InteractionConfig.map_only` (profile `mapOnly`): the viewer's `applyMapOnly` adds the body class
+  `q2vt-map-only` (styles.css hides the side panel, map controls but the attribution, popups), switches
+  off popups, search, measuring, coordinates, geolocation, overview, 3D, drawing, Street View and print,
+  and adds no navigation / fullscreen controls (tests/browser/test_web_viewer_features.py).
+* `debug.mjs` (dynamic import on `?debug`): zoom and tile zoom of the vector source (its loaded
+  tileSize / zoom range), `?debug=tiles` sets `showTileBoundaries` (test_web_viewer_features.py).
