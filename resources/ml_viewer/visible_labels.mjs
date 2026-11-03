@@ -629,8 +629,10 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         if (!intersect(raw, tileRect)) info = OUTSIDE_TILE;
         else if (inTile) {
           info = world.some((ring) => ring.length >= 3)
+            // The tile's own properties (the copy MapLibre's worker needs is
+            // made when the points are written): no copy per cached polygon.
             ? { extent: raw, area: ringsArea(world), point: labelPoint(world, options.forceInside !== false),
-                properties: { ...properties } } : null;
+                properties } : null;
         } else {
           // Across the tile's edge: its piece cut to the tile, used as it is
           // while the whole polygon is in the reach (cut to it otherwise).
