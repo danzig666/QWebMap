@@ -840,6 +840,22 @@
         },
         "rasterLive": {
           "type": "boolean"
+        },
+        "zoomedOut": {
+          "type": "string",
+          "enum": [
+            "full",
+            "merged",
+            "image"
+          ]
+        },
+        "zoomedOutBelow": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 24
         }
       }
     },

@@ -727,3 +727,31 @@ def test_an_emptied_layer_box_that_allows_none_means_no_layer(project, messages,
     box.lineEdit().editingFinished.emit()
     assert box.currentLayer() is dem  # other text naming no layer is still undone
     dialog.close()
+
+
+def test_zoomed_out_mode_is_set_shown_and_saved(project, messages, tmp_path):
+    """Zoomed out column: "merged" / "image" below a zoom, set for the
+    selected vector rows (Selected layers → Zoomed out…), shown in the
+    column, saved with the settings and back in a new window."""
+    project, parcels = project
+    from q2vt_plugin.src.gui import publication_profiles as store  # pylint: disable=import-error
+    dialog = _dialog()
+    item = next(dialog._tree_items())  # pylint: disable=protected-access  (the one layer)
+    dialog.tree.clearSelection()
+    item.setSelected(True)
+    assert dialog.edit_zoomed_out(("image", 13))
+    from q2vt_plugin.src.gui.publish_dialog import COL_ZOOMED  # pylint: disable=import-error
+    assert item.text(COL_ZOOMED) == "image < z13"
+    config = dialog.collect().layer(parcels.id())
+    assert (config.zoomed_out, config.zoomed_out_below) == ("image", 13)
+    store.save_profile(project, dialog.collect())
+    dialog.close()
+    again = _dialog()
+    config = again.collect().layer(parcels.id())
+    assert (config.zoomed_out, config.zoomed_out_below) == ("image", 13)
+    again_item = next(again._tree_items())  # pylint: disable=protected-access
+    again.tree.clearSelection()
+    again_item.setSelected(True)
+    assert again.edit_zoomed_out(("full", None))
+    assert again_item.text(COL_ZOOMED) == "" and again.collect().layer(parcels.id()).zoomed_out == "full"
+    again.close()

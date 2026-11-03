@@ -2294,3 +2294,19 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   and adds no navigation / fullscreen controls (tests/browser/test_web_viewer_features.py).
 * `debug.mjs` (dynamic import on `?debug`): zoom and tile zoom of the vector source (its loaded
   tileSize / zoom range), `?debug=tiles` sets `showTileBoundaries` (test_web_viewer_features.py).
+
+## 4.57.0 — zoomed out: merged per tile or QGIS images
+
+* `LayerConfig.zoomed_out` ("full" / "merged" / "image") and `zoomed_out_below`; Interaction tab column
+  *Zoomed out* (`zoomed_out_dialog.py`); `qgis_model.zoomed_out_layers` feeds the export.
+* merged: `tiles_generator.merge_per_tile` joins the features of one style (fields but ids, keys and
+  labels) per tile, from the highest merged zoom down (each level from the pieces above); outlines are
+  rebuilt into polygons and their boundaries written; `_merged_members` / `_merged_jobs` tile one zoom
+  each; small-feature cuts and long-line zooms start after the merged ones; the layer's visible-polygon
+  labels are not hosted in its fills (`RulesExporter.unhosted_layers`)
+  (tests/integration/test_export_speed.py, test_zoomed_out_modes.py).
+* image: `RulesFlattener._cut_features_below` cuts the renderer rules to the zoom after the labels were
+  matched (labels keep every zoom); `raster_tiles.plan_vector_image` + `controller._render_vector_images`
+  render the layer into an image archive drawn below the zoom at the layer's place, with an `image`
+  component (switch, opacity; the viewer sets no filter on raster style layers)
+  (test_zoomed_out_modes.py, tests/browser/test_web_viewer_features.py).

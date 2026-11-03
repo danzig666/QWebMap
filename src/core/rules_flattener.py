@@ -124,13 +124,17 @@ class RulesFlattener:
                  scale_limits=None, extent=None, fast_markers: bool = False,
                  lengths: Optional[LengthConverter] = None,
                  overzoom: OverzoomPolicy = OverzoomPolicy.PERSIST,
-                 overzoom_to: Optional[int] = None, min_label_px: float = 0.0):
+                 overzoom_to: Optional[int] = None, min_label_px: float = 0.0,
+                 features_from=None):
         """``overzoom_to``: the last zoom the map is viewed at (the browser
         overzooms the max_zoom tiles up to it; None: MapLibre's 22).
         ``min_label_px``: labels sized in map units are hidden where their
         text is smaller than this on screen (0: off)."""
         self.min_zoom = min_zoom
         self.min_label_px = float(min_label_px or 0.0)
+        # {QGIS layer id: zoom}: the layer's features (not its labels) only
+        # from that zoom on (drawn as QGIS images below it: LayerConfig.zoomed_out).
+        self.features_from = {k: int(v) for k, v in (features_from or {}).items()}
         # Beyond the archive's last zoom the browser keeps drawing its tiles
         # (PERSIST, the viewer zooms in to 22 by default): rules that start
         # there are drawn from them, and values that depend on the scale are
@@ -198,9 +202,28 @@ class RulesFlattener:
         if self.flattened_rules:
             self._clone_rule_objects()
 
+        self._cut_features_below()
         self._remove_unusable_rules()
         self._share_fill_datasets()
         return self.flattened_rules
+
+    def _cut_features_below(self) -> None:
+        """Layers drawn as QGIS images zoomed out (``features_from``): their
+        renderer rules only from that zoom on. After the labels were matched
+        to the renderer rules, so the labels keep every zoom (QGIS labels
+        the features it draws: below that zoom it draws them, as images)."""
+        if not self.features_from:
+            return
+        for rule in list(self.flattened_rules):
+            first = self.features_from.get(rule.layer.id())
+            if first is None or rule.get_attr("t") != 0 or rule.get_attr("o") >= first:
+                continue
+            if rule.get_attr("i") < first:  # drawn only zoomed out: images alone
+                self.flattened_rules.remove(rule)
+                continue
+            rule.set_attr("o", first)
+            if rule.visibility is not None and rule.visibility.min_zoom < first:
+                rule.visibility = ZoomInterval(float(first), rule.visibility.max_zoom)
 
     # Rule fields that change the exported geometry or which features are
     # exported: an outline shares its fill's dataset only where all agree.

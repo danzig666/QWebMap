@@ -252,7 +252,11 @@ class GDALTilesGenerator:
         exact_datasets: Optional[set] = None,
         min_feature_px: float = 0.0,
         small_datasets: Optional[set] = None,
+        merged: Optional[Dict[str, int]] = None,
     ):
+        # {QGIS layer id: zoom}: below it the layer's fills and outlines are
+        # tiled from copies merged per tile (merge_per_tile).
+        self.merged = {k: int(v) for k, v in (merged or {}).items()}
         # With a cache: one tile set per QGIS layer (its datasets), reused
         # while the layer's datasets are unchanged, then merged.
         self.cache = cache
@@ -736,7 +740,9 @@ class GDALTilesGenerator:
                                                         self._simplification(members),
                                                         _SIMPLIFICATION_MAX_ZOOM,
                                                         self._buffer(members),
-                                                        *self._small_key(members))
+                                                        *self._small_key(members),
+                                                        *([["merged", self.merged[owner_id]]]
+                                                          if owner_id in self.merged else []))
                         if parts is not None else None, members))
         return out
 
@@ -791,6 +797,18 @@ class GDALTilesGenerator:
             long_lines = self._long_lines(members)
             cuts = self._small_cuts(members)
             small = dict(cuts)  # their zooms from the long lines' first on: in the cut copies
+            merged = self._merged_members(owner, members)
+            for name, (_low, last, _outline) in merged.items():  # those zooms: the merged copies
+                if name in cuts and max(cuts[name][0], last + 1) <= cuts[name][1]:
+                    cuts[name] = (max(cuts[name][0], last + 1),) + tuple(cuts[name][1:])
+                elif name in cuts:
+                    del cuts[name]
+                if name in long_lines:
+                    first, top = long_lines[name]
+                    if max(first, last + 1) <= top:
+                        long_lines[name] = (max(first, last + 1), top)
+                    else:
+                        del long_lines[name]
             for name, (first, _high) in long_lines.items():
                 if name in cuts:
                     low, last, largest = cuts[name]
@@ -804,6 +822,8 @@ class GDALTilesGenerator:
                 low, high = self._layer_zoom_range(layer)
                 if name in small:  # the unfiltered tiles: the zooms after the cut
                     low = small[name][1] + 1
+                if name in merged:  # and after the merged zooms
+                    low = max(low, merged[name][1] + 1)
                 if name in long_lines:  # whole lines below the first long zoom only
                     high = long_lines[name][0] - 1
                 if (low, high) != self._layer_zoom_range(layer):
@@ -813,7 +833,7 @@ class GDALTilesGenerator:
             self._build_vrt(vrt, plain)
             self._write_layer_conf(conf, plain)
             groups.append((key, target, vrt, conf, members, owner, cuts, plain, long_lines, small,
-                           buffer, simplification))
+                           buffer, simplification, merged))
             parts.append(target)
         if self.feedback is not None and self.cache is not None:
             self.feedback.pushInfo(f"   Tiles: {len(parts) - len(groups)} of {len(parts)} layers "
@@ -824,10 +844,11 @@ class GDALTilesGenerator:
         target_cost = sum(self._job_cost(g[7]) for g in groups) / max(1, cpu) / 2
         jobs = []  # (group index, piece file, command, cost, owner)
         for index, (key, target, vrt, conf, members, owner, cuts, plain, long_lines, small,
-                    buffer, simplification) in enumerate(groups):
+                    buffer, simplification, merged) in enumerate(groups):
             filtered = self._filtered_jobs(index, target, members, cuts, owner, buffer, simplification)
             filtered += self._long_line_jobs(index, target, members, long_lines, small, owner,
                                              buffer, simplification)
+            filtered += self._merged_jobs(index, target, members, merged, owner, buffer, simplification)
             jobs += filtered
             if not plain:
                 continue  # every zoom of every dataset in the jobs above
@@ -905,6 +926,77 @@ class GDALTilesGenerator:
                                             simplification=simplification)
             cost = sum(self._job_cost([m]) for m in part) / max(1, len(zooms))
             jobs.append((index, piece, command, cost, owner))
+        return jobs
+
+    _DATASET = re.compile(r"t(\d\d)d\d\dr\d\dg(\d\d)c(\d\d)")
+
+    def _merged_members(self, owner: str, members: List[QgsVectorLayer]) -> Dict[str, Tuple[int, int, bool]]:
+        """{dataset: (first, last merged zoom, outline)} of a merged layer's
+        fills and their outlines (renderer datasets of polygons), at the
+        zooms below its LayerConfig.zoomed_out_below."""
+        below = self.merged.get(owner)
+        if below is None:
+            return {}
+        out = {}
+        for layer in members:
+            name = self._layer_name(layer)
+            match = self._DATASET.search(name)
+            if not match or name.endswith(("_vp", "_vl")) or name in self.exact_datasets:
+                continue
+            kind, geometry, target = (int(match.group(i)) for i in (1, 2, 3))
+            if kind != 0 or geometry != 2 or target not in (1, 2):
+                continue  # labels, points, lines: as they are
+            low, high = self._layer_zoom_range(layer)
+            last = min(high, below - 1)
+            if last >= low:
+                out[name] = (low, last, target == 1)
+        return out
+
+    def _merged_jobs(self, index: int, target: str, members: List[QgsVectorLayer],
+                     merged: Dict[str, Tuple[int, int, bool]], owner: str, buffer: int,
+                     simplification: float) -> list:
+        """Jobs (as _generate_per_layer's) making the merged zooms' tiles: one
+        zoom each, from the copies of merge_per_tile."""
+        if not merged:
+            return []
+        by_name = {self._layer_name(m): m for m in members}
+        copies: Dict[str, Dict[int, str]] = {}
+        for number, (name, (low, last, outline)) in enumerate(sorted(merged.items())):
+            source = by_name[name].source().split("|layername=")[0]
+            outputs = {z: f"{target[:-8]}_m{number:02d}_z{z:02d}.gpkg" for z in range(low, last + 1)}
+            written = merge_per_tile(source, self._table_of(source), outputs, outline,
+                                     cancelled=lambda: self.feedback is not None and self.feedback.isCanceled())
+            copies[name] = {z: path for z, path in outputs.items() if written.get(z)}
+        jobs = []
+        for zoom in sorted({z for paths in copies.values() for z in paths}):
+            names = [name for name, paths in copies.items() if zoom in paths]
+            piece = f"{target[:-8]}_mz{zoom:02d}.mbtiles"
+            piece_vrt, piece_conf = piece[:-8] + ".vrt", piece[:-8] + ".json"
+            root = ET.Element("OGRVRTDataSource")
+            conf, cost = {}, 0.0
+            for name in names:
+                source = by_name[name].source().split("|layername=")[0]
+                table = self._table_of(source)
+                node = ET.SubElement(root, "OGRVRTLayer", name=name)
+                ET.SubElement(node, "SrcDataSource").text = copies[name][zoom]
+                if table and table != name:
+                    ET.SubElement(node, "SrcLayer").text = table
+                ET.SubElement(node, "LayerSRS").text = f"EPSG:{_EPSG_CRS}"
+                ET.SubElement(node, "GeometryType").text = "wkbUnknown"
+                conf[name] = {"minzoom": zoom, "maxzoom": zoom}
+                cost += os.path.getsize(copies[name][zoom]) + _TILE_COST * self._tiles_at(zoom)
+            ET.ElementTree(root).write(piece_vrt, encoding="utf-8", xml_declaration=True)
+            with open(piece_conf, "w", encoding="utf-8") as handle:
+                json.dump(conf, handle)
+            last = all(self._layer_zoom_range(by_name[name])[1] == zoom for name in names)
+            command = self._ogr2ogr_command(
+                piece_vrt, piece, zoom, zoom, piece_conf,
+                top_simplification=_SIMPLIFICATION_MAX_ZOOM if last else simplification,
+                buffer=buffer, simplification=simplification)
+            jobs.append((index, piece, command, cost, owner))
+        if jobs and self.feedback is not None:
+            self.feedback.pushInfo("   Merged per tile below zoom {}: {}".format(
+                self.merged.get(owner), ", ".join(sorted(copies))))
         return jobs
 
     def _long_lines(self, members: List[QgsVectorLayer]) -> Dict[str, Tuple[int, int]]:
@@ -1212,6 +1304,146 @@ def _merged_tile(chunks: List[bytes]) -> bytes:
 
 def _quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
+
+
+# --- merged zoomed out (LayerConfig.zoomed_out "merged") --------------------
+# Below a layer's chosen zoom, each of its fill and outline datasets is tiled
+# from copies whose features of one style - equal values in every field the
+# tiles keep, but for ids, keys and label fields - are joined per tile of the
+# zoom: a dense layer (parcels) becomes a few shapes a tile. The pieces join
+# whole features (grouped by the tile of their middle), so their edges are
+# the features' own: no new seams at tile edges.
+_MERGE_IDS = {"q2vt_orig_id", "q2vt_feature_key", "q2vt_part", "fid", "ogc_fid"}
+
+
+def _merge_key_fields(definition) -> List[int]:
+    """Indexes of the fields a merged feature keeps (and is grouped by)."""
+    keep = []
+    for index in range(definition.GetFieldCount()):
+        name = definition.GetFieldDefn(index).GetName().lower()
+        if name in _MERGE_IDS or name.startswith("q2vt_label") or name.startswith("q2vt_vertex"):
+            continue
+        keep.append(index)
+    return keep
+
+
+def _as_polygons(geometry, outline: bool):
+    """A fill's polygon(s), or the polygon(s) an outline's closed rings
+    enclose (None when they do not close: kept as lines)."""
+    if geometry is None or geometry.IsEmpty():
+        return None
+    if not outline:
+        polygon = geometry
+    else:
+        try:
+            polygon = ogr.BuildPolygonFromEdges(geometry, bBestEffort=1, bAutoClose=0)
+        except RuntimeError:
+            return None
+        if polygon is None or polygon.IsEmpty() or abs(polygon.GetArea()) <= 0:
+            return None
+    if not polygon.IsValid():
+        try:
+            polygon = polygon.MakeValid()
+        except (RuntimeError, AttributeError):
+            polygon = polygon.Buffer(0)
+    return polygon
+
+
+def _union(geometries):
+    collection = ogr.Geometry(ogr.wkbMultiPolygon)
+    for geometry in geometries:
+        flat = ogr.GT_Flatten(geometry.GetGeometryType())
+        if flat == ogr.wkbPolygon:
+            collection.AddGeometry(geometry)
+        elif flat in (ogr.wkbMultiPolygon, ogr.wkbGeometryCollection):
+            for index in range(geometry.GetGeometryCount()):
+                part = geometry.GetGeometryRef(index)
+                if ogr.GT_Flatten(part.GetGeometryType()) == ogr.wkbPolygon:
+                    collection.AddGeometry(part)
+    if collection.GetGeometryCount() == 0:
+        return None
+    try:
+        return collection.UnionCascaded()
+    except RuntimeError:
+        return collection.Buffer(0)
+
+
+def merge_per_tile(path: str, table: Optional[str], outputs: Dict[int, str], outline: bool,
+                   cancelled=None) -> Dict[int, int]:
+    """Write, for each zoom of ``outputs`` ({zoom: GeoPackage path}), the
+    dataset ``path`` with its features of one style merged per tile of
+    that zoom (outlines: the merged shapes' boundaries; rings that do not
+    close stay as they are). The highest zoom merges the features, each
+    lower one the pieces of the zoom above. Returns {zoom: features written}."""
+    source = ogr.Open(path)
+    layer = source.GetLayerByName(table) if table else source.GetLayer(0)
+    definition = layer.GetLayerDefn()
+    keep = _merge_key_fields(definition)
+    srs = layer.GetSpatialRef()
+    top = max(outputs)
+    cell = _tile_size(top)
+    groups: Dict[tuple, list] = collections.defaultdict(list)
+    loose = []  # (key, geometry) of outlines that do not close
+    for count, feature in enumerate(layer):
+        if cancelled is not None and count % 2000 == 0 and cancelled():
+            raise TilesGenerationCancelled("Tile generation cancelled")
+        geometry = feature.GetGeometryRef()
+        if geometry is None or geometry.IsEmpty():
+            continue
+        key = tuple(feature.GetField(i) for i in keep)
+        polygon = _as_polygons(geometry, outline)
+        if polygon is None:
+            if outline:
+                loose.append((key, geometry.Clone()))
+            continue
+        x0, x1, y0, y1 = polygon.GetEnvelope()
+        cx = math.floor(((x0 + x1) / 2 + WORLD_HALF) / cell)
+        cy = math.floor(((y0 + y1) / 2 + WORLD_HALF) / cell)
+        groups[(key, cx, cy)].append(polygon.Clone())
+    written = {}
+    pieces = {group: _union(members) for group, members in groups.items()}
+    for zoom in range(top, min(outputs) - 1, -1):
+        if zoom != top:
+            parents: Dict[tuple, list] = collections.defaultdict(list)
+            for (key, cx, cy), geometry in pieces.items():
+                if geometry is not None:
+                    parents[(key, cx // 2, cy // 2)].append(geometry)
+            pieces = {group: _union(members) for group, members in parents.items()}
+        if zoom not in outputs:
+            continue
+        driver = ogr.GetDriverByName("GPKG")
+        if os.path.exists(outputs[zoom]):
+            driver.DeleteDataSource(outputs[zoom])
+        target = driver.CreateDataSource(outputs[zoom])
+        out = target.CreateLayer(table or layer.GetName(), srs,
+                                 ogr.wkbMultiLineString if outline else ogr.wkbMultiPolygon,
+                                 ["SPATIAL_INDEX=NO"])
+        for index in keep:
+            out.CreateField(definition.GetFieldDefn(index))
+        out_definition = out.GetLayerDefn()
+        out.StartTransaction()
+        number = 0
+        shapes = [(key, geometry, True) for (key, _cx, _cy), geometry in pieces.items()]
+        shapes += [(key, geometry, False) for key, geometry in loose]
+        for key, geometry, merged in shapes:
+            if geometry is None or geometry.IsEmpty():
+                continue
+            shape = geometry.Boundary() if outline and merged else geometry
+            if outline:
+                shape = ogr.ForceToMultiLineString(shape)
+            else:
+                shape = ogr.ForceToMultiPolygon(shape)
+            copy = ogr.Feature(out_definition)
+            for position, value in enumerate(key):
+                if value is not None:
+                    copy.SetField(position, value)
+            copy.SetGeometry(shape)
+            out.CreateFeature(copy)
+            number += 1
+        out.CommitTransaction()
+        target = None
+        written[zoom] = number
+    return written
 
 
 # --- long lines -----------------------------------------------------------

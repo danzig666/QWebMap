@@ -438,3 +438,82 @@ def _inside_length(geometry, extent):
                 if t1 > t0:
                     total += (t1 - t0) * _math.hypot(dx, dy)
     return total
+
+
+def test_merged_zoomed_out_tiles_join_features_of_one_style_per_tile(plugin, tmp_path, monkeypatch):
+    """LayerConfig.zoomed_out "merged": below its zoom a layer's fills and
+    outlines are tiled from copies whose features of one style (equal field
+    values but ids) are joined per tile - far fewer features, the same area
+    of each style, no inner outlines; from that zoom on the tiles are those
+    of an unmerged export."""
+    from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core import tiles_generator  # pylint: disable=import-error
+    from q2vt_plugin.src.core.datasets import ExportedDataset  # pylint: disable=import-error
+    from publishing import mvt  # pylint: disable=import-outside-toplevel
+    fill, outline = "l00t00d01r00g02c02o10i15s00", "l00t00d01r00g02c01o10i15s00"
+    fields = QgsFields()
+    fields.append(QgsField("q2vt_orig_id", QVariant.Int))
+    fields.append(QgsField("zone", QVariant.String))
+
+    def write(folder, name, kind):
+        path = os.path.join(folder, f"{name}.gpkg")
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = "GPKG"
+        writer = QgsVectorFileWriter.create(path, fields, kind, QgsCoordinateReferenceSystem("EPSG:3857"),
+                                            QgsCoordinateTransformContext(), options)
+        features = []
+        for i in range(40):
+            for j in range(40):  # 40 x 40 parcels of 60 m, two zones in stripes
+                x, y = 2110000 + i * 60, 6010000 + j * 60
+                ring = f"{x} {y}, {x + 60} {y}, {x + 60} {y + 60}, {x} {y + 60}, {x} {y}"
+                feature = QgsFeature(fields)
+                feature.setAttributes([i * 40 + j, "K1" if (i // 8) % 2 else "K2"])
+                feature.setGeometry(QgsGeometry.fromWkt(
+                    f"POLYGON(({ring}))" if kind == QgsWkbTypes.Polygon else f"MULTILINESTRING(({ring}))"))
+                features.append(feature)
+        writer.addFeatures(features)
+        del writer
+        return ExportedDataset(path, name, len(features), None)
+
+    def tiles(folder, below):
+        os.makedirs(folder, exist_ok=True)
+        layers = [write(folder, fill, QgsWkbTypes.Polygon), write(folder, outline, QgsWkbTypes.MultiLineString)]
+        style = {"layers": [{"id": "f", "type": "fill", "source": "t", "source-layer": fill},
+                            {"id": "o", "type": "line", "source": "t", "source-layer": outline}]}
+        generator = tiles_generator.GDALTilesGenerator(
+            layers, style, folder, QgsRectangle(2109000, 6009000, 2114000, 6014000), 100, None,
+            layer_zooms={fill: (10, 15), outline: (10, 15)}, layer_groups={"parcels": [fill, outline]},
+            merged={"parcels": below} if below else None)
+        generator.generate()
+        out = {}
+        with sqlite3.connect(os.path.join(folder, "tiles.mbtiles")) as conn:
+            for z, x, y, data in conn.execute("SELECT * FROM tiles"):
+                out[(z, x, y)] = mvt.decode(data, geometry=True)
+        return out
+
+    plain = tiles(str(tmp_path / "plain"), None)
+    merged = tiles(str(tmp_path / "merged"), 13)
+    assert plain.keys() == merged.keys()
+
+    def area(layer, zone):  # tile units², of one zone's polygons in the tile itself
+        total = 0.0
+        for feature in layer["features"]:
+            if feature["properties"].get("zone") != zone:
+                continue
+            for ring in mvt.lines(feature["geometry"]):
+                clipped = [(min(max(x, 0), layer["extent"]), min(max(y, 0), layer["extent"])) for x, y in ring]
+                total += sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(clipped, clipped[1:])) / 2
+        return abs(total)
+
+    for address, layers in plain.items():
+        z = address[0]
+        if z >= 13:  # every feature, as unmerged
+            assert merged[address] == layers, address
+            continue
+        mine, theirs = merged[address], layers
+        assert len(mine[fill]["features"]) < len(theirs[fill]["features"]) / 10, address
+        assert all("q2vt_orig_id" not in f["properties"] for f in mine[fill]["features"])
+        for zone in ("K1", "K2"):
+            assert area(mine[fill], zone) == pytest.approx(area(theirs[fill], zone), rel=0.02, abs=50), (address, zone)
+        # Outlines: the merged shapes' boundaries, not every parcel's.
+        assert len(mine[outline]["features"]) < len(theirs[outline]["features"]) / 10

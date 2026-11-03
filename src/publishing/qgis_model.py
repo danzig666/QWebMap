@@ -88,6 +88,13 @@ def json_value(value):
 
 # --- identity / tile fields ---------------------------------------------------------
 
+def zoomed_out_layers(profile: PublicationProfile) -> Dict[str, Tuple[str, int]]:
+    """{QGIS layer id: (mode, below zoom)} of the included layers drawn
+    "merged" or as an "image" when zoomed out (LayerConfig.zoomed_out)."""
+    return {c.layer_id: (c.zoomed_out, int(c.zoomed_out_below)) for c in profile.layers
+            if c.included and c.zoomed_out in ("merged", "image") and c.zoomed_out_below}
+
+
 def feature_keys(profile: PublicationProfile) -> Tuple[Dict[str, str], Dict[str, str]]:
     """({layer id: key expression}, {layer id: identity scope})."""
     expressions, scopes = {}, {}

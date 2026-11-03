@@ -187,7 +187,8 @@ export class StyleControl {
       const before = this.applied.get(styleId) || {};
       const filterKey = JSON.stringify(filter ?? null);
       if (before.visible !== visible) map.setLayoutProperty(styleId, "visibility", visible ? "visible" : "none");
-      if (before.filterKey !== filterKey) map.setFilter(styleId, filter ?? null);
+      // A raster style layer (a vector layer's images zoomed out) takes no filter.
+      if (before.filterKey !== filterKey && map.getLayer(styleId).type !== "raster") map.setFilter(styleId, filter ?? null);
       if (before.factor !== factor) {
         for (const [prop, value] of Object.entries(original.paint)) {
           map.setPaintProperty(styleId, prop, scaleValue(value, factor));

@@ -554,7 +554,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.56.3**. Newest first:
+This README describes QWebMap **4.57.0**. Newest first:
+
+**4.57.0** — dense layers zoomed out: merged per tile or as QGIS images
+- *Zoomed out* column (Interaction tab): below a zoom, a vector layer is drawn *merged* (the features of one style joined per tile; no inner outlines or popups there) or as an *image* rendered by QGIS (exact; no popups there) instead of every feature; labels stay as text.
 
 **4.56.3** — Map only; `?debug` zoom readout
 - *Map only: nothing on screen but the map* (Interaction tab): no title, panel, buttons, scale bar, popups or search; the attribution stays when there is one.
