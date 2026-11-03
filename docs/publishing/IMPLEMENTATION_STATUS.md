@@ -2326,3 +2326,10 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
 * `zoom_load_dialog._ModePick` (*Drawn zoomed out* column), `ZoomLoadDialog.chosen_modes()`;
   `PublishDialog.apply_zoomed_out` writes them into the Zoomed out column; the export check lists them
   (tests/integration/test_publish_scale_limits.py).
+
+## 4.58.1 — merging suggested by the symbology
+
+* `zoom_load.merge_fit(renderer)` → (symbols, note): plain `SimpleFill` layers without a visible stroke,
+  no data-defined properties or paint effects, ≤ `MAX_MERGED_STYLES` symbols; else a note and Image is
+  suggested (`LayerLoad.mergeable`); `merged_share` scales `MERGED_SHARE` by styles / `MERGED_STYLES`
+  (tests/integration/test_publish_scale_limits.py).
