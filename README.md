@@ -554,7 +554,11 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.56.2**. Newest first:
+This README describes QWebMap **4.56.3**. Newest first:
+
+**4.56.3** — Map only; `?debug` zoom readout
+- *Map only: nothing on screen but the map* (Interaction tab): no title, panel, buttons, scale bar, popups or search; the attribution stays when there is one.
+- `?debug` in the map's address shows the zoom and the tile zoom; `?debug=tiles` also the tile boundaries.
 
 **4.56.2** — terrain export about 10 times faster; the elevation layer can be removed; raster copies only where they help
 - The terrain's surroundings are filled once and passed up the zooms, and zoomed-out levels read a pyramid of the DEM: a 1 m town DEM 185 s → 16 s, heights inside it unchanged.
