@@ -554,7 +554,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.57.1**. Newest first:
+This README describes QWebMap **4.58.0**. Newest first:
+
+**4.58.0** — Zoomed-out load suggests merged or image drawing
+- A layer heavy zoomed out but still worth seeing gets a *Drawn zoomed out* suggestion (merged for polygons, image otherwise) below the zoom it is light enough at; *Apply the checked settings* sets the *Zoomed out* column.
 
 **4.57.1** — zoomed out: from the chosen zoom on, tiles as large as without the setting
 - A merged or image layer's polygon labels get their own polygon copy only below the chosen zoom (before: at every zoom, half again as large tiles there).
