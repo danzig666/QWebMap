@@ -235,13 +235,14 @@ def plan_layer(project, layer, config: LayerConfig, profile: PublicationProfile,
 
 
 def plan_vector_image(project, layer, profile: PublicationProfile, extent_3857: QgsRectangle,
-                      below: int) -> Optional[RasterPlan]:
+                      below: int, hidpi: bool = False) -> Optional[RasterPlan]:
     """Image tiles of a vector layer drawn as images zoomed out
     (LayerConfig.zoomed_out "image"): the publication's first zoom up to
     the zoom below ``below``, over the export extent ∩ the layer's extent
-    (and its web scale range, as plan_layer). None: no such zoom."""
+    (and its web scale range, as plan_layer). None: no such zoom.
+    ``hidpi``: rendered at twice the pixels (and DPI), as vector_image_hidpi."""
     config = LayerConfig(layer.id(), raster_match_native=False, raster_min_zoom=int(profile.view.min_zoom),
-                         raster_max_zoom=int(below) - 1)
+                         raster_max_zoom=int(below) - 1, raster_hidpi=bool(hidpi))
     if config.raster_max_zoom < config.raster_min_zoom:
         return None
     plan = plan_layer(project, layer, config, profile, extent_3857)
@@ -251,6 +252,17 @@ def plan_vector_image(project, layer, profile: PublicationProfile, extent_3857: 
             return None
         plan.tiles = count_tiles(plan.extent_3857, plan.min_zoom, plan.max_zoom)
     return plan
+
+
+def vector_image_hidpi(profile: PublicationProfile) -> bool:
+    """Image tiles of vector layers at twice the pixels and DPI when the web
+    map thins its hairlines (OutputOptions.thin_hairlines): QGIS draws a
+    hairline one image pixel wide, so at 2x it is half a CSS pixel - what
+    the thinned vector hairlines are on a high-resolution screen (and a
+    lighter line on others, the browser scaling it down) - instead of a
+    full, on such screens blurred, pixel that fills a dense parcel grid in.
+    Every other size stays: the DPI doubles with the pixels."""
+    return bool(getattr(profile.output, "thin_hairlines", True))
 
 
 def _metres(value: float) -> str:

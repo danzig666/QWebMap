@@ -15,6 +15,7 @@ Local export never needs credentials; a failed or cancelled stage leaves the
 previous local (and public) release current.
 """
 
+import dataclasses
 import hashlib
 import itertools
 import json
@@ -785,7 +786,8 @@ def _render_vector_images(project, profile, vector_profile, extent_3857, work_di
     there at the layer's place (its features are tiled from that zoom on)."""
     from . import qgis_model  # pylint: disable=import-outside-toplevel
     from .provenance import layer_logical_id  # pylint: disable=import-outside-toplevel
-    from .raster_tiles import blend_name, plan_vector_image, raster_source_id, raster_style_layer_id  # pylint: disable=import-outside-toplevel
+    from .raster_tiles import (blend_name, plan_vector_image, raster_source_id,  # pylint: disable=import-outside-toplevel
+                               raster_style_layer_id, vector_image_hidpi)
     chosen = {lid: below for lid, (mode, below) in qgis_model.zoomed_out_layers(vector_profile).items()
               if mode == "image"}
     if not chosen:
@@ -800,10 +802,11 @@ def _render_vector_images(project, profile, vector_profile, extent_3857, work_di
         layer = project.mapLayer(lid)
         if layer is None:
             continue
-        plan = plan_vector_image(project, layer, profile, extent_3857, below)
+        hidpi = vector_image_hidpi(profile)
+        plan = plan_vector_image(project, layer, profile, extent_3857, below, hidpi)
         if plan is None or not plan.tiles:
             continue
-        config = vector_profile.layer(lid)
+        config = dataclasses.replace(vector_profile.layer(lid), raster_hidpi=hidpi)
         logical = layer_logical_id(lid)
         progress.info(f'"{layer.name()}": images for zooms {plan.min_zoom}-{plan.max_zoom} (about {plan.tiles} tiles)')
         blend = _raster_blend(project, profile, layer, blend_name(layer), plan.warnings)

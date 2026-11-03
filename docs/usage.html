@@ -756,7 +756,7 @@ An empty title falls back to the file name.
 </li><li>
 <strong>Fast marker lines: let the browser place screen-size line markers</strong> — The browser places marker lines spaced in screen units, instead of the export computing them for every zoom. Much faster export, but positions are approximate: spacing is about 0.7–1.4× and markers can be missing at tile edges. Off by default.
 </li><li>
-<strong>Thin hairlines: draw zero-width lines thinner than QGIS</strong> — Zero-width lines (hairlines) are drawn one device pixel wide, and a little wider when zoomed far in, so dense lines do not merge. Dashed hairlines keep their width. On by default.
+<strong>Thin hairlines: draw zero-width lines thinner than QGIS</strong> — Zero-width lines (hairlines) are drawn one device pixel wide, and a little wider when zoomed far in, so dense lines do not merge. Dashed hairlines keep their width. Layers drawn as images zoomed out (Zoomed out column) are rendered at twice the resolution then, so their hairlines are as thin, and sharp on high-resolution screens (the images are about three times larger). On by default.
 </li><li>
 <strong>Low memory web map: keep fewer tiles in the browser</strong> — The browser keeps tiles for about one zoom level beyond the screen (instead of five). This uses much less memory, but tiles reload when you return to a place. Above 200 % screen scale, the map is drawn at 2 device pixels per CSS pixel. On by default.
 </li><li>
