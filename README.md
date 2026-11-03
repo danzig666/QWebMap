@@ -556,7 +556,8 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 This README describes QWebMap **4.56.1**. Newest first:
 
-**4.56.1** — no hillshade crash; save-as keeps the settings; zoomed-out check runs once
+**4.56.1** — no hillshade crash; exports that never finished; save-as keeps the settings; zoomed-out check runs once
+- Outline-only polygons (a fully transparent fill) export only their outline; long lines are tiled from grid-cut pieces at the zooms where GDAL was very slow on them (tile generation stalled at about 80 %).
 - Raster tiles are rendered with QGIS's OpenCL off: its hillshade renderer could crash QGIS during the export.
 - A project saved as another file keeps every publication setting and the same web map; the window asks only where to export (keep the folder, `web_maps` next to the new file, or a chosen folder).
 - The zoomed-out check before an export is not run again while nothing it reads changed, and not asked again once answered.

@@ -2259,3 +2259,10 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   unsaved edits): `_estimate_zoom_load` reuses an estimate of the same state, and
   `_check_zoom_load_before_export` skips a state already answered (as-is, applied limits, or seen
   with the button) (tests/integration/test_publish_scale_limits.py).
+* `RulesFlattener._transparent_fill`: a simple fill of alpha 0 (fill colour not data-defined) is
+  dropped like No brush; its outline stays (tests/integration/test_flattener.py).
+* `tiles_generator.long_line_zoom` / `grid_cut_lines` / `_long_line_jobs`: from the first zoom where a
+  line dataset's feature boxes cover > 200 000 tiles and > 4x the tiles its lines pass, it is tiled
+  one zoom at a time from a copy cut along the grid of zoom z-2 (GDAL's MVT writer intersects each
+  feature with every tile of its box); small-feature filtering moves to those copies
+  (tests/integration/test_export_speed.py: same line length and properties in every tile).
