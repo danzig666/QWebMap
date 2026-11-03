@@ -554,7 +554,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.57.0**. Newest first:
+This README describes QWebMap **4.57.1**. Newest first:
+
+**4.57.1** — zoomed out: from the chosen zoom on, tiles as large as without the setting
+- A merged or image layer's polygon labels get their own polygon copy only below the chosen zoom (before: at every zoom, half again as large tiles there).
 
 **4.57.0** — dense layers zoomed out: merged per tile or as QGIS images
 - *Zoomed out* column (Interaction tab): below a zoom, a vector layer is drawn *merged* (the features of one style joined per tile; no inner outlines or popups there) or as an *image* rendered by QGIS (exact; no popups there) instead of every feature; labels stay as text.

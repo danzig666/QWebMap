@@ -493,9 +493,10 @@ class RulesExporter:
         # Results as ExportedDataset handles (path, name, feature count; the
         # tile export needs no more) instead of QGIS layers.
         self.light_results = light_results
-        # QGIS layer ids whose fills are merged zoomed out (tile generator):
-        # their visible-polygon labels keep a polygon copy of their own.
-        self.unhosted_layers = set(unhosted_layers or ())
+        # {QGIS layer id: zoom}: the layer's fills are merged or drawn as
+        # images below that zoom (LayerConfig.zoomed_out): its visible-polygon
+        # labels shown below it keep a polygon copy of their own.
+        self.unhosted_layers = dict(unhosted_layers or {})
         # {output dataset: cache key} of the datasets of this export (also
         # read by the tile generator for its per-layer tile cache).
         self.dataset_keys: Dict[str, str] = {}
@@ -906,7 +907,8 @@ class RulesExporter:
             # "Split label text lines over parts": the copy gives each part
             # its own line of the text (_label_lines_over_parts), a fill can't.
             hosts = [] if polygons.split_label_lines or polygons.split_generated \
-                or polygons.layer_id in self.unhosted_layers else self._hosts_of(out, polygons)
+                or polygons.data_min_zoom < self.unhosted_layers.get(polygons.layer_id, 0) \
+                else self._hosts_of(out, polygons)
             if label is None or not hosts:
                 continue
             for host in hosts:
