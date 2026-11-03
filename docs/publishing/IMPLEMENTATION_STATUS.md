@@ -2333,3 +2333,9 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   no data-defined properties or paint effects, ≤ `MAX_MERGED_STYLES` symbols; else a note and Image is
   suggested (`LayerLoad.mergeable`); `merged_share` scales `MERGED_SHARE` by styles / `MERGED_STYLES`
   (tests/integration/test_publish_scale_limits.py).
+
+## 4.58.2 — zoomed-out images at 2x with thin hairlines
+
+* `raster_tiles.vector_image_hidpi(profile)` (= `output.thin_hairlines`): `plan_vector_image(..., hidpi)` and
+  `controller._render_vector_images` render the image tiles with `raster_hidpi` (512 px, 192 DPI; source
+  tileSize 256), part of the raster cache key (tests/integration/test_zoomed_out_modes.py).

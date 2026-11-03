@@ -2465,7 +2465,8 @@ class PublishDialog(QDialog):
             "pixel wide: two pixels on a high-resolution screen, and where many run close together the "
             "map looks filled in. With this option the web map draws them thinner (one device pixel on a "
             "high-resolution screen, a lighter line on others), a little wider when zoomed far in, so "
-            "they stay visible at every zoom. Dashed hairlines keep their width. Off: as in QGIS."))
+            "they stay visible at every zoom. Dashed hairlines keep their width. Layers drawn as images "
+            "zoomed out are rendered at twice the resolution, so their hairlines match. Off: as in QGIS."))
         self.o_low_memory = QCheckBox(tr("Low memory web map: keep fewer tiles in the browser"))
         self.o_low_memory.setToolTip(tr(
             "The browser keeps the map tiles of about one zoom level besides those on screen (otherwise "

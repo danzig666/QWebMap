@@ -18,7 +18,15 @@ from test_publishing_pipeline import _parcels, _profile  # noqa: E402  pylint: d
 EXTENT = QgsRectangle(2119000, 6019000, 2123000, 6023000)
 
 
-def _export(tmp_path, mode, below=13):
+def _image_px(release, source):
+    """Pixel width of the image tiles of a raster source."""
+    from qgis.PyQt.QtGui import QImage
+    with open_pmtiles(os.path.join(release, source["href"])) as archive:
+        widths = {QImage.fromData(data).width() for _key, data in archive.tiles()}
+    return widths
+
+
+def _export(tmp_path, mode, below=13, thin_hairlines=True):
     from publishing import mvt
     os.makedirs(tmp_path, exist_ok=True)
     project = reset_project()
@@ -26,6 +34,7 @@ def _export(tmp_path, mode, below=13):
     project.addMapLayer(parcels)
     profile = _profile(parcels, tmp_path)  # zooms 11-13, labelled parcels
     profile.layers[0].zoomed_out, profile.layers[0].zoomed_out_below = mode, below
+    profile.output.thin_hairlines = thin_hairlines
     result = export_local(project, profile, EXTENT)
     release = result.release.release_dir
     manifest = json.load(open(os.path.join(release, "manifest.json"), encoding="utf-8"))
@@ -47,6 +56,10 @@ def test_image_mode_draws_qgis_images_below_the_zoom(plugin, tmp_path):
     source = next(s for s in manifest["sources"] if s["id"] == image["sourceId"])
     assert source["role"] == "raster" and source["maxTileZoom"] == 12
     assert os.path.getsize(os.path.join(release, source["href"])) > 1000
+    # Thin hairlines (on by default): rendered at 2x, QGIS's one-pixel
+    # hairline half a CSS pixel as the thinned vector ones; shown as 256 px
+    # tiles either way.
+    assert _image_px(release, source) == {512} and source.get("tileSize", 256) == 256
     ids = [l["id"] for l in style["layers"]]
     raster = style["layers"][ids.index(image["styleLayerIds"][0])]
     assert raster["type"] == "raster" and raster["maxzoom"] == 13
@@ -98,3 +111,11 @@ def test_labels_starting_at_the_zoom_stay_on_the_fills(plugin, tmp_path):
     _, _, plain, _ = _export(tmp_path / "plain", "full")
     assert not any(name.endswith("_vp") for z in names for name in names[z])
     assert names == plain
+
+
+def test_image_tiles_follow_the_thin_hairlines_option(plugin, tmp_path):
+    """Off: QGIS's hairlines as they are, images at 1x."""
+    manifest, _style, _names, release = _export(tmp_path, "image", thin_hairlines=False)
+    image = next(c for c in manifest["components"] if c["role"] == "image")
+    source = next(s for s in manifest["sources"] if s["id"] == image["sourceId"])
+    assert _image_px(release, source) == {256}
