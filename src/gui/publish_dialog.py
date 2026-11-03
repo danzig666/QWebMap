@@ -238,6 +238,40 @@ class PublishDialog(QDialog):
         profile.output.local_directory = self._default_local_directory()
         return profile
 
+    def _moved_project_folder(self, current: str, saved_from: str, ask=None):
+        """The export folder after the project was saved as another file
+        (``saved_from``: the file the settings were saved in), or None to
+        keep ``current``. Asked only when the project's own ``web_maps``
+        folder moved too. ``ask(current, suggested)`` (tests): "keep",
+        "new" or a chosen folder."""
+        suggested = self._default_local_directory()
+        if not current or os.path.normcase(os.path.normpath(current)) == \
+                os.path.normcase(os.path.normpath(suggested)):
+            return None  # nothing to decide (already next to this project)
+        if ask is not None:
+            answer = ask(current, suggested)
+        else:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(tr("Project saved as another file"))
+            box.setText(tr("This project was saved as another file. All publication settings are kept; "
+                           "where should the web map be exported?"))
+            box.setInformativeText(tr("Now: {}\nNext to this project: {}").format(current, suggested))
+            keep = box.addButton(tr("Keep the folder"), QMessageBox.ButtonRole.RejectRole)
+            new = box.addButton(tr("Next to this project"), QMessageBox.ButtonRole.AcceptRole)
+            choose = box.addButton(tr("Choose a folder…"), QMessageBox.ButtonRole.ActionRole)
+            box.setDefaultButton(keep)
+            box.setEscapeButton(keep)
+            box.exec()
+            clicked = box.clickedButton()
+            answer = "new" if clicked is new else "keep"
+            if clicked is choose:
+                answer = QFileDialog.getExistingDirectory(
+                    self, tr("Export folder"), os.path.dirname(self.project.fileName())) or "keep"
+        if answer == "keep" or not answer:
+            return None
+        return suggested if answer == "new" else answer
+
     def _default_local_directory(self) -> str:
         """``web_maps`` next to the project file (or in the home folder)."""
         base = os.path.dirname(self.project.fileName()) or os.path.expanduser("~")
@@ -253,14 +287,12 @@ class PublishDialog(QDialog):
         profile, saved_from = found
         here = self.project.fileName()
         if saved_from and here and os.path.normcase(saved_from) != os.path.normcase(here):
-            answer = QMessageBox.question(
-                self, tr("Publication settings from another project file"),
-                tr("These publication settings were saved in another project file:\n{}\n\n"
-                   "Yes: keep updating the same web map (same address).\n"
-                   "No: create a new, separate web map from these settings.").format(saved_from),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if answer == QMessageBox.StandardButton.No:
-                profile = store.as_new_publication(profile)
+            # Saved under a new name or in another folder: every setting stays
+            # (the same web map); only the export folder may follow the project.
+            folder = self._moved_project_folder(profile.output.local_directory, saved_from)
+            if folder is not None:
+                profile.output.local_directory = folder
+            store.save_profile(self.project, profile)  # remembers this project file: asked once
         if not profile.output.local_directory:
             # Saved without a folder (e.g. a shared project): an empty one
             # would export into QGIS's working folder.
@@ -638,10 +670,13 @@ class PublishDialog(QDialog):
             return False
         self.status.setText("")
         dialog = ZoomLoadDialog(self, loads, factor, (profile.view.min_zoom, profile.view.max_zoom))
-        if not (accept(dialog) if accept is not None else dialog.exec()):
-            return False
-        self.apply_zoom_limits(dialog.chosen())
-        return True
+        accepted = accept(dialog) if accept is not None else dialog.exec()
+        if accepted:
+            self.apply_zoom_limits(dialog.chosen())
+        # Seen (and its limits applied or not): the export does not check
+        # this state again (_check_zoom_load_before_export).
+        self._zoom_load_handled = self._zoom_load_fingerprint()
+        return bool(accepted)
 
     # Before an export: a web map that will be slow zoomed out is pointed out
     # (with the Zoomed-out load suggestions), unless switched off.
@@ -651,6 +686,9 @@ class PublishDialog(QDialog):
         """False: the export is cancelled."""
         if str(QgsSettings().value(self.ZOOM_LOAD_CHECK_KEY, "true")).lower() in ("false", "0"):
             return True
+        current = self._zoom_load_fingerprint()
+        if current is not None and current == self._zoom_load_handled:
+            return True  # estimated and answered, nothing it reads changed since
         estimate = self._estimate_zoom_load()
         if estimate is None:
             return True  # cancelled or no extent: the export goes on (and says what is wrong)
@@ -666,6 +704,7 @@ class PublishDialog(QDialog):
         slow = [load for load in loads
                 if load.suggested_from is not None or load.suggested_labels_from is not None]
         if not slow:
+            self._zoom_load_handled = current
             return True
         answer, remind = self._ask_zoom_load(slow)
         if not remind:
@@ -673,7 +712,23 @@ class PublishDialog(QDialog):
         if answer == "faster":
             self.analyse_zoom_load(estimate=estimate)
             return True
+        if answer == "as-is":
+            self._zoom_load_handled = current
         return answer == "as-is"
+
+    # The last estimate ((fingerprint, estimate)) and the fingerprint of the
+    # state whose estimate was answered (zoom_load.fingerprint).
+    _zoom_load_cache = None
+    _zoom_load_handled = None
+
+    def _zoom_load_fingerprint(self):
+        """zoom_load.fingerprint of the window's settings now; None when it
+        cannot be made (no extent, a layer with unsaved edits)."""
+        from ..publishing import zoom_load  # pylint: disable=import-outside-toplevel
+        try:
+            return zoom_load.fingerprint(self.project, self.collect(), self._extent())
+        except Exception:  # noqa: BLE001 - then the estimate simply runs
+            return None
 
     def _large_rasters(self):
         """[(layer name, advice)] of the rendered raster layers with more
@@ -766,6 +821,10 @@ class PublishDialog(QDialog):
             self.status.setText(str(error))
             return None
         profile = self.collect()
+        current = self._zoom_load_fingerprint()
+        cached = self._zoom_load_cache
+        if current is not None and cached is not None and cached[0] == current:
+            return cached[1]  # nothing it reads changed: the same estimate
         self.status.setText(tr("Estimating the zoomed-out load…"))
         from qgis.PyQt.QtWidgets import QProgressDialog  # pylint: disable=import-outside-toplevel
         waiting = QProgressDialog(tr("Estimating the zoomed-out load…"), tr("Cancel"), 0, 1, self)
@@ -790,7 +849,9 @@ class PublishDialog(QDialog):
             self.status.setText(tr("Zoomed-out load: cancelled."))
             return None
         self.status.setText("")
-        return (profile,) + tuple(result)
+        estimate = (profile,) + tuple(result)
+        self._zoom_load_cache = (current, estimate) if current is not None else None
+        return estimate
 
     def apply_zoom_limits(self, chosen) -> int:
         """Set {layer id: (min scale or None, labels min scale or None)} in

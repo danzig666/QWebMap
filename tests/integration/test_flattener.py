@@ -1470,3 +1470,26 @@ def test_data_defined_map_unit_labels_hidden_where_too_small(flattener):
     assert small == pytest.approx(zm.scale_to_zoom(10 * 96 / 0.0254 / 6), abs=1e-6)
     assert small - large == pytest.approx(1, abs=1e-6)
     assert len(labels) <= 3
+
+
+@pytest.mark.parametrize("data_defined", [False, True])
+def test_a_transparent_fill_exports_only_its_outline(flattener, data_defined):
+    """A fill of a fully transparent colour draws nothing in QGIS (an
+    outline-only style): like "No brush", only its outline is exported, as
+    lines. As a polygon, one covering a large area put a full-tile polygon
+    into every tile inside it up to the last zoom (an Arctic map: hundreds of
+    millions of tiles). A data-defined fill colour keeps the fill."""
+    from qgis.core import (QgsFillSymbol, QgsProperty, QgsSimpleFillSymbolLayer,
+                           QgsSingleSymbolRenderer, QgsSymbolLayer)
+    from qgis.PyQt.QtCore import Qt
+    from qgis.PyQt.QtGui import QColor
+    layer = zoning_layer()
+    fill = QgsSimpleFillSymbolLayer(QColor(243, 87, 204, 0), Qt.BrushStyle.SolidPattern, QColor("black"))
+    if data_defined:
+        fill.setDataDefinedProperty(QgsSymbolLayer.Property.PropertyFillColor,
+                                    QgsProperty.fromExpression("'255,0,0,255'"))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol([fill])))
+    reset_project(layer)
+    rules, _ = flattener(14, 16)
+    kinds = sorted(r.get_attr("c") for r in rules if r.layer.id() == layer.id())
+    assert kinds == ([1, 2] if data_defined else [1])  # 1: line (the outline), 2: polygon fill

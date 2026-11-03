@@ -2243,3 +2243,32 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   archive headers and locales fetched concurrently (test_publishing_web_builder.py).
 * Bandit (upstream): export worker unpickler allow-list; `hashlib.sha1(usedforsecurity=False)`.
 * Not taken: data-defined *CentroidWhole*; GDAL-built base layers (fidelity loss); leaf prefetch.
+
+## 4.56.1 — hillshade crash; save-as keeps the settings; zoomed-out check once
+
+* `raster_tiles.opencl_off()` around `render_layer`: `core/OpenClEnabled` off while the tiles render,
+  restored afterwards (also on failure). QGIS's OpenCL `QgsHillshadeRenderer::block` copies row 1 of
+  a block one pixel high (null) and crashes; its program cache is shared by concurrent renders
+  (tests/integration/test_publishing_raster.py).
+* `PublishDialog._moved_project_folder`: a profile saved from another project file keeps its ids and
+  settings; only the export folder is asked (keep / `web_maps` next to the new file / chosen), not
+  when that folder is the same; the profile is saved with the new file at once
+  (tests/integration/test_publish_dialog.py).
+* `zoom_load.fingerprint` (extent, zooms, scale factor; per included vector layer: CRS, source,
+  filter, feature count, file mtime, QGIS scale range, style hash; the layer web settings; None with
+  unsaved edits): `_estimate_zoom_load` reuses an estimate of the same state, and
+  `_check_zoom_load_before_export` skips a state already answered (as-is, applied limits, or seen
+  with the button) (tests/integration/test_publish_scale_limits.py).
+* `RulesFlattener._transparent_fill`: a simple fill of alpha 0 (fill colour not data-defined) is
+  dropped like No brush; its outline stays (tests/integration/test_flattener.py).
+* `tiles_generator.long_line_zoom` / `grid_cut_lines` / `_long_line_jobs`: from the first zoom where a
+  line dataset's feature boxes cover > 200 000 tiles and > 4x the tiles its lines pass, it is tiled
+  one zoom at a time from a copy cut along the grid of zoom z-2 (GDAL's MVT writer intersects each
+  feature with every tile of its box); small-feature filtering moves to those copies
+  (tests/integration/test_export_speed.py: same line length and properties in every tile).
+* `raster_tiles.warped_copy`: a local GDAL raster in another CRS is warped once to EPSG:3857 (the
+  plan's lowest-zoom tiles cut to the image, at the highest zoom's pixel size; ZSTD level 1, all
+  cores) and rendered with the layer's style (exportNamedStyle / importNamedStyle); nearest or the
+  layer's resampling for non-paletted images; an alpha band (8-bit) or an unused nodata value keeps
+  the area around the image transparent; None (render as before) past 1.5 Gpx, without disk room or
+  a free value. Synthetic polar image to zoom 7: 29 s -> 11 s (tests/integration/test_publishing_raster.py).

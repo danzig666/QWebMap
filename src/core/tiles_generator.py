@@ -786,14 +786,34 @@ class GDALTilesGenerator:
             target = join(work, f"group_{number:04d}.mbtiles")
             vrt = join(work, f"group_{number:04d}.vrt")
             conf = join(work, f"group_{number:04d}.json")
+            # Of the datasets' whole zoom ranges (before the overrides below).
+            buffer, simplification = self._buffer(members), self._simplification(members)
+            long_lines = self._long_lines(members)
             cuts = self._small_cuts(members)
+            small = dict(cuts)  # their zooms from the long lines' first on: in the cut copies
+            for name, (first, _high) in long_lines.items():
+                if name in cuts:
+                    low, last, largest = cuts[name]
+                    if min(last, first - 1) >= low:
+                        cuts[name] = (low, min(last, first - 1), largest)
+                    else:
+                        del cuts[name]
+            plain = []
             for layer in members:
                 name = self._layer_name(layer)
-                if name in cuts:  # the unfiltered tiles: the zooms after the cut
-                    self._zoom_override[name] = (cuts[name][1] + 1, self._layer_zoom_range(layer)[1])
-            self._build_vrt(vrt, members)
-            self._write_layer_conf(conf, members)
-            groups.append((key, target, vrt, conf, members, owner, cuts))
+                low, high = self._layer_zoom_range(layer)
+                if name in small:  # the unfiltered tiles: the zooms after the cut
+                    low = small[name][1] + 1
+                if name in long_lines:  # whole lines below the first long zoom only
+                    high = long_lines[name][0] - 1
+                if (low, high) != self._layer_zoom_range(layer):
+                    self._zoom_override[name] = (low, high)
+                if low <= high:
+                    plain.append(layer)
+            self._build_vrt(vrt, plain)
+            self._write_layer_conf(conf, plain)
+            groups.append((key, target, vrt, conf, members, owner, cuts, plain, long_lines, small,
+                           buffer, simplification))
             parts.append(target)
         if self.feedback is not None and self.cache is not None:
             self.feedback.pushInfo(f"   Tiles: {len(parts) - len(groups)} of {len(parts)} layers "
@@ -801,14 +821,18 @@ class GDALTilesGenerator:
         # A layer's tiles in several pieces (bands of zoom levels) when it alone
         # would keep one core busy after the others are done.
         cpu = self._cpu_num()
-        target_cost = sum(self._job_cost(g[4]) for g in groups) / max(1, cpu) / 2
+        target_cost = sum(self._job_cost(g[7]) for g in groups) / max(1, cpu) / 2
         jobs = []  # (group index, piece file, command, cost, owner)
-        for index, (key, target, vrt, conf, members, owner, cuts) in enumerate(groups):
-            pieces = self._pieces(members, target_cost) if cpu > 1 else [(min_zoom, max_zoom, 0.0)]
-            buffer = self._buffer(members)
-            simplification = self._simplification(members)
+        for index, (key, target, vrt, conf, members, owner, cuts, plain, long_lines, small,
+                    buffer, simplification) in enumerate(groups):
             filtered = self._filtered_jobs(index, target, members, cuts, owner, buffer, simplification)
+            filtered += self._long_line_jobs(index, target, members, long_lines, small, owner,
+                                             buffer, simplification)
             jobs += filtered
+            if not plain:
+                continue  # every zoom of every dataset in the jobs above
+            members = plain
+            pieces = self._pieces(members, target_cost) if cpu > 1 else [(min_zoom, max_zoom, 0.0)]
             if filtered:  # merged with them: not the group's file itself
                 target = f"{target[:-8]}_all.mbtiles"
             if len(pieces) == 1:
@@ -842,7 +866,7 @@ class GDALTilesGenerator:
             self._run_parallel([job[2] for job in jobs], [job[3] for job in jobs], [job[4] for job in jobs])
             for index, (key, target, *_rest) in enumerate(groups):
                 pieces = [job for job in jobs if job[0] == index]
-                if len(pieces) > 1:  # a tile of one piece is copied as it is
+                if len(pieces) > 1 or (pieces and pieces[0][1] != target):  # one piece: as it is
                     self._check_cancelled()
                     merge_mbtiles([job[1] for job in pieces], target, min_zoom, max_zoom, workers=cpu)
             self._check_cancelled()
@@ -881,6 +905,80 @@ class GDALTilesGenerator:
                                             simplification=simplification)
             cost = sum(self._job_cost([m]) for m in part) / max(1, len(zooms))
             jobs.append((index, piece, command, cost, owner))
+        return jobs
+
+    def _long_lines(self, members: List[QgsVectorLayer]) -> Dict[str, Tuple[int, int]]:
+        """{dataset: (first zoom tiled from grid-cut copies, last zoom)} of
+        the line datasets whose features' boxes span far more tiles than the
+        lines pass (long_line_zoom)."""
+        out: Dict[str, Tuple[int, int]] = {}
+        for layer in members:
+            low, high = self._layer_zoom_range(layer)
+            source = layer.source().split("|layername=")[0]
+            try:
+                first = long_line_zoom(source, self._table_of(source), low, high)
+            except RuntimeError:  # unreadable (GDAL exceptions on): tiled as it is
+                first = None
+            if first is not None:
+                out[self._layer_name(layer)] = (first, high)
+        return out
+
+    def _long_line_jobs(self, index: int, target: str, members: List[QgsVectorLayer],
+                        long_lines: Dict[str, Tuple[int, int]],
+                        small: Dict[str, Tuple[int, int, float]], owner: str, buffer: int,
+                        simplification: float) -> list:
+        """Jobs (as _generate_per_layer's) making the tiles of the long line
+        datasets from their first long zoom on: one zoom each, from a copy
+        cut along the tile grid _LONG_LINE_GRID_UP zooms up (grid_cut_lines),
+        the features under ``min_feature_px`` left out where ``small`` says
+        so (as _filtered_jobs)."""
+        if not long_lines:
+            return []
+        jobs = []
+        by_name = {self._layer_name(m): m for m in members}
+        zooms = sorted({z for first, last in long_lines.values() for z in range(first, last + 1)})
+        for zoom in zooms:
+            names = [name for name, (first, last) in long_lines.items() if first <= zoom <= last]
+            piece = f"{target[:-8]}_l{zoom:02d}.mbtiles"
+            piece_vrt, piece_conf = piece[:-8] + ".vrt", piece[:-8] + ".json"
+            root = ET.Element("OGRVRTDataSource")
+            conf, cost = {}, 0.0
+            for number, name in enumerate(names):
+                source = by_name[name].source().split("|layername=")[0]
+                table = self._table_of(source)
+                cut = f"{piece[:-8]}_{number:02d}.gpkg"
+                limit = 0.0
+                if name in small and small[name][0] <= zoom <= small[name][1]:
+                    limit = self._min_size(zoom)
+                written = grid_cut_lines(source, table, cut, zoom, limit,
+                                         cancelled=lambda: self.feedback is not None
+                                         and self.feedback.isCanceled())
+                if not written:
+                    continue
+                node = ET.SubElement(root, "OGRVRTLayer", name=name)
+                ET.SubElement(node, "SrcDataSource").text = cut
+                if table and table != name:
+                    ET.SubElement(node, "SrcLayer").text = table
+                ET.SubElement(node, "LayerSRS").text = f"EPSG:{_EPSG_CRS}"
+                ET.SubElement(node, "GeometryType").text = "wkbUnknown"
+                conf[name] = {"minzoom": zoom, "maxzoom": zoom}
+                cost += os.path.getsize(cut) + _TILE_COST * written
+            if not conf:
+                continue
+            ET.ElementTree(root).write(piece_vrt, encoding="utf-8", xml_declaration=True)
+            with open(piece_conf, "w", encoding="utf-8") as handle:
+                json.dump(conf, handle)
+            # Simplified as the zoom is in the whole run: the datasets' last
+            # zoom less (SIMPLIFICATION_MAX_ZOOM), the others as below it.
+            last = all(long_lines[name][1] == zoom for name in conf)
+            command = self._ogr2ogr_command(
+                piece_vrt, piece, zoom, zoom, piece_conf,
+                top_simplification=_SIMPLIFICATION_MAX_ZOOM if last else simplification,
+                buffer=buffer, simplification=simplification)
+            jobs.append((index, piece, command, cost, owner))
+        if jobs and self.feedback is not None:
+            self.feedback.pushInfo("   Long lines tiled in pieces from zoom {}: {}".format(
+                min(first for first, _ in long_lines.values()), ", ".join(sorted(long_lines))))
         return jobs
 
     def _check_cancelled(self) -> None:
@@ -1114,6 +1212,143 @@ def _merged_tile(chunks: List[bytes]) -> bytes:
 
 def _quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
+
+
+# --- long lines -----------------------------------------------------------
+# GDAL's MVT writer cuts each feature at every tile of its bounding box at
+# every zoom (OGRMVTWriterDataset::PreGenerateForTile, a GEOS intersection
+# of the whole geometry each time): a long diagonal line (a sea route, the
+# outline of a large polygon) has hundreds of millions of zoom-16 tiles in
+# its box, nearly all empty. At those zooms the lines are tiled from a copy
+# cut along the tile grid two zooms up: each piece's box spans a few tiles.
+# The cuts are tile edges at the zoom tiled, where MapLibre clips each
+# tile's drawing anyway: the map looks the same.
+WORLD_HALF = 20037508.342789244
+# A zoom whose features' boxes cover this many tiles in all, and many
+# times the tiles the lines pass through, is tiled from the cut copy.
+_LONG_LINE_TILES = 200_000
+_LONG_LINE_WASTE = 4
+# The grid of the cut copy: this many zooms above the zoom tiled.
+_LONG_LINE_GRID_UP = 2
+
+
+def _tile_size(zoom: int) -> float:
+    return 2 * WORLD_HALF / (1 << zoom)
+
+
+def long_line_zoom(path: str, table: Optional[str], low: int, high: int) -> Optional[int]:
+    """The first zoom in [low, high] at which the line dataset ``path`` is
+    to be tiled from a grid-cut copy (see above), or None."""
+    source = ogr.Open(path)
+    if source is None:
+        return None
+    layer = source.GetLayerByName(table) if table else source.GetLayer(0)
+    if layer is None or ogr.GT_Flatten(layer.GetGeomType()) not in (
+            ogr.wkbLineString, ogr.wkbMultiLineString, ogr.wkbUnknown):
+        return None
+    layer.SetIgnoredFields([layer.GetLayerDefn().GetFieldDefn(i).GetName()
+                            for i in range(layer.GetLayerDefn().GetFieldCount())])
+    boxes, length = [], 0.0
+    for feature in layer:
+        geometry = feature.GetGeometryRef()
+        if geometry is None or ogr.GT_Flatten(geometry.GetGeometryType()) not in (
+                ogr.wkbLineString, ogr.wkbMultiLineString):
+            continue
+        min_x, max_x, min_y, max_y = geometry.GetEnvelope()
+        boxes.append((max_x - min_x, max_y - min_y))
+        length += geometry.Length()
+    if not boxes:
+        return None
+    for zoom in range(low, high + 1):
+        size = _tile_size(zoom)
+        in_boxes = sum((w / size + 2) * (h / size + 2) for w, h in boxes)
+        passed = length / size + 2 * len(boxes)
+        if in_boxes > _LONG_LINE_TILES and in_boxes > _LONG_LINE_WASTE * passed:
+            return zoom
+    return None
+
+
+def _cut_on_grid(points: List[Tuple[float, float]], size: float) -> List[List[Tuple[float, float]]]:
+    """A line (its vertices) cut where it crosses the grid of cells
+    ``size`` wide (from the Web Mercator origin): each piece in one cell."""
+    pieces, piece = [], [points[0]]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        dx, dy = x1 - x0, y1 - y0
+        crossings = set()
+        for start, delta in ((x0, dx), (y0, dy)):
+            if delta == 0:
+                continue
+            first = math.floor((min(start, start + delta) + WORLD_HALF) / size) + 1
+            last = math.ceil((max(start, start + delta) + WORLD_HALF) / size) - 1
+            for line in range(first, last + 1):
+                t = (line * size - WORLD_HALF - start) / delta
+                if 0 < t < 1:
+                    crossings.add(t)
+        for t in sorted(crossings):
+            point = (x0 + t * dx, y0 + t * dy)
+            piece.append(point)
+            pieces.append(piece)
+            piece = [point]
+        piece.append((x1, y1))
+    pieces.append(piece)
+    return [p for p in pieces if len(p) > 1 and any(q != p[0] for q in p[1:])]
+
+
+def grid_cut_lines(path: str, table: Optional[str], output: str, zoom: int,
+                   min_size: float = 0.0, cancelled=None) -> int:
+    """Write the lines of ``path`` cut along the tile grid
+    _LONG_LINE_GRID_UP zooms above ``zoom`` into the GeoPackage ``output``
+    (same table name, fields and values: one feature per piece). With
+    ``min_size`` (metres) features whose whole box is smaller are left out,
+    as the zoom's tiles leave them out (_filtered_jobs). Returns the
+    pieces written. ``cancelled()``: True stops (TilesGenerationCancelled)."""
+    size = _tile_size(max(0, zoom - _LONG_LINE_GRID_UP))
+    source = ogr.Open(path)
+    layer = source.GetLayerByName(table) if table else source.GetLayer(0)
+    definition = layer.GetLayerDefn()
+    driver = ogr.GetDriverByName("GPKG")
+    if os.path.exists(output):
+        driver.DeleteDataSource(output)
+    target = driver.CreateDataSource(output)
+    out = target.CreateLayer(table or layer.GetName(), layer.GetSpatialRef(), ogr.wkbLineString,
+                             ["SPATIAL_INDEX=NO"])
+    for index in range(definition.GetFieldCount()):
+        out.CreateField(definition.GetFieldDefn(index))
+    out_definition = out.GetLayerDefn()
+    written = 0
+    out.StartTransaction()
+    for count, feature in enumerate(layer):
+        if cancelled is not None and count % 2000 == 0 and cancelled():
+            out.RollbackTransaction()
+            target = None
+            raise TilesGenerationCancelled("Tile generation cancelled")
+        geometry = feature.GetGeometryRef()
+        if geometry is None:
+            continue
+        if min_size > 0:
+            min_x, max_x, min_y, max_y = geometry.GetEnvelope()
+            if max(max_x - min_x, max_y - min_y) < min_size:
+                continue
+        flat = ogr.GT_Flatten(geometry.GetGeometryType())
+        parts = [geometry] if flat == ogr.wkbLineString else \
+            [geometry.GetGeometryRef(i) for i in range(geometry.GetGeometryCount())] \
+            if flat == ogr.wkbMultiLineString else []
+        for part in parts:
+            points = [(x, y) for x, y, *_ in part.GetPoints() or []]
+            if len(points) < 2:
+                continue
+            for piece in _cut_on_grid(points, size):
+                line = ogr.Geometry(ogr.wkbLineString)
+                for x, y in piece:
+                    line.AddPoint_2D(x, y)
+                copy = ogr.Feature(out_definition)
+                copy.SetFrom(feature)  # every field, NULLs too
+                copy.SetGeometry(line)
+                out.CreateFeature(copy)
+                written += 1
+    out.CommitTransaction()
+    target = None
+    return written
 
 
 def merge_mbtiles(parts: List[str], output: str, min_zoom: int, max_zoom: int,

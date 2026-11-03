@@ -378,8 +378,9 @@ into a public, self-contained web map. The window title shows the plugin version
   has them: keep it private; never an SSH password) and
   imports them into another project, matching layers by name. The Google Street View key is a
   project setting and is visible in the published page, so restrict it in Google Cloud.
-- When the settings come from another project file, the window asks whether to keep updating the
-  same web map or start a new one. *Preset…* fills the settings from domain conventions (only in
+- When the project was saved as another file, all settings and the same web map are kept; the window
+  asks only where to export (keep the folder, `web_maps` next to the new file, or a chosen folder).
+  A separate web map: export the settings to a file and import them as a new web map. *Preset…* fills the settings from domain conventions (only in
   editions that ship presets).
 
 ### The web viewer
@@ -553,7 +554,14 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.56.0**. Newest first:
+This README describes QWebMap **4.56.1**. Newest first:
+
+**4.56.1** — no hillshade crash; exports that never finished; save-as keeps the settings; zoomed-out check runs once
+- A raster in another CRS is warped to Web Mercator once (GDAL) instead of for every tile: 2–3 times faster.
+- Outline-only polygons (a fully transparent fill) export only their outline; long lines are tiled from grid-cut pieces at the zooms where GDAL was very slow on them (tile generation stalled at about 80 %).
+- Raster tiles are rendered with QGIS's OpenCL off: its hillshade renderer could crash QGIS during the export.
+- A project saved as another file keeps every publication setting and the same web map; the window asks only where to export (keep the folder, `web_maps` next to the new file, or a chosen folder).
+- The zoomed-out check before an export is not run again while nothing it reads changed, and not asked again once answered.
 
 **4.56.0** — ideas from the original plugin: symbol buffers, label case and callouts, data-defined trims, offsets and arrows, faster start-up and export
 Ideas taken from recent versions of [GallPeters/QGIS2VectorTiles](https://github.com/GallPeters/QGIS2VectorTiles), reimplemented here:

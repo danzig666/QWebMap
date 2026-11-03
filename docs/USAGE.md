@@ -100,7 +100,7 @@ With several rows selected, a limit appears only if every row has the same value
 - A theme whose layers are not published shows nothing of them, so ticking a theme as a view publishes its layers. Untick them again afterwards if you do not want them.
 - Web-only scales add to the layer's own QGIS scale range; they cannot show a layer outside its QGIS range.
 - Zoomed-out load is an estimate from a sample of up to 2000 features per layer. It covers only published vector layers with features in the extent. If a "Labels from" zoom is not past the "Features from" zoom, it is dropped (the layer is hidden there anyway). A zoomed-out limit is not applied if it would conflict with an existing zoomed-in limit.
-- Before each export, the plugin checks the zoomed-out load. If some layers are heavy, it asks: **Make it faster…** opens the dialog and then exports, **Export as it is** exports unchanged, and Cancel stops. "Don't check this before exports (the Map tab's Zoomed-out load… button still does)" turns the check off for good (QGIS setting).
+- Before each export, the plugin checks the zoomed-out load. If some layers are heavy, it asks: **Make it faster…** opens the dialog and then exports, **Export as it is** exports unchanged, and Cancel stops. "Don't check this before exports (the Map tab's Zoomed-out load… button still does)" turns the check off for good (QGIS setting). Once you have answered it (or looked at the estimate with **Zoomed-out load…**), it is not checked again until something it reads changes: the extent, the zooms, a published vector layer's data, style or scales, or the web layer settings.
 - A raster layer of more than 400 000 tiles takes hours to export and makes a very large web map. There is no limit, but before the export a "Very large raster layer" warning names the layer, the setting that makes it large (its *Sharpest detail*, or the Map tab's *Maximum tile zoom* for "Like the map") and what brings it down: each coarser *Sharpest detail* step is about a quarter of the tiles, or a smaller extent. **Export anyway** goes on, Cancel stops. The count is an upper bound (every tile of the area at every zoom): 400 000 is roughly 15 × 15 km at zoom 20 (about 0.1 m detail), 30 × 30 km at zoom 19. A higher *Shown from zoom* barely helps: the sharpest zoom holds three quarters of the tiles.
 - If QGIS cannot write WebP, the tiles are written as PNG (larger) and a warning is shown.
 
@@ -563,7 +563,7 @@ With several rows selected, a limit appears only if every row has the same value
 **Pitfalls**
 
 - Settings live in the project: after Save settings, also save the project file.
-- If the project was saved elsewhere, the window asks: Yes = keep updating the same web map (same address), No = new separate map. Choose No for a copy, or both projects will overwrite one map.
+- If the project was saved under another name or in another folder, every setting is kept, and so is the web map (same address). The window asks only where to export: **Keep the folder**, **Next to this project** (its `web_maps` folder) or **Choose a folder…** (not asked when the new file is in the same folder). Both projects now publish one map: for a separate one, use *Settings file… › Export settings to a file…*, then *Import settings from a file…* and answer No (a new web map).
 - Invalid settings are not saved on Close; the last valid ones stay.
 - Opening another project closes the window; its settings are not saved into the new project.
 - During an export the tabs are locked and QGIS takes no input until it ends or you press Cancel.

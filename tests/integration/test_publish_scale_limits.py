@@ -347,3 +347,55 @@ def test_export_points_out_a_slow_zoomed_out_map(plugin, monkeypatch, tmp_path):
         dialog.close()
     finally:
         QgsSettings().remove(key)
+
+
+def test_an_answered_zoomed_out_check_is_not_run_again_until_something_changes(plugin, monkeypatch, tmp_path):
+    """The estimate before an export runs once: a cancelled export asks again
+    from the same estimate; once answered ("Export as it is", applied limits,
+    or seen with the Zoomed-out load… button) the next export does not check
+    again, until something the estimate reads changes (here the layer's
+    symbology, then the extent)."""
+    for name in ("warning", "information", "critical"):
+        monkeypatch.setattr(QMessageBox, name, lambda *a, **k: None)
+    from qgis.core import QgsFillSymbol, QgsSettings, QgsSingleSymbolRenderer
+    project = reset_project()
+    parcels = _parcels(str(tmp_path / "parcels.gpkg"))
+    project.addMapLayer(parcels)
+    from q2vt_plugin.src.gui import zoom_load_dialog  # pylint: disable=import-error
+    from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing import zoom_load  # pylint: disable=import-error
+    key = PublishDialog.ZOOM_LOAD_CHECK_KEY
+    QgsSettings().remove(key)
+    QgsSettings().remove(zoom_load_dialog.SPEED_KEY)
+    try:
+        dialog = PublishDialog(iface=None)
+        dialog.profile.view.extent = [EXTENT.xMinimum(), EXTENT.yMinimum(), EXTENT.xMaximum(), EXTENT.yMaximum()]
+        item = next(dialog._tree_items())  # pylint: disable=protected-access
+        item.setCheckState(1, Qt.CheckState.Checked)
+        load = zoom_load.LayerLoad(parcels.id(), parcels.name(), "polygon", 50000, 11,
+                                   tile_features={z: 50000 for z in range(11, 17)},
+                                   tile_bytes={z: 2_000_000 for z in range(11, 17)}, suggested_from=13)
+        runs, asked, answers = [], [], ["cancel", "as-is", "as-is"]
+        monkeypatch.setattr(zoom_load, "analyse", lambda *a: runs.append(1) or ([load], 1.1e8))
+        monkeypatch.setattr(dialog, "_confirm_extent", lambda: True)
+        monkeypatch.setattr(dialog, "save_settings", lambda: False)
+        monkeypatch.setattr(dialog, "_ask_zoom_load", lambda slow: (asked.append(1) or answers.pop(0), True))
+        check = dialog._check_zoom_load_before_export  # pylint: disable=protected-access
+        assert not check() and (len(runs), len(asked)) == (1, 1)  # cancelled
+        assert check() and (len(runs), len(asked)) == (1, 2)      # asked again, not estimated again
+        assert check() and (len(runs), len(asked)) == (1, 2)      # answered: not checked again
+        parcels.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple({"color": "red"})))
+        assert check() and (len(runs), len(asked)) == (2, 3)      # the symbology changed
+        assert check() and (len(runs), len(asked)) == (2, 3)
+        dialog.profile.view.extent = [EXTENT.xMinimum(), EXTENT.yMinimum(),
+                                      EXTENT.xMaximum() + 500, EXTENT.yMaximum()]
+        dialog._populate(dialog.profile)  # pylint: disable=protected-access
+        answers.append("as-is")
+        assert check() and len(runs) == 3                        # the extent changed
+        # Seen with the Zoomed-out load… button: the export does not ask.
+        parcels.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple({"color": "blue"})))
+        assert not dialog.analyse_zoom_load(lambda window: False) and len(runs) == 4
+        assert check() and (len(runs), len(asked)) == (4, 4)
+        dialog.close()
+    finally:
+        QgsSettings().remove(key)

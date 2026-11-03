@@ -646,3 +646,57 @@ def test_an_area_a_web_map_cannot_show(project, messages):
     w.dialog._use_canvas_extent()  # Map canvas  # pylint: disable=protected-access
     assert w.dialog.profile.view.extent == before and "web map" in w.dialog.status.text()
     w.dialog.close()
+
+
+def test_saving_the_project_as_another_file_keeps_the_settings_and_asks_only_the_folder(
+        project, messages, tmp_path, monkeypatch):
+    """A project saved under a new name or in another folder keeps every
+    publication setting and the same web map (ids, address); only the export
+    folder is asked: keep it, web_maps next to the new file, or a chosen
+    one. Renamed in the same folder (web_maps is the same): not asked."""
+    project, _ = project
+    from q2vt_plugin.src.gui import publication_profiles as store  # pylint: disable=import-error
+    from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error
+    first = _dialog()
+    first.e_title.setText("Arló szabályozási terv")
+    profile = first.collect()
+    first.close()
+    store.save_profile(project, profile)
+    ids = (profile.profile_id, profile.publication_id, profile.slug)
+    original = PublishDialog._moved_project_folder  # pylint: disable=protected-access
+    asked = []
+
+    def answering(answer):
+        def patched(self, current, saved_from, ask=None):
+            return original(self, current, saved_from,
+                            ask=lambda c, s: asked.append((c, s)) or answer)
+        monkeypatch.setattr(PublishDialog, "_moved_project_folder", patched)
+
+    def reopened(path, answer):
+        answering(answer)
+        project.setFileName(str(path))
+        dialog = _dialog()
+        result = dialog.profile
+        dialog.close()
+        return result
+
+    answering("keep")
+    renamed = reopened(tmp_path / "terv_v2.qgz", "keep")  # same folder: same web_maps
+    assert not asked and renamed.output.local_directory == str(tmp_path / "web_maps")
+    other = tmp_path / "masik"
+    other.mkdir()
+    kept = reopened(other / "terv.qgz", "keep")
+    assert asked == [(str(tmp_path / "web_maps"), str(other / "web_maps"))]
+    assert kept.output.local_directory == str(tmp_path / "web_maps")
+    assert (kept.profile_id, kept.publication_id, kept.slug) == ids and kept.title == "Arló szabályozási terv"
+    assert store.active_profile(project)[1] == str(other / "terv.qgz")  # asked once for this file
+    third = tmp_path / "harmadik"
+    third.mkdir()
+    moved = reopened(third / "terv.qgz", "new")
+    assert moved.output.local_directory == str(third / "web_maps")
+    assert (moved.profile_id, moved.publication_id) == ids[:2]
+    chosen = str(tmp_path / "sajat")
+    fourth = tmp_path / "negyedik"
+    fourth.mkdir()
+    picked = reopened(fourth / "terv.qgz", chosen)
+    assert picked.output.local_directory == chosen and picked.title == "Arló szabályozási terv"
