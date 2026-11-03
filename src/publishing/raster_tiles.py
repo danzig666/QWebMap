@@ -22,11 +22,12 @@ opacity slider multiplies that.
 
 import math
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsMapRendererParallelJob,
-                       QgsMapSettings, QgsRasterLayer, QgsRectangle)
+                       QgsMapSettings, QgsRasterLayer, QgsRectangle, QgsSettings)
 from qgis.PyQt.QtCore import QBuffer, QByteArray, QIODevice, QRect, QSize
 from qgis.PyQt.QtGui import QColor, QImage, QImageWriter, QPainter
 
@@ -314,9 +315,50 @@ def _transparent(image: QImage) -> bool:
     return not alpha.any()
 
 
+# QgsOpenClUtils::enabled() reads this setting on every raster block
+# (QgsSettings, section Core); the class itself is not in PyQGIS.
+OPENCL_SETTING = "core/OpenClEnabled"
+
+
+@contextmanager
+def opencl_off():
+    """OpenCL raster processing switched off for the renders inside
+    (QGIS's *Settings > Options > Acceleration*), restored afterwards.
+
+    QGIS's OpenCL hillshade (QgsHillshadeRenderer::block, QGIS 3.x and 4.x)
+    copies the block's second row before checking there is one: a block one
+    pixel high, as the many small reprojected tile renders of an export ask
+    for, reads a null row and crashes QGIS; its program cache is also shared
+    by renders running at once. The CPU path draws the same hillshade."""
+    settings = QgsSettings()
+    had = settings.contains(OPENCL_SETTING)
+    before = settings.value(OPENCL_SETTING, False)
+    on = str(before).lower() in ("1", "true")
+    if on:
+        settings.setValue(OPENCL_SETTING, False)
+    try:
+        yield
+    finally:
+        if on:
+            if had:
+                settings.setValue(OPENCL_SETTING, before)
+            else:
+                settings.remove(OPENCL_SETTING)
+
+
 def render_layer(project, layer, config: LayerConfig, plan: RasterPlan, output: str,
                  progress: Optional[Progress] = None, metatile: int = 8,
                  title: str = "", blend: str = "normal", threads: int = 1) -> Optional[ArchiveDescriptor]:
+    """_render_layer with OpenCL off (opencl_off: QGIS's OpenCL hillshade
+    crashes on the export's renders)."""
+    with opencl_off():
+        return _render_layer(project, layer, config, plan, output, progress, metatile,
+                             title, blend, threads)
+
+
+def _render_layer(project, layer, config: LayerConfig, plan: RasterPlan, output: str,
+                  progress: Optional[Progress] = None, metatile: int = 8,
+                  title: str = "", blend: str = "normal", threads: int = 1) -> Optional[ArchiveDescriptor]:
     """Render ``layer`` into ``output`` (PMTiles). Returns None when the layer
     draws nothing in the export extent. ``blend`` "multiply" / "screen":
     the tiles are converted to the equivalent normal image (blend_to_alpha);

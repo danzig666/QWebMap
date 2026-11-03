@@ -357,3 +357,49 @@ def test_tiled_online_layer_is_as_sharp_as_its_finest_tiles(tmp_path):
     assert raster_tiles._xyz_zmax_resolution(xyz) == pytest.approx(0.5971642834779395)  # pylint: disable=protected-access
     config.raster_match_native = False  # "like the map"
     assert raster_tiles.plan_layer(project, xyz, config, profile, EXTENT).max_zoom == 16
+
+
+def test_raster_tiles_are_rendered_with_opencl_off_and_it_is_restored(tmp_path, monkeypatch):
+    """QGIS's OpenCL hillshade crashes QGIS on a block one pixel high (it
+    copies a second row that is not there; QgsHillshadeRenderer::block), as
+    the export's small reprojected renders ask for: OpenCL is off while the
+    tiles render (QgsOpenClUtils reads core/OpenClEnabled on every block)
+    and back on afterwards, also when the render fails."""
+    from qgis.core import QgsHillshadeRenderer, QgsSettings
+    from q2vt_plugin.src.publishing import raster_tiles  # pylint: disable=import-error
+    project, profile, parcels, ortho = _project(tmp_path)
+    ortho.setRenderer(QgsHillshadeRenderer(ortho.dataProvider(), 1, 315, 45))
+    config = profile.layer(ortho.id())
+    settings = QgsSettings()
+    before = settings.value(raster_tiles.OPENCL_SETTING)
+    seen = []
+    original = raster_tiles._render_layer  # pylint: disable=protected-access
+
+    def spy(*args, **kwargs):
+        seen.append(QgsSettings().value(raster_tiles.OPENCL_SETTING, False))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(raster_tiles, "_render_layer", spy)
+    try:
+        settings.setValue(raster_tiles.OPENCL_SETTING, True)
+        plan = raster_tiles.plan_layer(project, ortho, config, profile, EXTENT)
+        out = str(tmp_path / "shade.pmtiles")
+        assert raster_tiles.render_layer(project, ortho, config, plan, out, metatile=2, threads=4)
+        assert str(seen[0]).lower() in ("0", "false")
+        assert str(settings.value(raster_tiles.OPENCL_SETTING)).lower() in ("1", "true")
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("render failed")
+        monkeypatch.setattr(raster_tiles, "_render_layer", fail)
+        with pytest.raises(RuntimeError):
+            raster_tiles.render_layer(project, ortho, config, plan, out)
+        assert str(settings.value(raster_tiles.OPENCL_SETTING)).lower() in ("1", "true")
+        settings.remove(raster_tiles.OPENCL_SETTING)  # off: nothing set, nothing written
+        with raster_tiles.opencl_off():
+            pass
+        assert not settings.contains(raster_tiles.OPENCL_SETTING)
+    finally:
+        if before is None:
+            settings.remove(raster_tiles.OPENCL_SETTING)
+        else:
+            settings.setValue(raster_tiles.OPENCL_SETTING, before)
