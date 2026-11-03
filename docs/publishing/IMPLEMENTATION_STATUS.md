@@ -2310,3 +2310,9 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   render the layer into an image archive drawn below the zoom at the layer's place, with an `image`
   component (switch, opacity; the viewer sets no filter on raster style layers)
   (test_zoomed_out_modes.py, tests/browser/test_web_viewer_features.py).
+
+## 4.57.1 — zoomed out: label hosting from the zoom on
+
+* `RulesExporter.unhosted_layers` is {layer id: zoom}; a layer's visible-polygon labels get a polygon copy
+  (`_vp`) only when they start below that zoom, else they ride in its fills as without the setting
+  (tests/integration/test_zoomed_out_modes.py).
