@@ -45,8 +45,19 @@ def searchable(combo: QComboBox) -> QComboBox:
     # A layer chosen in the list: the combo box selects that row itself (by
     # index; by its text it would be the first of two layers of one name).
 
+    # A drop-down that allows no layer ("(no terrain)"): emptied, it is none
+    # (a clear button empties it); it used to go back to the chosen layer.
+    allows_none = bool(getattr(combo, "allowEmptyLayer", lambda: False)())
+    if allows_none and combo.lineEdit() is not None:
+        combo.lineEdit().setClearButtonEnabled(True)
+
     def finished():
         text = combo.currentText()
+        if allows_none and not text.strip():
+            empty = next((i for i in range(combo.count()) if combo.layer(i) is None), -1)
+            if empty >= 0 and combo.currentIndex() != empty:
+                combo.setCurrentIndex(empty)
+            return
         if text == combo.itemText(combo.currentIndex()):
             return  # the chosen layer (two layers may share its name: findText finds the first)
         index = combo.findText(text, Qt.MatchFlag.MatchExactly)

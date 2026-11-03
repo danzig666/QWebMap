@@ -388,8 +388,14 @@ def warped_copy(layer, plan: RasterPlan, tile_px: int, path: str) -> Optional[Qg
     from osgeo import gdal  # pylint: disable=import-outside-toplevel
     if layer.providerType() != "gdal" or layer.crs().authid() == WEB_MERCATOR:
         return None
+    renderer = layer.renderer()
+    if renderer is None or renderer.type() in ("hillshade", "contour"):
+        # Drawn from the slope / the heights between neighbouring pixels, by
+        # their size in the layer's CRS: a Web Mercator copy (pixels about
+        # 1/cos(latitude) longer) would shade flatter, contour differently.
+        return None
     source = layer.source().split("|")[0]
-    if not os.path.isfile(source):
+    if not os.path.isfile(source) or not _curved_to_mercator(layer):
         return None
     try:
         dataset = gdal.Open(source)
@@ -453,6 +459,42 @@ def warped_copy(layer, plan: RasterPlan, tile_px: int, path: str) -> Optional[Qg
     if add_alpha and copy.renderer() is not None:
         copy.renderer().setAlphaBand(copy.bandCount())
     return copy
+
+
+# Warped once only where QGIS's per-tile reprojection is slow: the image's
+# way to Web Mercator is far from linear (a polar projection: tens of
+# percent; a national grid over a town: a millionth, where a copy at the
+# finest zoom took longer than it saved).
+_CURVED = 0.002
+
+
+def _curved_to_mercator(layer) -> bool:
+    """Whether the layer's extent, taken to Web Mercator, departs from the
+    best affine fit by more than _CURVED of its size."""
+    import numpy as np  # pylint: disable=import-outside-toplevel
+    from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsPointXY, QgsProject  # pylint: disable=import-outside-toplevel
+    box = layer.extent()
+    if box.isEmpty():
+        return False
+    transform = QgsCoordinateTransform(layer.crs(), QgsCoordinateReferenceSystem(WEB_MERCATOR),
+                                       QgsProject.instance())
+    source, target = [], []
+    for fx in np.linspace(0, 1, 7):
+        for fy in np.linspace(0, 1, 7):
+            x, y = box.xMinimum() + fx * box.width(), box.yMinimum() + fy * box.height()
+            try:
+                point = transform.transform(QgsPointXY(x, y))
+            except Exception:  # noqa: BLE001 - outside the CRS's area: curved enough
+                return True
+            if not (math.isfinite(point.x()) and math.isfinite(point.y())):
+                return True
+            source.append((x, y, 1.0))
+            target.append((point.x(), point.y()))
+    a, b = np.array(source), np.array(target)
+    fit, *_ = np.linalg.lstsq(a, b, rcond=None)
+    misfit = float(np.abs(a @ fit - b).max())
+    size = float(max(np.ptp(b[:, 0]), np.ptp(b[:, 1]), 1e-9))
+    return misfit / size > _CURVED
 
 
 def _unused_value(bands) -> Optional[float]:

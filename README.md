@@ -554,7 +554,12 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.56.1**. Newest first:
+This README describes QWebMap **4.56.2**. Newest first:
+
+**4.56.2** — terrain export about 10 times faster; the elevation layer can be removed; raster copies only where they help
+- The terrain's surroundings are filled once and passed up the zooms, and zoomed-out levels read a pyramid of the DEM: a 1 m town DEM 185 s → 16 s, heights inside it unchanged.
+- An emptied *Elevation layer (DEM)* box means no terrain (clear button); the same for other layer boxes that offer no layer.
+- A raster is warped to Web Mercator once only where the reprojection is strongly curved, never for a hillshade.
 
 **4.56.1** — no hillshade crash; exports that never finished; save-as keeps the settings; zoomed-out check runs once
 - A raster in another CRS is warped to Web Mercator once (GDAL) instead of for every tile: 2–3 times faster.

@@ -700,3 +700,30 @@ def test_saving_the_project_as_another_file_keeps_the_settings_and_asks_only_the
     fourth.mkdir()
     picked = reopened(fourth / "terv.qgz", chosen)
     assert picked.output.local_directory == chosen and picked.title == "Arló szabályozási terv"
+
+
+def test_an_emptied_layer_box_that_allows_none_means_no_layer(project, messages, tmp_path):
+    """The terrain's Elevation layer (DEM) could not be unset by deleting its
+    text: a searchable layer box put back the chosen layer whenever its text
+    named no layer. A box that offers no layer ("(no terrain)") now takes
+    an emptied text as none, and has a clear button."""
+    import sys
+    from qgis.core import QgsRasterLayer
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "browser"))
+    from test_web_viewer_extras import _dem  # pylint: disable=import-error
+    project, _ = project
+    dem = QgsRasterLayer(_dem(tmp_path / "dem.tif"), "Domborzat")
+    project.addMapLayer(dem)
+    dialog = _dialog()
+    box = dialog.t_layer
+    box.setLayer(dem)
+    assert dialog.collect().terrain.layer_id == dem.id()
+    assert box.lineEdit().isClearButtonEnabled()
+    box.lineEdit().clear()
+    box.lineEdit().editingFinished.emit()
+    assert box.currentLayer() is None and dialog.collect().terrain.layer_id == ""
+    box.setLayer(dem)
+    box.lineEdit().setText("no such layer")
+    box.lineEdit().editingFinished.emit()
+    assert box.currentLayer() is dem  # other text naming no layer is still undone
+    dialog.close()
