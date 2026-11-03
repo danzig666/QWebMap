@@ -22,6 +22,7 @@ opacity slider multiplies that.
 
 import math
 import os
+import shutil
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -352,8 +353,149 @@ def render_layer(project, layer, config: LayerConfig, plan: RasterPlan, output: 
     """_render_layer with OpenCL off (opencl_off: QGIS's OpenCL hillshade
     crashes on the export's renders)."""
     with opencl_off():
-        return _render_layer(project, layer, config, plan, output, progress, metatile,
-                             title, blend, threads)
+        warped = warped_copy(layer, plan, 512 if config.raster_hidpi else 256, output + ".warp.tif")
+        try:
+            return _render_layer(project, warped or layer, config, plan, output, progress, metatile,
+                                 title, blend, threads)
+        finally:
+            if warped is not None:
+                source = warped.source()
+                del warped
+                for path in (source, source + ".aux.xml"):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+
+
+# A copy warped once is used up to this many pixels (and while the disk has
+# room for it): beyond, the tiles are rendered from the layer itself.
+WARP_MAX_PIXELS = 1_500_000_000
+
+
+def warped_copy(layer, plan: RasterPlan, tile_px: int, path: str) -> Optional[QgsRasterLayer]:
+    """The layer's image warped once to Web Mercator (GDAL, all cores) as a
+    layer with the same style, or None to render from the layer itself.
+
+    QGIS reprojects a raster for every tile it renders (QgsRasterProjector,
+    pixel by pixel); a polar image tiled to zoom 7 took 27 s, from the copy
+    12 s with its warping. The copy covers the tiles of the plan's lowest
+    zoom (zoomed-out tiles show the image outside the export extent too) cut
+    to the image, at the resolution of the highest zoom's tile pixels.
+    Nearest neighbour, or the layer's own resampling for a continuous
+    (not paletted) image. An image without nodata gets an alpha band, so the
+    area around it stays transparent. Local GDAL files in another CRS only."""
+    from osgeo import gdal  # pylint: disable=import-outside-toplevel
+    if layer.providerType() != "gdal" or layer.crs().authid() == WEB_MERCATOR:
+        return None
+    source = layer.source().split("|")[0]
+    if not os.path.isfile(source):
+        return None
+    try:
+        dataset = gdal.Open(source)
+        if dataset is None:
+            return None
+        bands = [dataset.GetRasterBand(i + 1) for i in range(dataset.RasterCount)]
+        mercator = gdal.AutoCreateWarpedVRT(dataset, None, _mercator_wkt())
+        if mercator is None:
+            return None
+        gt = mercator.GetGeoTransform()
+        image = (gt[0], gt[3] + gt[5] * mercator.RasterYSize, gt[0] + gt[1] * mercator.RasterXSize, gt[3])
+        mercator = None
+        x0, y0, x1, y1 = tile_span(plan.extent_3857, plan.min_zoom)
+        size = 2 * ORIGIN / (1 << plan.min_zoom)
+        tiles = (-ORIGIN + x0 * size, ORIGIN - (y1 + 1) * size, -ORIGIN + (x1 + 1) * size, ORIGIN - y0 * size)
+        bounds = (max(image[0], tiles[0], -ORIGIN), max(image[1], tiles[1], -ORIGIN),
+                  min(image[2], tiles[2], ORIGIN), min(image[3], tiles[3], ORIGIN))
+        if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
+            return None
+        resolution = 2 * ORIGIN / (tile_px * (1 << plan.max_zoom))
+        pixels = (bounds[2] - bounds[0]) / resolution * (bounds[3] - bounds[1]) / resolution
+        bytes_per_pixel = sum(gdal.GetDataTypeSize(b.DataType) // 8 for b in bands) + 1
+        free = shutil.disk_usage(os.path.dirname(path) or ".").free
+        if pixels > WARP_MAX_PIXELS or pixels * bytes_per_pixel > free / 2:
+            return None
+        alpha = any(b.GetColorInterpretation() == gdal.GCI_AlphaBand for b in bands)
+        nodata = [b.GetNoDataValue() for b in bands]
+        add_alpha, fill = False, None
+        if not alpha and any(value is None for value in nodata):
+            # The area around the image must stay transparent: an alpha band
+            # for 8-bit images (QGIS reads alpha as 0-255), else a nodata
+            # value the image does not use.
+            if all(b.DataType == gdal.GDT_Byte for b in bands):
+                add_alpha = True
+            else:
+                fill = _unused_value(bands)
+                if fill is None:
+                    return None
+        options = dict(dstSRS=WEB_MERCATOR, xRes=resolution, yRes=resolution, outputBounds=bounds,
+                       targetAlignedPixels=True, resampleAlg=_warp_resampling(layer),
+                       creationOptions=["TILED=YES", "COMPRESS=ZSTD", "ZSTD_LEVEL=1",
+                                        "NUM_THREADS=ALL_CPUS", "BIGTIFF=IF_SAFER", "SPARSE_OK=YES"],
+                       warpOptions=["NUM_THREADS=ALL_CPUS"], multithread=True, warpMemoryLimit=512,
+                       dstAlpha=add_alpha)
+        if fill is not None:
+            options["dstNodata"] = fill
+        dataset = None
+        if os.path.exists(path):
+            os.remove(path)
+        if gdal.Warp(path, source, **options) is None:
+            return None
+    except (RuntimeError, OSError):  # GDAL (exceptions on), disk: from the layer itself
+        return None
+    from qgis.PyQt.QtXml import QDomDocument  # pylint: disable=import-outside-toplevel
+    copy = QgsRasterLayer(path, layer.name(), "gdal")
+    if not copy.isValid():
+        return None
+    document = QDomDocument()
+    layer.exportNamedStyle(document)
+    copy.importNamedStyle(document)
+    if add_alpha and copy.renderer() is not None:
+        copy.renderer().setAlphaBand(copy.bandCount())
+    return copy
+
+
+def _unused_value(bands) -> Optional[float]:
+    """A value outside every band's range that their data type holds (a
+    nodata value for the warped copy), or None."""
+    from osgeo import gdal  # pylint: disable=import-outside-toplevel
+    low = min(b.ComputeRasterMinMax(False)[0] for b in bands)
+    high = max(b.ComputeRasterMinMax(False)[1] for b in bands)
+    kind = bands[0].DataType
+    if any(b.DataType != kind for b in bands):
+        return None
+    if kind in (gdal.GDT_Float32, gdal.GDT_Float64):
+        return -3.4e38 if low > -3.4e38 else None
+    ranges = {gdal.GDT_UInt16: (0, 65535), gdal.GDT_Int16: (-32768, 32767),
+              gdal.GDT_UInt32: (0, 4294967295), gdal.GDT_Int32: (-2147483648, 2147483647)}
+    if kind not in ranges:
+        return None
+    first, last = ranges[kind]
+    if low > first:
+        return float(first)
+    if high < last:
+        return float(last)
+    return None
+
+
+def _mercator_wkt() -> str:
+    from osgeo import osr  # pylint: disable=import-outside-toplevel
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(3857)
+    return srs.ExportToWkt()
+
+
+def _warp_resampling(layer) -> str:
+    """gdalwarp resampling of the warped copy: nearest neighbour, or the
+    layer's zoomed-in resampling (bilinear / cubic) for an image that is not
+    paletted (QGIS resamples its colours; values in between are no class)."""
+    renderer = layer.renderer()
+    if renderer is None or renderer.type() in ("paletted", "singlebandcolordata"):
+        return "near"
+    resample = layer.resampleFilter()
+    method = resample.zoomedInResampler() if resample is not None else None
+    name = type(method).__name__.lower() if method is not None else ""
+    return "cubic" if "cubic" in name else "bilinear" if "bilinear" in name else "near"
 
 
 def _render_layer(project, layer, config: LayerConfig, plan: RasterPlan, output: str,

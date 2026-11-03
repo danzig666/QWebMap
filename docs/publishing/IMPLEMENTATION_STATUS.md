@@ -2266,3 +2266,9 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   one zoom at a time from a copy cut along the grid of zoom z-2 (GDAL's MVT writer intersects each
   feature with every tile of its box); small-feature filtering moves to those copies
   (tests/integration/test_export_speed.py: same line length and properties in every tile).
+* `raster_tiles.warped_copy`: a local GDAL raster in another CRS is warped once to EPSG:3857 (the
+  plan's lowest-zoom tiles cut to the image, at the highest zoom's pixel size; ZSTD level 1, all
+  cores) and rendered with the layer's style (exportNamedStyle / importNamedStyle); nearest or the
+  layer's resampling for non-paletted images; an alpha band (8-bit) or an unused nodata value keeps
+  the area around the image transparent; None (render as before) past 1.5 Gpx, without disk room or
+  a free value. Synthetic polar image to zoom 7: 29 s -> 11 s (tests/integration/test_publishing_raster.py).

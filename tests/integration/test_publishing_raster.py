@@ -403,3 +403,73 @@ def test_raster_tiles_are_rendered_with_opencl_off_and_it_is_restored(tmp_path, 
             settings.remove(raster_tiles.OPENCL_SETTING)
         else:
             settings.setValue(raster_tiles.OPENCL_SETTING, before)
+
+
+@pytest.mark.parametrize("kind", ["nodata", "int16", "rgb"])
+def test_a_reprojected_raster_is_warped_once_with_the_same_tiles(tmp_path, monkeypatch, kind):
+    """QGIS reprojects a raster for every tile; a polar image (EPSG:3413) is
+    warped once to Web Mercator instead (GDAL), with the layer's style: the
+    tiles are those rendered from the layer itself (but at the image's rim,
+    where QGIS's reprojection is approximate), the area around the image
+    stays transparent with or without nodata, and the copy is removed. An
+    image already in Web Mercator is rendered as it is."""
+    from io import BytesIO
+    from PIL import Image
+    from q2vt_plugin.src.publishing import raster_tiles  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.models import PublicationProfile  # pylint: disable=import-error
+    path = str(tmp_path / "polar.tif")
+    size = 600
+    rgb = kind == "rgb"
+    ds = gdal.GetDriverByName("GTiff").Create(path, size, size, 3 if rgb else 1,
+                                              gdal.GDT_Byte if rgb else gdal.GDT_Int16)
+    ds.SetGeoTransform([-1500000, 5000, 0, 1500000, 0, -5000])
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(3413)
+    ds.SetProjection(srs.ExportToWkt())
+    yy, xx = np.mgrid[0:size, 0:size]
+    if rgb:  # every byte value used: no nodata value would be free
+        for index, band in enumerate((xx % 256, yy % 256, (xx + yy) % 256), 1):
+            ds.GetRasterBand(index).WriteArray(band.astype(np.uint8))
+    else:
+        ds.GetRasterBand(1).WriteArray((xx * 3 + yy * 2).astype(np.int16) % 1000 + 1)
+    if kind == "nodata":
+        ds.GetRasterBand(1).SetNoDataValue(-32768)
+    ds = None
+    project = reset_project()
+    layer = QgsRasterLayer(path, "Polar")
+    assert layer.isValid()
+    project.addMapLayer(layer)
+    profile = PublicationProfile(title="t", slug="t")
+    profile.view.min_zoom, profile.view.max_zoom = 0, 16
+    config = LayerConfig(layer.id(), raster_format="png", raster_match_native=True)
+    extent = QgsRectangle(-8000000, 9000000, 3000000, 20037508)
+    original, used = raster_tiles.warped_copy, []
+
+    def tiles(label, warp):
+        monkeypatch.setattr(raster_tiles, "warped_copy",
+                            (lambda *a: used.append(original(*a)) or used[-1]) if warp else (lambda *a: None))
+        plan = raster_tiles.plan_layer(project, layer, config, profile, extent)
+        out = str(tmp_path / f"{label}.pmtiles")
+        raster_tiles.render_layer(project, layer, config, plan, out, threads=2)
+        with open_pmtiles(out) as archive:
+            return plan, {tuple(a): np.asarray(Image.open(BytesIO(d)).convert("RGBA")).astype(int)
+                          for a, d in archive.tiles()}
+
+    plan, plain = tiles("plain", False)
+    _, warped = tiles("warped", True)
+    assert used and used[0] is not None and plan.max_zoom >= 4
+    assert not [name for name in os.listdir(tmp_path) if ".warp.tif" in name]  # removed
+    common = set(plain) & set(warped)
+    assert len(common) >= 0.98 * len(plain)
+    for address in common:
+        if address[0] < 3:
+            continue
+        a, b = (np.concatenate([t[..., :3] * t[..., 3:] // 255, t[..., 3:]], axis=2)  # premultiplied
+                for t in (plain[address], warped[address]))
+        assert (np.abs(a - b).max(axis=2) > 24).mean() < 0.02, address
+    # Outside the image: transparent in both (no black frame without nodata).
+    corner = max(common, key=lambda k: (k[0], k[2]))  # a low row of the deepest zoom
+    assert warped[corner][..., 3].min() == plain[corner][..., 3].min()
+    # Web Mercator: nothing to warp.
+    flat = QgsRasterLayer(make_raster(tmp_path / "flat.tif"), "Flat")
+    assert raster_tiles.warped_copy(flat, plan, 256, str(tmp_path / "x.tif")) is None
