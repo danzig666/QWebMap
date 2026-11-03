@@ -554,7 +554,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.1**. Newest first:
+This README describes QWebMap **4.58.2**. Newest first:
+
+**4.58.2** — zoomed-out images at 2x with Thin hairlines
+- A layer drawn as images zoomed out is rendered at twice the resolution when *Thin hairlines* is on: hairlines as thin as the vector ones, sharp on high-resolution screens.
 
 **4.58.1** — Zoomed-out load suggests Merged only where merging keeps the look
 - Plain fills of up to 64 styles: Merged; outlines, special fills, data-defined styling, effects or more styles: Image (the tooltip says why).
