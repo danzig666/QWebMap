@@ -2349,3 +2349,13 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   at the screen / reach edge → decoded geometry. Over point / centroid only. Parallel arrays instead of an
   object per polygon; `clipRing` copies a ring wholly inside; updates while moving wait 2x the last one
   (tests/browser/test_visible_labels.py).
+
+## 4.58.4 — visible labels: the other placements
+
+* The per-tile cache (`state.tiles`) for every placement and lines (decoded geometry; `touches` for boxes
+  without height; repeated keys in a tile apart); whole polygons of Horizontal / Free / Around reuse
+  `remember`ed values per zoom: `polygonSpot(..., memo)` ranked candidates (the best free one without the
+  roomiest-point search), Free angles, Around centroid and candidates, label boxes, in-advance points.
+* A polygon inside one placed label box (grown by its label, deeper than the margins) is skipped before the
+  search (exact); `boxIndex.query` stamps items instead of a Set per query.
+* Checked equal to 4.58.3 on 540 random layouts (tests/browser/test_visible_labels.py has the cache tests).
