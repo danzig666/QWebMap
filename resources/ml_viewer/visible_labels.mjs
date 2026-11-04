@@ -333,11 +333,15 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   const states = new Map(); // polygon source layer -> label positions kept
   const written = new Map(); // polygon source layer -> Map(id -> [x, y, properties json])
   const latest = new Map(); // polygon source layer -> features last written
+  let took = 0;  // how long the last update took (ms)
   const update = () => {
     if (pending) clearTimeout(pending);
     pending = null;
     if (paused || unsupported) return;
     last = performance.now();
+    try { run(); } finally { took = performance.now() - last; }
+  };
+  const run = () => {
     // Final once the map stands still with its tiles loaded.
     if (!map.isMoving() && map.isSourceLoaded(sourceId)) dirty = false;
     const view = viewRect(map, maplibregl);
@@ -379,7 +383,7 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
         // Moving, or tiles still arriving (the visible part is not complete):
         // placed labels stay; the final position once everything is there.
         freeze: map.isMoving() || !map.isSourceLoaded(sourceId),
-        labelBox: labelBoxes(map, group, zoom, perPx, fonts),
+        labelBox: labelBoxes(map, group, zoom, perPx, fonts), boxKey: `${zoom}|${perPx}`,
         minScale: options.minTextPx > 0 ? minTextScale(activeLayer(group, zoom).layout || {}, zoom, options.minTextPx)
           : null,
         // Line, "around point" and "pole" labels keep clear of the point
@@ -447,10 +451,14 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
   // a second): labels are placed again only when something they depend on
   // changed since the last final placement (moves, tiles, toggles).
   let dirty = true;
+  // While tiles arrive or the map moves, an update waits at least twice as
+  // long as the last one took: a heavy map (100 000 parcels zoomed out, most
+  // of a second an update) still draws its frames in between.
   const throttled = (interval) => () => {
     dirty = true;
     if (pending || paused || unsupported) return;
-    pending = setTimeout(update, Math.max(0, last + interval - performance.now()));
+    const wait = interval ? Math.max(interval, 2 * took) : 0;
+    pending = setTimeout(update, Math.max(0, last + wait - performance.now()));
   };
   const schedule = throttled(0);
   const onTile = throttled(TILE_INTERVAL_MS);
@@ -562,31 +570,131 @@ export function labelPoints(features, view, maplibregl, options = {}) {
   const loaded = new Set(); // deepest tiles with data
   let byFeature = new Map();
   const excluded = new Set();
+  // A polygon wholly inside its tile and wholly on the screen, or wholly
+  // off it (labelled in advance), gets its label at its centroid: computed
+  // once per tile (tiles do not change) and cached, so an update reads no
+  // geometry for it - only the polygons cut by the screen's or a tile's edge
+  // are clipped and searched. For the placements whose point is that
+  // centroid (QGIS Over point / centroid; not Free, pole, around, "always").
+  const fastOk = options.kind !== "line" && !options.around && !options.always && options.anchor !== "pole"
+    && options.orient !== "free";
+  const cache = state.tiles || (state.tiles = new Map());  // tile -> Map(piece -> info or null)
+  const seenTiles = new Set();
+  // The pieces in parallel arrays (no object per polygon and update: a
+  // zoomed-out parcel map has 100 000 of them, several times a second).
+  const pf = [], pkey = [], ppart = [], ppiece = [], pinfo = [], pworld = [], pctx = [];
+  const pieceCount = new Map();
+  const partOfKey = new Map();  // key -> its one part, or MANY_PARTS
+  let ctx = null;  // the current tile's: origin, scale, rectangle, clip, cache
   for (const f of features) {
     if (f._z !== deepest || !f._vectorTileFeature) continue;
-    loaded.add(`${f._x}/${f._y}`);
-    if (options.eligible && !options.eligible(f.properties, f.q2vtSourceLayer || f.sourceLayer)) {
-      excluded.add(String(f.properties.q2vt_orig_id ?? f.id ?? JSON.stringify(f.properties)));
+    const sourceLayer = f.q2vtSourceLayer || f.sourceLayer || "";
+    if (!ctx || ctx.x !== f._x || ctx.y !== f._y || ctx.z !== f._z || ctx.layer !== sourceLayer) {
+      const tile = f._vectorTileFeature;
+      const ox = f._x / 2 ** f._z, oy = f._y / 2 ** f._z;
+      const tileRect = [ox, oy, ox + 1 / 2 ** f._z, oy + 1 / 2 ** f._z];
+      const tileKey = `${sourceLayer}|${f._z}/${f._x}/${f._y}`;
+      let cached = null;
+      if (fastOk) {
+        seenTiles.add(tileKey);
+        cached = cache.get(tileKey);
+        if (!cached) cache.set(tileKey, (cached = new Map()));
+      }
+      ctx = { x: f._x, y: f._y, z: f._z, layer: sourceLayer, ox, oy, tileRect, clip: intersect(reach, tileRect),
+              scale: 1 / (tile.extent * 2 ** f._z),
+              unit: 1 / (tile.extent * 2 ** Math.min(f._z, options.tileZoom ?? f._z)), cached };
+      loaded.add(`${f._x}/${f._y}`);
+      dataUnit = Math.max(dataUnit, ctx.scale);
+      tileUnit = Math.max(tileUnit, ctx.unit);
+    }
+    const properties = f.properties;
+    if (options.eligible && !options.eligible(properties, sourceLayer || undefined)) {
+      excluded.add(String(properties.q2vt_orig_id ?? f.id ?? JSON.stringify(properties)));
       continue;
     }
-    const key = String(f.properties.q2vt_orig_id ?? f.id ?? JSON.stringify(f.properties));
-    const tile = f._vectorTileFeature;
-    const scale = 1 / (tile.extent * 2 ** f._z);
-    dataUnit = Math.max(dataUnit, scale);
-    tileUnit = Math.max(tileUnit, 1 / (tile.extent * 2 ** Math.min(f._z, options.tileZoom ?? f._z)));
-    const ox = f._x / 2 ** f._z, oy = f._y / 2 ** f._z;
-    const clip = intersect(reach, [ox, oy, ox + 1 / 2 ** f._z, oy + 1 / 2 ** f._z]);
-    if (!clip) continue;
-    const rings = [];
-    const tileRect = [ox, oy, ox + 1 / 2 ** f._z, oy + 1 / 2 ** f._z];
+    if (!ctx.clip) continue;
+    const key = String(properties.q2vt_orig_id ?? f.id ?? JSON.stringify(properties));
+    const part = properties.q2vt_part === undefined || properties.q2vt_part === null ? "" : String(properties.q2vt_part);
+    const piece = part ? key + PART_SEPARATOR + part : key;
+    let info = null;
+    let world = null;
+    if (fastOk) {
+      info = ctx.cached.get(piece);
+      if (info === undefined) {
+        const { ox, oy, scale, tileRect } = ctx;
+        world = f._vectorTileFeature.loadGeometry().map((ring) => ring.map((p) => [ox + p.x * scale, oy + p.y * scale]));
+        const raw = bounds(world);
+        const inTile = raw[0] >= tileRect[0] && raw[1] >= tileRect[1] && raw[2] <= tileRect[2] && raw[3] <= tileRect[3];
+        // Wholly in the tile's buffer (a neighbour's polygon): never anything here.
+        if (!intersect(raw, tileRect)) info = OUTSIDE_TILE;
+        else if (inTile) {
+          info = world.some((ring) => ring.length >= 3)
+            // The tile's own properties (the copy MapLibre's worker needs is
+            // made when the points are written): no copy per cached polygon.
+            ? { extent: raw, area: ringsArea(world), point: labelPoint(world, options.forceInside !== false),
+                properties } : null;
+        } else {
+          // Across the tile's edge: its piece cut to the tile, used as it is
+          // while the whole polygon is in the reach (cut to it otherwise).
+          const rings = [];
+          let extent = null;
+          for (const ring of world) {
+            extent = union(extent, intersect(bounds([ring]), tileRect));
+            const clipped = clipRing(ring, tileRect);
+            clipped.cut = tileRect;
+            if (clipped.length >= 3) rings.push(clipped);
+          }
+          info = rings.length && extent ? { straddle: true, raw, extent, rings } : OUTSIDE_TILE;
+        }
+        ctx.cached.set(piece, info);
+      }
+      if (info === OUTSIDE_TILE) continue;
+      // Wholly in its tile and outside the reach: nothing to label.
+      if (info && !intersect(info.extent, reach)) continue;
+    }
+    pf.push(f); pkey.push(key); ppart.push(part); ppiece.push(piece); pinfo.push(info); pworld.push(world);
+    pctx.push(ctx);
+    pieceCount.set(piece, (pieceCount.get(piece) || 0) + 1);
+    const known = partOfKey.get(key);
+    if (known === undefined) partOfKey.set(key, part);
+    else if (known !== part) partOfKey.set(key, MANY_PARTS);
+  }
+  if (fastOk) for (const tileKey of cache.keys()) if (!seenTiles.has(tileKey)) cache.delete(tileKey);
+  const wholly = (box, rect) => box[0] >= rect[0] - 1e-12 && box[1] >= rect[1] - 1e-12
+    && box[2] <= rect[2] + 1e-12 && box[3] <= rect[3] + 1e-12;
+  const fastOrdered = [];  // [key, entry, area, orig] of the cached pieces, reused across updates
+  for (let i = 0; i < pf.length; i++) {
+    const f = pf[i], key = pkey[i], part = ppart[i], info = pinfo[i];
+    if (info && !info.straddle && pieceCount.get(ppiece[i]) === 1 && (options.perPart || partOfKey.get(key) !== MANY_PARTS)
+        && wholly(info.extent, reach) && (wholly(info.extent, view) || !intersect(info.extent, view))) {
+      info.entry ??= { properties: info.properties, rings: [], extent: info.extent, fast: info };
+      const entryKey = options.perPart && partOfKey.get(key) === MANY_PARTS ? `${key}#${part}` : key;
+      if (!info.ordered || info.ordered[0] !== entryKey) info.ordered = [entryKey, info.entry, info.area, key];
+      fastOrdered.push(info.ordered);
+      continue;
+    }
+    // The parts of a multi-part feature (q2vt_part) stay apart; the pieces
+    // of one part in several tiles are joined. A plain copy of the
+    // properties: tile feature properties have no prototype, which
+    // MapLibre's worker serializer rejects ("_classRegistryKey").
+    const { ox, oy, scale, tileRect, clip } = pctx[i];
+    let rings = [];
     let extent = null;  // of the piece in its own tile (not cut to reach)
-    for (const ring of tile.loadGeometry()) {
-      const world = ring.map((p) => [ox + p.x * scale, oy + p.y * scale]);
+    const reuse = info && info.straddle && wholly(info.raw, reach);
+    if (reuse) [rings, extent] = [info.rings.slice(), info.extent];
+    // A polygon at the screen's or the reach's edge: its geometry decoded
+    // once (kept with its cached piece), cut to the view every update.
+    let decoded = pworld[i] || (info && info.world);
+    if (!reuse && !decoded) {
+      decoded = f._vectorTileFeature.loadGeometry().map((ring) => ring.map((p) => [ox + p.x * scale, oy + p.y * scale]));
+      if (info && !info.straddle) info.world = decoded;
+    }
+    for (const world of reuse ? [] : decoded) {
       extent = union(extent, intersect(bounds([world]), tileRect));
       if (options.kind === "line") {  // polylines, cut to the tile
-        const pieces = clipLine(world, clip);
-        for (const piece of pieces) piece.clip = clip;  // ends on it are cuts, not line ends
-        rings.push(...pieces);
+        const cutLines = clipLine(world, clip);
+        for (const line of cutLines) line.clip = clip;  // ends on it are cuts, not line ends
+        rings.push(...cutLines);
         continue;
       }
       const clipped = clipRing(world, clip);
@@ -594,13 +702,8 @@ export function labelPoints(features, view, maplibregl, options = {}) {
       if (clipped.length >= 3) rings.push(clipped);
     }
     if (!rings.length) continue;
-    // The parts of a multi-part feature (q2vt_part) stay apart; the pieces
-    // of one part in several tiles are joined. A plain copy of the
-    // properties: tile feature properties have no prototype, which
-    // MapLibre's worker serializer rejects ("_classRegistryKey").
     if (!byFeature.has(key)) byFeature.set(key, new Map());
     const parts = byFeature.get(key);
-    const part = String(f.properties.q2vt_part ?? "");
     if (!parts.has(part)) parts.set(part, { properties: { ...f.properties }, rings: [], extent: null });
     const entry = parts.get(part);
     entry.rings.push(...rings);
@@ -632,9 +735,28 @@ export function labelPoints(features, view, maplibregl, options = {}) {
   // The same boxes in a grid: each polygon looks up only those near it (a
   // scan of all of them per polygon grew with the square of the labels).
   const avoidIndex = boxIndex(avoid.map((bounds) => ({ bounds })), view);
+  // Labels in advance (off the screen) keep clear of each other as they
+  // will on it ("Never overlap"): only those that can show are written - a
+  // zoomed-out parcel map otherwise wrote a point for nearly every polygon
+  // around the screen (26 000 of which about 500 were shown), each laid out
+  // by MapLibre. Their own index (the reach, not the screen); the labels on
+  // the screen do not keep clear of them (they did not before), the labels in
+  // advance of every label placed.
+  const advanceIndex = boxIndex([], reach);
+  const advanceSlack = 2 * LABEL_MARGIN_PX * (options.precision || 0);
+  const advanceFree = (box) => {
+    if (overlap !== "never" || options.always) return true;
+    for (const { bounds: other } of advanceIndex.query(box)) {
+      const dx = Math.min(box[2], other[2]) - Math.max(box[0], other[0]);
+      const dy = Math.min(box[3], other[3]) - Math.max(box[1], other[1]);
+      if (dx > advanceSlack && dy > advanceSlack) return false;
+    }
+    return true;
+  };
   const keepClear = (box) => {
     avoid.push(box);
     avoidIndex.add({ bounds: box });
+    advanceIndex.add({ bounds: box });
   };
   const boxes = [];
   // Bigger polygons first: they get the middle, smaller neighbours keep clear.
@@ -667,8 +789,9 @@ export function labelPoints(features, view, maplibregl, options = {}) {
   // While the map moves (freeze) the labels already shown go first: they
   // stay, and newcomers keep clear of them.
   const frozen = (key) => (options.freeze && state.points.has(key) ? 1 : 0);
-  const ordered = entries.map(([key, value, orig]) => [key, value, area(value.rings), orig])
-    .sort((a, b) => frozen(b[0]) - frozen(a[0]) || b[2] - a[2]);
+  const ordered = entries.map(([key, value, orig]) => [key, value, area(value.rings), orig]);
+  for (const entry of fastOrdered) ordered.push(entry);
+  ordered.sort(options.freeze ? (a, b) => frozen(b[0]) - frozen(a[0]) || b[2] - a[2] : (a, b) => b[2] - a[2]);
   // "Outside polygons": the layer's other polygons are obstacles (QGIS
   // default): a label beside one polygon keeps off its neighbours if it can.
   const obstacles = options.around && options.around.outside
@@ -679,7 +802,7 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     if (part.includes(PART_SEPARATOR)) partsOf.set(baseKey(part), [...(partsOf.get(baseKey(part)) || []), part]);
   }
   const lineOptions = { ...options, tileUnit };
-  for (let [key, { properties, rings: loaded, extent }, , orig] of ordered) {
+  for (let [key, { properties, rings: loaded, extent, fast }, , orig] of ordered) {
     const old = state.points.get(key);
     // A kept point, or the new spot ``p`` when the kept one is only that
     // spot computed from coarser tiles (a small polygon labelled zoomed out).
@@ -739,6 +862,47 @@ export function labelPoints(features, view, maplibregl, options = {}) {
       }
       continue;
     }
+    if (fast) {
+      // Wholly on the screen or wholly off it: at its cached centroid.
+      const target = fast.point;
+      if (!target) continue;
+      // Its box at this zoom and scale: measured once while panning.
+      let half = null;
+      if (options.labelBox) {
+        if (options.boxKey !== undefined && fast.boxKey === options.boxKey) half = fast.half;
+        else {
+          half = options.labelBox(properties);
+          if (options.boxKey !== undefined) [fast.boxKey, fast.half] = [options.boxKey, half];
+        }
+      }
+      const box = half ? [target[0] - half[0], target[1] - half[1], target[0] + half[0], target[1] + half[1]] : null;
+      if (!intersect(extent, view)) {  // in advance, away from the screen edge
+        if (within(guarded, target)) continue;
+        if (box) {
+          if (!advanceFree(box)) continue;
+          advanceIndex.add({ bounds: box });
+        }
+        points.set(key, { point: target, properties, orig, unit: dataUnit, prec: 0 });
+        continue;
+      }
+      // Over point (QGIS): its one candidate, on the screen, dropped where it
+      // would overlap a label placed before it ("Never overlap").
+      if (box && (box[0] < view[0] || box[1] < view[1] || box[2] > view[2] || box[3] > view[3])) continue;
+      if (box && overlap === "never" && avoid.length) {
+        const slack = 2 * LABEL_MARGIN_PX * (options.precision || 0);
+        let blocked = false;
+        for (const { bounds: other } of avoidIndex.query(box)) {
+          if (rectDistance(target[0], target[1], grow(other, half[0], half[1])) < -slack) { blocked = true; break; }
+        }
+        if (blocked) continue;
+      }
+      if (box) {
+        boxes.push(box);
+        keepClear(box);
+      }
+      points.set(key, { point: target, properties, orig, unit: dataUnit, prec: 0 });
+      continue;
+    }
     const rings = reach === view ? loaded : loaded.map((ring) => {
       const clipped = clipRing(ring, view);
       clipped.cut = ring.cut;
@@ -758,6 +922,14 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         const bare = box && box.map((h) => Math.max(h - LABEL_MARGIN_PX * (options.precision || 0), h / 2));
         const turned = bare ? { ...properties, [options.rotationField]: freeAngle(loaded, bare) * 180 / Math.PI }
           : properties;
+        const half = options.labelBox ? options.labelBox(turned) : null;
+        if (half) {
+          const angle = (Number(options.rotationField && turned[options.rotationField]) || 0) * Math.PI / 180;
+          const [hx, hy] = envelope(half, angle);
+          const box = [point[0] - hx, point[1] - hy, point[0] + hx, point[1] + hy];
+          if (!advanceFree(box)) continue;
+          advanceIndex.add({ bounds: box });  // not keepClear: the screen's labels ignore it
+        }
         points.set(key, { point, properties: turned, orig, unit: dataUnit, prec: pole ? options.precision : 0 });
       }
       continue;
@@ -2843,8 +3015,27 @@ function union(a, b) {
   return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
 }
 
+// A cached piece wholly in its tile's buffer (labelPoints).
+const OUTSIDE_TILE = Object.freeze({ outside: true });
+const MANY_PARTS = Symbol("many parts");
+
+// The area of rings (shoelace; holes are rings of their own).
+function ringsArea(rings) {
+  return Math.abs(rings.reduce((sum, ring) => sum + ring.reduce((a, [x1, y1], i) => {
+    const [x2, y2] = ring[(i + 1) % ring.length];
+    return a + x1 * y2 - x2 * y1;
+  }, 0), 0));
+}
+
 // Sutherland–Hodgman against an axis-aligned rectangle.
 function clipRing(ring, [x0, y0, x1, y1]) {
+  // Wholly inside (most polygons on the screen): a copy, no four passes.
+  let whole = true;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    if (p[0] < x0 || p[0] > x1 || p[1] < y0 || p[1] > y1) { whole = false; break; }
+  }
+  if (whole) return ring.slice();
   const edges = [
     (p) => p[0] >= x0, (p) => p[0] <= x1, (p) => p[1] >= y0, (p) => p[1] <= y1,
   ];

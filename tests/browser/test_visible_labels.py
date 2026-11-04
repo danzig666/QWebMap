@@ -1659,3 +1659,61 @@ console.log(JSON.stringify(out.features.map((f) => [f.geometry.coordinates[0], f
                          capture_output=True, text=True, check=True)
     ((x, rot),) = json.loads(run.stdout)  # x 0.635-0.654: off the view, inside its reach
     assert x > 0.6 and rot is not None and abs(abs(rot) - 90) < 5
+
+
+def _run_points(script_body):
+    script = f"""
+import {{ labelPoints, newLabelState }} from {json.dumps('file://' + MODULE)};
+const maplibregl = {{ MercatorCoordinate: class {{
+  constructor(x, y) {{ this.x = x; this.y = y; }}
+  toLngLat() {{ return {{ lng: this.x, lat: this.y }}; }} }} }};
+const square = (id, [x0, y0, x1, y1], z = 0, x = 0, y = 0, decoded = null) => ({{
+  _x: x, _y: y, _z: z, properties: {{ q2vt_orig_id: id }},
+  _vectorTileFeature: {{ extent: 4096, loadGeometry: () => {{
+    if (decoded) decoded[id] = (decoded[id] || 0) + 1;
+    return [[[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([px, py]) => ({{ x: px, y: py }}))]; }} }} }});
+const ids = (out) => out.features.map((f) => f.properties.q2vt_orig_id).sort((a, b) => a - b);
+{script_body}
+"""
+    run = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, check=True)
+    return json.loads(run.stdout)
+
+
+def test_labels_in_advance_keep_clear_of_each_other():
+    """Off the screen (labelled in advance), overlapping labels are not all
+    written: only those that can show once on it ("Never overlap"), the
+    bigger polygon first - a zoomed-out parcel map wrote a point for nearly
+    every polygon around the screen."""
+    result = _run_points("""
+const features = [square(1, [3000, 500, 3600, 1100]), square(2, [3610, 700, 3700, 790]),
+                  square(3, [3000, 3000, 3100, 3100])];
+const options = { reach: [0, 0, 1, 1], guard: 0.01, labelBox: () => [0.05, 0.02] };
+const crowded = labelPoints(features, [0, 0, 0.5, 1], maplibregl, options);
+const overlapping = labelPoints(features, [0, 0, 0.5, 1], maplibregl, { ...options, overlap: "if-required" });
+console.log(JSON.stringify({ crowded: ids(crowded), overlapping: ids(overlapping) }));
+""")
+    assert result["crowded"] == [1, 3]          # 2 is under 1's label; 3 is far off
+    assert result["overlapping"] == [1, 2, 3]   # QGIS "Allow overlap": all of them
+
+
+def test_whole_polygons_are_decoded_once_per_tile():
+    """A polygon wholly on the screen or wholly off it is labelled at its
+    centroid computed once per tile: later updates (panning) read no
+    geometry for it; only a polygon cut by the screen edge is decoded again."""
+    result = _run_points("""
+const decoded = {};
+const features = [square(1, [500, 500, 900, 900], 0, 0, 0, decoded), square(2, [3000, 500, 3400, 900], 0, 0, 0, decoded),
+                  square(3, [1900, 1500, 2300, 1900], 0, 0, 0, decoded)];
+const state = newLabelState();
+const options = { state, reach: [0, 0, 1, 1], guard: 0.01 };
+const first = labelPoints(features, [0, 0, 0.5, 1], maplibregl, options);
+const second = labelPoints(features, [0, 0, 0.5, 1], maplibregl, options);
+const points = (out) => Object.fromEntries(out.features.map((f) => [f.properties.q2vt_orig_id, f.geometry.coordinates]));
+console.log(JSON.stringify({ decoded, same: JSON.stringify(points(first)) === JSON.stringify(points(second)),
+                             first: points(first) }));
+""")
+    # 1 on the screen, 2 off it (in advance): decoded once; 3 across the screen edge: every time.
+    assert result["decoded"] == {"1": 1, "2": 1, "3": 2}
+    assert result["same"]
+    assert result["first"]["1"] == pytest.approx([700 / 4096, 700 / 4096])
+    assert result["first"]["3"][0] < 0.5          # its visible part's label, on the screen
