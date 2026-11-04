@@ -594,13 +594,11 @@ export function labelPoints(features, view, maplibregl, options = {}) {
       const ox = f._x / 2 ** f._z, oy = f._y / 2 ** f._z;
       const tileRect = [ox, oy, ox + 1 / 2 ** f._z, oy + 1 / 2 ** f._z];
       const tileKey = `${sourceLayer}|${f._z}/${f._x}/${f._y}`;
-      let cached = null;
-      if (fastOk) {
-        seenTiles.add(tileKey);
-        cached = cache.get(tileKey);
-        if (!cached) cache.set(tileKey, (cached = new Map()));
-      }
+      seenTiles.add(tileKey);
+      let cached = cache.get(tileKey);
+      if (!cached) cache.set(tileKey, (cached = new Map()));
       ctx = { x: f._x, y: f._y, z: f._z, layer: sourceLayer, ox, oy, tileRect, clip: intersect(reach, tileRect),
+              repeats: new Map(),
               scale: 1 / (tile.extent * 2 ** f._z),
               unit: 1 / (tile.extent * 2 ** Math.min(f._z, options.tileZoom ?? f._z)), cached };
       loaded.add(`${f._x}/${f._y}`);
@@ -618,16 +616,29 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     const piece = part ? key + PART_SEPARATOR + part : key;
     let info = null;
     let world = null;
-    if (fastOk) {
-      info = ctx.cached.get(piece);
+    {
+      // Every piece once per tile (tiles do not change): what it is, and
+      // for the placements that need its geometry, its geometry decoded.
+      // (A key twice in a tile - pieces of one feature - each its own entry.)
+      const seen = ctx.repeats.get(piece) || 0;
+      ctx.repeats.set(piece, seen + 1);
+      const cacheKey = seen ? piece + REPEAT_SEPARATOR + seen : piece;
+      info = ctx.cached.get(cacheKey);
       if (info === undefined) {
         const { ox, oy, scale, tileRect } = ctx;
         world = f._vectorTileFeature.loadGeometry().map((ring) => ring.map((p) => [ox + p.x * scale, oy + p.y * scale]));
         const raw = bounds(world);
         const inTile = raw[0] >= tileRect[0] && raw[1] >= tileRect[1] && raw[2] <= tileRect[2] && raw[3] <= tileRect[3];
         // Wholly in the tile's buffer (a neighbour's polygon): never anything here.
-        if (!intersect(raw, tileRect)) info = OUTSIDE_TILE;
-        else if (inTile) {
+        if (!touches(raw, tileRect)) info = OUTSIDE_TILE;
+        else if (options.kind === "line") {
+          // A line: its geometry, cut to the view every update.
+          info = { line: true, extent: raw, world };
+        } else if (inTile && !fastOk) {
+          info = world.some((ring) => ring.length >= 3)
+            ? { extent: raw, area: ringsArea(world), point: labelPoint(world, options.forceInside !== false),
+                properties, world } : null;
+        } else if (inTile) {
           info = world.some((ring) => ring.length >= 3)
             // The tile's own properties (the copy MapLibre's worker needs is
             // made when the points are written): no copy per cached polygon.
@@ -646,11 +657,11 @@ export function labelPoints(features, view, maplibregl, options = {}) {
           }
           info = rings.length && extent ? { straddle: true, raw, extent, rings } : OUTSIDE_TILE;
         }
-        ctx.cached.set(piece, info);
+        ctx.cached.set(cacheKey, info);
       }
       if (info === OUTSIDE_TILE) continue;
       // Wholly in its tile and outside the reach: nothing to label.
-      if (info && !intersect(info.extent, reach)) continue;
+      if (info && !touches(info.extent, reach)) continue;
     }
     pf.push(f); pkey.push(key); ppart.push(part); ppiece.push(piece); pinfo.push(info); pworld.push(world);
     pctx.push(ctx);
@@ -659,15 +670,33 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     if (known === undefined) partOfKey.set(key, part);
     else if (known !== part) partOfKey.set(key, MANY_PARTS);
   }
-  if (fastOk) for (const tileKey of cache.keys()) if (!seenTiles.has(tileKey)) cache.delete(tileKey);
+  for (const tileKey of cache.keys()) if (!seenTiles.has(tileKey)) cache.delete(tileKey);
   const wholly = (box, rect) => box[0] >= rect[0] - 1e-12 && box[1] >= rect[1] - 1e-12
     && box[2] <= rect[2] + 1e-12 && box[3] <= rect[3] + 1e-12;
   const fastOrdered = [];  // [key, entry, area, orig] of the cached pieces, reused across updates
   for (let i = 0; i < pf.length; i++) {
     const f = pf[i], key = pkey[i], part = ppart[i], info = pinfo[i];
-    if (info && !info.straddle && pieceCount.get(ppiece[i]) === 1 && (options.perPart || partOfKey.get(key) !== MANY_PARTS)
+    if (fastOk && info && !info.straddle && pieceCount.get(ppiece[i]) === 1 && (options.perPart || partOfKey.get(key) !== MANY_PARTS)
         && wholly(info.extent, reach) && (wholly(info.extent, view) || !intersect(info.extent, view))) {
       info.entry ??= { properties: info.properties, rings: [], extent: info.extent, fast: info };
+      const entryKey = options.perPart && partOfKey.get(key) === MANY_PARTS ? `${key}#${part}` : key;
+      if (!info.ordered || info.ordered[0] !== entryKey) info.ordered = [entryKey, info.entry, info.area, key];
+      fastOrdered.push(info.ordered);
+      continue;
+    }
+    // The other placements (Horizontal, Free, Around point): a polygon wholly
+    // in its tile and wholly on the screen or off it is labelled from its
+    // cached geometry, and what depends only on it (its candidate spots, its
+    // angle, its centroid) is computed once per zoom (``memo``); only what
+    // depends on the other labels is tested every update.
+    if (!fastOk && info && info.world && !info.straddle && !info.line && pieceCount.get(ppiece[i]) === 1
+        && (options.perPart || partOfKey.get(key) !== MANY_PARTS)
+        && wholly(info.extent, reach) && (wholly(info.extent, view) || !intersect(info.extent, view))) {
+      if (!info.cut) {
+        for (const ring of info.world) ring.cut = pctx[i].tileRect;
+        info.cut = true;
+      }
+      info.entry ??= { properties: info.properties, rings: info.world, extent: info.extent, memo: info };
       const entryKey = options.perPart && partOfKey.get(key) === MANY_PARTS ? `${key}#${part}` : key;
       if (!info.ordered || info.ordered[0] !== entryKey) info.ordered = [entryKey, info.entry, info.area, key];
       fastOrdered.push(info.ordered);
@@ -687,7 +716,7 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     let decoded = pworld[i] || (info && info.world);
     if (!reuse && !decoded) {
       decoded = f._vectorTileFeature.loadGeometry().map((ring) => ring.map((p) => [ox + p.x * scale, oy + p.y * scale]));
-      if (info && !info.straddle) info.world = decoded;
+      if (info && !info.straddle && !info.line) info.world = decoded;
     }
     for (const world of reuse ? [] : decoded) {
       extent = union(extent, intersect(bounds([world]), tileRect));
@@ -802,7 +831,16 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     if (part.includes(PART_SEPARATOR)) partsOf.set(baseKey(part), [...(partsOf.get(baseKey(part)) || []), part]);
   }
   const lineOptions = { ...options, tileUnit };
-  for (let [key, { properties, rings: loaded, extent, fast }, , orig] of ordered) {
+  // A label's box at this zoom and scale, measured once per polygon while
+  // panning (memo: its cached piece).
+  let currentMemo = null;
+  const boxOf = (properties) => {
+    const memo = currentMemo;
+    if (!memo || options.boxKey === undefined) return options.labelBox(properties);
+    return remember(memo, "box", options.boxKey, () => options.labelBox(properties));
+  };
+  for (let [key, { properties, rings: loaded, extent, fast, memo }, , orig] of ordered) {
+    currentMemo = memo || null;
     const old = state.points.get(key);
     // A kept point, or the new spot ``p`` when the kept one is only that
     // spot computed from coarser tiles (a small polygon labelled zoomed out).
@@ -903,7 +941,7 @@ export function labelPoints(features, view, maplibregl, options = {}) {
       points.set(key, { point: target, properties, orig, unit: dataUnit, prec: 0 });
       continue;
     }
-    const rings = reach === view ? loaded : loaded.map((ring) => {
+    const rings = reach === view || (memo && wholly(extent, view)) ? loaded : loaded.map((ring) => {
       const clipped = clipRing(ring, view);
       clipped.cut = ring.cut;
       return clipped;
@@ -912,17 +950,21 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     const outside = Boolean(options.around && options.around.outside);
     if (!rings.length) {  // off the screen: in advance, away from the screen edge
       if (outside) continue;  // beside the polygon: placed once it is in view
-      const point = pole ? roomiestPoint(loaded, options.precision).point : labelPoint(loaded);
+      const point = !memo ? (pole ? roomiestPoint(loaded, options.precision).point : labelPoint(loaded))
+        : pole ? remember(memo, "pole", options.precision, () => roomiestPoint(loaded, options.precision).point)
+        : remember(memo, "centroid", 0, () => labelPoint(loaded));
       if (point && !within(guarded, point)) {
         // Free (angled): turned already. Scrolled into view while the tiles
         // still load (a heavy map), it is kept as placed here: without its
         // angle it showed level until they had loaded.
         const box = options.orient === "free" && options.rotationField && options.labelBox
-          ? options.labelBox(properties) : null;
+          ? boxOf(properties) : null;
         const bare = box && box.map((h) => Math.max(h - LABEL_MARGIN_PX * (options.precision || 0), h / 2));
-        const turned = bare ? { ...properties, [options.rotationField]: freeAngle(loaded, bare) * 180 / Math.PI }
+        const angleOf = () => freeAngle(loaded, bare);
+        const turned = bare ? { ...properties, [options.rotationField]: (memo
+          ? remember(memo, "advanceAngle", `${bare[0]}|${bare[1]}`, angleOf) : angleOf()) * 180 / Math.PI }
           : properties;
-        const half = options.labelBox ? options.labelBox(turned) : null;
+        const half = options.labelBox ? (bare ? options.labelBox(turned) : boxOf(properties)) : null;
         if (half) {
           const angle = (Number(options.rotationField && turned[options.rotationField]) || 0) * Math.PI / 180;
           const [hx, hy] = envelope(half, angle);
@@ -936,7 +978,7 @@ export function labelPoints(features, view, maplibregl, options = {}) {
     }
     // The label's box (half width/height, world units): it must fit on the
     // screen and keep clear of the boxes of better-ranked labels.
-    const label = options.labelBox ? options.labelBox(properties) : null;
+    const label = options.labelBox ? boxOf(properties) : null;
     let half = label;
     const fit = (x, y) => (half ? Math.min(x - view[0] - half[0], view[2] - half[0] - x,
                                            y - view[1] - half[1], view[3] - half[1] - y) : Infinity);
@@ -1014,10 +1056,27 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         }
         return { best, score };
       };
-      let { best, score } = search();
+      const free = options.orient === "free" && options.rotationField && label;
+      // A whole polygon (Horizontal): its best free candidate, from its
+      // candidates ranked once per zoom - the roomiest point search below
+      // only when none is free (it may find a spot between them).
+      const strict = (x, y) => Math.min(fit(x, y), clear(x, y));
+      let early = null;
+      if (memo && !free) {
+        early = polygonSpot(rings, view, options.precision, (x, y) => strict(x, y) >= 0, memo);
+      }
+      // Covered: the visible part lies inside one label box placed before it
+      // (grown by this label's size), deeper than the margins - no point of
+      // it has room, so the search below would find none (zoomed out, most
+      // small polygons next to a placed label): no label, without searching.
+      if (!early && !mayOverlap && near.length) {
+        const [bx0, by0, bx1, by1] = bounds(rings);
+        const pad = slack || 0;
+        if (near.some((b) => bx0 >= b[0] + pad && by0 >= b[1] + pad && bx1 <= b[2] - pad && by1 <= b[3] - pad)) continue;
+      }
+      let { best, score } = early ? { best: { point: early.point, room: Infinity }, score: strict } : search();
       // No free spot of the polygon on the screen: no label (QGIS "Never overlap").
       if (!(best.room > 0)) continue;
-      const free = options.orient === "free" && options.rotationField && label;
       if (free) {
         // Free (angled), as QGIS: horizontal where the label fits inside the
         // polygon, else turned along the polygon (a street name along its
@@ -1032,7 +1091,9 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         // QGIS decides the angle from the label's own size (no margin).
         const bare = (box) => box.map((h) => Math.max(h - LABEL_MARGIN_PX * (options.precision || 0), h / 2));
         const place = (box, keepOld, loose = false) => {
-          const angle = freeAngle(rings, bare(box));
+          const plain = bare(box);
+          const angle = memo && wholly(extent, view)
+            ? remember(memo, "angle", `${plain[0]}|${plain[1]}`, () => freeAngle(rings, plain)) : freeAngle(rings, plain);
           if (!angle && !loose) {
             if (keepOld && flatOld) return { point: refined(best.point), angle: 0 };
             if (fitsFlat(rings, best.point, best.room, box) && fit(...best.point) >= 0) {
@@ -1042,7 +1103,8 @@ export function labelPoints(features, view, maplibregl, options = {}) {
           // Equally roomy spots: the one nearest the centroid wins (QGIS's
           // polygon candidate costs), not the arbitrary roomiest point along
           // a long, even strip.
-          return placeTurned(rings, angle, box, view, avoid, labelPoint(rings) || best.point,
+          return placeTurned(rings, angle, box, view, avoid, (memo && wholly(extent, view) && options.forceInside !== false
+            ? memo.point : labelPoint(rings)) || best.point,
                              oldScale === scale ? old : null, field, options.precision,
                              { overlap: mayOverlap, loose, refined });
         };
@@ -1076,7 +1138,7 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         // Horizontal (QGIS): its candidates' costs - room from the polygon's
         // edges and the map's, then nearness to the centroid - not the
         // roomiest point alone (a long strip: in its middle, not at one end).
-        const spot = polygonSpot(rings, view, options.precision, (x, y) => score(x, y) >= 0);
+        const spot = early || polygonSpot(rings, view, options.precision, (x, y) => score(x, y) >= 0, memo);
         const target = spot ? spot.point : best.point;
         // Kept while panning (at the same zoom: QGIS's candidates are as
         // far apart on the screen at every zoom), if still nearly the best.
@@ -1113,9 +1175,12 @@ export function labelPoints(features, view, maplibregl, options = {}) {
         candidates = outsideCandidates(loaded, rings, label.text || half, half, options.around.distance,
                                        options.precision, others, view);
       } else {
-        const target = labelPoint(rings, options.forceInside !== false);
+        const whole = memo && wholly(extent, view);
+        const target = whole ? memo.point : labelPoint(rings, options.forceInside !== false);
         if (!target) continue;
-        candidates = aroundCandidates(target, label.text || half, options.around);
+        const text = label.text || half;
+        candidates = whole ? remember(memo, "around", options.boxKey ?? `${text[0]}|${text[1]}`,
+          () => aroundCandidates(target, text, options.around)) : aroundCandidates(target, text, options.around);
       }
       // A kept label stays near its candidate (at the label distance from
       // the polygon at this zoom; "outside": near any of them).
@@ -1339,6 +1404,8 @@ function nearEdge(rings, [x, y], [tx, ty], reach) {
 // query(box) gives the items whose bounds meet the box, without testing
 // every item for every query; add(item) adds one.
 const INDEX_CELLS = 32;
+const QUERY_STAMP = Symbol("query");
+let queries = 0;
 function boxIndex(items, view) {
   const cells = new Map();
   const [vx, vy] = [view[0], view[1]];
@@ -1365,14 +1432,27 @@ function boxIndex(items, view) {
     add,
     query(box) {
       const range = span(box);
-      const found = new Set();
       if (!range) return [];
+      // Each item once (it can be in several cells): stamped with this query
+      // instead of a Set per query (thousands of queries an update).
+      const stamp = ++queries;
+      const found = [];
+      const [qx0, qy0, qx1, qy1] = box;
       for (let i = range[0]; i <= range[2]; i++) {
         for (let j = range[1]; j <= range[3]; j++) {
-          for (const item of cells.get(j * INDEX_CELLS + i) || []) if (intersect(item.bounds, box)) found.add(item);
+          const cell = cells.get(j * INDEX_CELLS + i);
+          if (!cell) continue;
+          for (const item of cell) {
+            if (item[QUERY_STAMP] === stamp) continue;
+            const b = item.bounds;
+            if (Math.max(b[0], qx0) < Math.min(b[2], qx1) && Math.max(b[1], qy0) < Math.min(b[3], qy1)) {
+              item[QUERY_STAMP] = stamp;
+              found.push(item);
+            }
+          }
         }
       }
-      return [...found];
+      return found;
     },
   };
 }
@@ -1797,7 +1877,25 @@ function areaCentroid(rings) {
 // pal first splits a concave polygon at its deepest notches and lays a grid
 // on each piece: not here (the polygon is in tile pieces), so a concave
 // polygon's label can sit a grid step or so from QGIS's.
-export function polygonSpot(rings, view, perPx, ok = null) {
+export function polygonSpot(rings, view, perPx, ok = null, memo = null) {
+  // A whole polygon on the screen: its candidates and their costs do not
+  // depend on where the screen is (the polygon's own edge is nearer than the
+  // screen's from every point inside it), so they are ranked once per zoom.
+  if (memo && view && boxWithin(bounds(rings), view)) {
+    const ranked = remember(memo, "spot", perPx, () => rankedSpots(rings, view, perPx));
+    if (!ranked) return null;
+    const pick = ranked.candidates.find((k) => !ok || ok(k.x, k.y));
+    return pick ? { point: [pick.x, pick.y], best: pick.cost, cost: ranked.cost } : null;
+  }
+  const ranked = rankedSpots(rings, view, perPx);
+  if (!ranked) return null;
+  const pick = ranked.candidates.find((k) => !ok || ok(k.x, k.y));
+  return pick ? { point: [pick.x, pick.y], best: pick.cost, cost: ranked.cost } : null;
+}
+
+// QGIS's polygon candidates of polygonSpot, cheapest first, and the cost of
+// any point; null when the polygon has none.
+function rankedSpots(rings, view, perPx) {
   const box = palBox(rings);
   const centroid = areaCentroid(rings);
   if (!box || !centroid || !(perPx > 0)) return null;
@@ -1836,10 +1934,7 @@ export function polygonSpot(rings, view, perPx, ok = null) {
     + (cRange ? (c - cMin) * 0.001 / cRange : 0);
   for (const k of candidates) k.cost = costOf(k.d, k.c);
   candidates.sort((a, b) => a.cost - b.cost);
-  const pick = candidates.find((k) => !ok || ok(k.x, k.y));
-  if (!pick) return null;
-  return { point: [pick.x, pick.y], best: pick.cost,
-           cost: ([x, y]) => costOf(room(x, y), Math.hypot(x - centroid[0], y - centroid[1])) };
+  return { candidates, cost: ([x, y]) => costOf(room(x, y), Math.hypot(x - centroid[0], y - centroid[1])) };
 }
 
 // Room (distance to the nearest real polygon edge; negative outside) at a point.
@@ -3018,6 +3113,26 @@ function union(a, b) {
 // A cached piece wholly in its tile's buffer (labelPoints).
 const OUTSIDE_TILE = Object.freeze({ outside: true });
 const MANY_PARTS = Symbol("many parts");
+const REPEAT_SEPARATOR = "\u0004";
+// A value of a cached piece computed once per ``tag`` (zoom, scale, label
+// size): ``memo[name]`` holds the tag and the value.
+function remember(memo, name, tag, compute) {
+  const slot = memo[name];
+  if (slot && slot.tag === tag) return slot.value;
+  const value = compute();
+  memo[name] = { tag, value };
+  return value;
+}
+
+// Is box a wholly inside rect (to rounding)?
+function boxWithin(box, rect) {
+  return box[0] >= rect[0] - 1e-12 && box[1] >= rect[1] - 1e-12 && box[2] <= rect[2] + 1e-12 && box[3] <= rect[3] + 1e-12;
+}
+
+// Do two rectangles meet (edges included: a straight line's box has no height)?
+function touches(a, b) {
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
 
 // The area of rings (shoelace; holes are rings of their own).
 function ringsArea(rings) {

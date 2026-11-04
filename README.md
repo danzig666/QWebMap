@@ -554,7 +554,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.3**. Newest first:
+This README describes QWebMap **4.58.4**. Newest first:
+
+**4.58.4** — Horizontal, Free and Around point labels 2–3 times lighter zoomed out
+- Polygons under a placed label are skipped without searching, geometry is decoded once per tile, and per-polygon work is reused per zoom; the same labels as before.
 
 **4.58.3** — visible-polygon labels much lighter zoomed out
 - Labels prepared off screen keep clear of each other (746 written instead of 26 523 on a 100 000-parcel test), whole polygons take a label point computed once per tile, and updates are paced while the map moves: panning frames 1.3 s → 0.27 s on the test.
