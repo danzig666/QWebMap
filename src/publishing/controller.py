@@ -482,16 +482,23 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         stage("RASTER")
         # Raster layers, then the terrain, each in its own part of the stage's bar.
         split = 0.6 if raster_configs and profile.terrain.layer_id else (1.0 if raster_configs else 0.0)
-        bundle.raster_archives = _render_rasters(project, profile, raster_configs, raster_plans,
-                                                 work_dir, progress.sub(0.0, split), bundle.warnings, cache)
-        images = _render_vector_images(project, profile, vector_profile, extent_3857, work_dir,
-                                       progress, bundle.warnings, cache)
-        bundle.raster_archives.extend(images)
-        _add_image_components(bundle, images)
-        bundle.live_rasters = live_rasters
-        bundle.warnings.extend(_vector_blend_warnings(project, profile))
-        bundle.terrain = _render_terrain(project, profile, extent_3857, work_dir, progress.sub(split, 1.0),
-                                         bundle.warnings)
+        # GDAL in QGIS's render threads: not while the background tile thread
+        # has GeoPackages open with GDAL in this process (gdal_guard; QGIS 4 on
+        # Windows closed with an access violation there). Its ogr2ogr processes
+        # go on cutting tiles meanwhile.
+        from ..utils import gdal_guard  # pylint: disable=import-outside-toplevel
+        from qgis.PyQt.QtCore import QCoreApplication  # pylint: disable=import-outside-toplevel
+        with gdal_guard.exclusive(QCoreApplication.processEvents):
+            bundle.raster_archives = _render_rasters(project, profile, raster_configs, raster_plans,
+                                                     work_dir, progress.sub(0.0, split), bundle.warnings, cache)
+            images = _render_vector_images(project, profile, vector_profile, extent_3857, work_dir,
+                                           progress, bundle.warnings, cache)
+            bundle.raster_archives.extend(images)
+            _add_image_components(bundle, images)
+            bundle.live_rasters = live_rasters
+            bundle.warnings.extend(_vector_blend_warnings(project, profile))
+            bundle.terrain = _render_terrain(project, profile, extent_3857, work_dir, progress.sub(split, 1.0),
+                                             bundle.warnings)
         progress.check()
         published = {r["layerId"] for r in bundle.raster_archives + bundle.live_rasters}
         dropped = {c["layerId"] for c in bundle.components if c["role"] == "raster"} - published

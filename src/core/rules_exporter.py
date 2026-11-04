@@ -1565,7 +1565,9 @@ class RulesExporter:
             if pool.ready_workers:
                 self._post("pushInfo", f"   {len(pool.ready_workers)} worker processes export the datasets")
             else:
-                crash_log.note(f"Worker processes unavailable ({pool.error}): this process exports")
+                from . import export_workers  # pylint: disable=import-outside-toplevel
+                crash_log.note(f"Worker processes unavailable ({pool.error}): this process exports"
+                               + export_workers.startup_errors(self.utils_dir))
                 self._stop_workers()
                 return False
         return bool(pool.ready_workers) and any(pool.alive[n] for n in pool.ready_workers)

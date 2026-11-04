@@ -38,10 +38,11 @@ from concurrent.futures import ThreadPoolExecutor
 from os import cpu_count
 from os.path import join, basename
 from typing import Dict, List, Optional, Tuple
-from osgeo import ogr
+from osgeo import gdal, ogr
 from qgis.core import QgsDataSourceUri, QgsVectorLayer, QgsProcessingFeedback, QgsProcessingUtils
 
 from ..utils import main_thread
+from ..utils import gdal_guard
 from ..utils.config import _EPSG_CRS, _SIMPLIFICATION, _SIMPLIFICATION_MAX_ZOOM
 from .fidelity.dependencies import prunable_fields, style_field_dependencies
 from . import export_cache
@@ -106,6 +107,25 @@ def mbtiles_uri(path: str) -> str:
     uri.setParam("url", path)
     return bytes(uri.encodedUri()).decode()
 
+
+
+def _open_gpkg(path: str, update: bool = False):
+    """A GeoPackage opened with GDAL's GeoPackage driver only. ogr.Open
+    without a driver probes every driver (in recent GDAL loading plugin
+    drivers on first use), which crashed QGIS 4 on Windows when the main
+    thread opened raster layers at the same moment. Anything else (not a
+    GeoPackage): ogr.Open as before."""
+    flags = gdal.OF_VECTOR | (gdal.OF_UPDATE if update else gdal.OF_READONLY)
+    try:
+        ds = gdal.OpenEx(path, flags, allowed_drivers=["GPKG"])
+    except RuntimeError:
+        ds = None
+    if ds is not None:
+        return ds
+    try:
+        return ogr.Open(path, update=1 if update else 0)
+    except RuntimeError:
+        return None
 
 class TilesGenerationCancelled(RuntimeError):
     """Raised when the user cancels while ogr2ogr is running."""
@@ -348,6 +368,7 @@ class GDALTilesGenerator:
     def _layer_name(layer: QgsVectorLayer) -> str:
         return basename(layer.source().split("|layername=")[0]).rsplit(".", 1)[0]
 
+    @gdal_guard.shared_section
     def remove_unused_fields(self):
         """Drop generated property fields that no style layer of *that* source layer reads."""
         dependencies = style_field_dependencies(self.style)
@@ -364,7 +385,7 @@ class GDALTilesGenerator:
                 if drop_fields(gpkg, info.table, [n for n in info.fields if n in unused]):
                     self._datasets[gpkg] = (info.table, [n for n in info.fields if n not in unused])
                     continue
-            ds = ogr.Open(gpkg, update=1)
+            ds = _open_gpkg(gpkg, update=True)
             if ds is None:
                 continue
             ogr_layer = ds.GetLayer(0)
@@ -425,6 +446,7 @@ class GDALTilesGenerator:
     # Metres of a CSS px at zoom 0 (512 px tiles, EPSG:3857).
     _PX0 = 40075016.68557849 / 512.0
 
+    @gdal_guard.shared_section
     def _size_range(self, layer: QgsVectorLayer) -> Optional[Tuple[float, float]]:
         """(smallest, largest) bounding box side of the dataset's features
         (the larger of width and height); None when unknown."""
@@ -432,7 +454,7 @@ class GDALTilesGenerator:
         column, table = self._geometry_column(source), self._table_of(source)
         if not column or not table:
             return None
-        ds = ogr.Open(source)
+        ds = _open_gpkg(source)
         if ds is None:
             return None
         try:
@@ -689,8 +711,9 @@ class GDALTilesGenerator:
     # --- per-layer tiles (export cache) ---
 
     @staticmethod
+    @gdal_guard.shared_section
     def _dataset_table(path: str) -> Optional[str]:
-        ds = ogr.Open(path)
+        ds = _open_gpkg(path)
         if ds is None or ds.GetLayerCount() == 0:
             return None
         name = ds.GetLayer(0).GetName()
@@ -701,11 +724,12 @@ class GDALTilesGenerator:
         known = self._datasets.get(path)
         return known[0] if known else self._dataset_table(path)
 
+    @gdal_guard.shared_section
     def _dataset_fields(self, layer: QgsVectorLayer) -> List[str]:
         path = layer.source().split("|layername=")[0]
         if path in self._datasets:
             return list(self._datasets[path][1])
-        ds = ogr.Open(path)
+        ds = _open_gpkg(path)
         if ds is None:
             return []
         defn = ds.GetLayer(0).GetLayerDefn()
@@ -1368,6 +1392,7 @@ def _union(geometries):
         return collection.Buffer(0)
 
 
+@gdal_guard.shared_section
 def merge_per_tile(path: str, table: Optional[str], outputs: Dict[int, str], outline: bool,
                    cancelled=None) -> Dict[int, int]:
     """Write, for each zoom of ``outputs`` ({zoom: GeoPackage path}), the
@@ -1375,7 +1400,7 @@ def merge_per_tile(path: str, table: Optional[str], outputs: Dict[int, str], out
     that zoom (outlines: the merged shapes' boundaries; rings that do not
     close stay as they are). The highest zoom merges the features, each
     lower one the pieces of the zoom above. Returns {zoom: features written}."""
-    source = ogr.Open(path)
+    source = _open_gpkg(path)
     layer = source.GetLayerByName(table) if table else source.GetLayer(0)
     definition = layer.GetLayerDefn()
     keep = _merge_key_fields(definition)
@@ -1468,10 +1493,11 @@ def _tile_size(zoom: int) -> float:
     return 2 * WORLD_HALF / (1 << zoom)
 
 
+@gdal_guard.shared_section
 def long_line_zoom(path: str, table: Optional[str], low: int, high: int) -> Optional[int]:
     """The first zoom in [low, high] at which the line dataset ``path`` is
     to be tiled from a grid-cut copy (see above), or None."""
-    source = ogr.Open(path)
+    source = _open_gpkg(path)
     if source is None:
         return None
     layer = source.GetLayerByName(table) if table else source.GetLayer(0)
@@ -1526,6 +1552,7 @@ def _cut_on_grid(points: List[Tuple[float, float]], size: float) -> List[List[Tu
     return [p for p in pieces if len(p) > 1 and any(q != p[0] for q in p[1:])]
 
 
+@gdal_guard.shared_section
 def grid_cut_lines(path: str, table: Optional[str], output: str, zoom: int,
                    min_size: float = 0.0, cancelled=None) -> int:
     """Write the lines of ``path`` cut along the tile grid
@@ -1535,7 +1562,7 @@ def grid_cut_lines(path: str, table: Optional[str], output: str, zoom: int,
     as the zoom's tiles leave them out (_filtered_jobs). Returns the
     pieces written. ``cancelled()``: True stops (TilesGenerationCancelled)."""
     size = _tile_size(max(0, zoom - _LONG_LINE_GRID_UP))
-    source = ogr.Open(path)
+    source = _open_gpkg(path)
     layer = source.GetLayerByName(table) if table else source.GetLayer(0)
     definition = layer.GetLayerDefn()
     driver = ogr.GetDriverByName("GPKG")
