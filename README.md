@@ -250,8 +250,14 @@ into a public, self-contained web map. The window title shows the plugin version
   their groups, and *Only published layers* hides the rest. The *Interaction* tab lists the
   published layers by name, with a find box when there are more than 10. Every layer drop-down
   (extent, house numbers, parcel report, terrain, WMS) takes typing and lists the matching layers.
-- **Zoomed-out load…** (*Map* tab): every layer's zooms, of its features and of its labels, can be
-  changed by hand, not only the suggested ones; the lowest zoom removes a limit.
+- **Zoomed-out load…** (*Map* tab): every layer's zooms, of its features and of its labels, and how
+  it is drawn zoomed out, can be changed by hand, not only the suggested ones; the lowest zoom
+  removes a limit (see [Tools for big maps](#tools-for-big-maps)).
+- **Zoomed out** (*Map* tab → *Zoomed out* column, or *Selected layers → Zoomed out…*): below a
+  zoom, a dense vector layer is drawn **merged** (the features of one style joined into one shape
+  per tile: much lighter; the outlines between them and their popups are gone there) or as an
+  **image** rendered by QGIS (exact, the lightest; no popups or highlighting there) instead of every
+  feature. Its labels stay as text; from that zoom on every feature is drawn.
 - **Many layers at once:** select rows (Ctrl/Shift + click), then *Selected layers* or right-click.
   *Publish the visible layers* publishes exactly what the QGIS Layers panel shows.
 - **Map themes** (*Map* tab): *Publish its layers* adds a theme's layers (several themes add up),
@@ -408,6 +414,10 @@ On by default (each can be switched off on *Interaction → Viewer*):
   landscape or portrait, with a north arrow, a scale bar, the legend, and a header with the
   issuer, decree, dates, scale and print date.
 
+*Map only: nothing on screen but the map* (*Interaction* tab) publishes a page with only the map:
+no title, panel, legend, buttons, scale bar, popups or search (the attribution stays when there is
+one). Visitors can still pan and zoom; for an embedded map, a kiosk screen or a background image.
+
 Always there:
 
 - **Legend** with symbols rendered by QGIS (and your legend patch shapes); *Only what is visible
@@ -426,6 +436,9 @@ Always there:
   viewer says why in plain words, with the technical detail. A basemap, terrain or symbol that
   fails to load gives a warning while the map still works.
 - The viewer language (English or Hungarian) is set per map on the *Map* tab.
+- **Zoom readout for checking:** `?debug` added to the map's address (`…/index.html?debug`) shows
+  the map's zoom and the zoom of the tiles drawn at it (`?debug=tiles` also outlines the tiles).
+  Not shown to visitors who did not ask for it.
 
 Off by default (turn them on on *Interaction → Viewer*):
 
@@ -458,6 +471,20 @@ Off by default (turn them on on *Interaction → Viewer*):
 - **Fast marker lines** (*Output*, off by default): the browser places marker lines spaced in
   screen units instead of the export computing them for every zoom. Much faster, but the markers
   are not exactly where QGIS draws them (the fidelity report says so).
+- **Big and far-reaching data:** tiles are built in memory when the computer has enough of it;
+  long lines (sea routes, the outlines of large polygons) are cut along the tile grid from the zoom
+  where they would stall tile cutting; an outline-only polygon (transparent fill) is exported as
+  its outline, not as a filled polygon in every tile inside it; a raster in another coordinate
+  system is warped to Web Mercator once (with GDAL, on all cores) instead of for every tile; an
+  elevation layer's gaps are filled once at the lowest zoom.
+- **In the browser:** polygon labels placed on the visible part of their polygon (QGIS's default)
+  are computed once per tile where possible; zoomed out, labels that cannot show are neither
+  prepared nor searched for (4.58.3–4.58.4: panning frames on a 100,000-parcel test 1.3 s → 0.27 s
+  for *Over point* labels, label updates 2–3 times faster for *Horizontal*, *Free* and *Around
+  point*).
+- **Thin hairlines** (*Output*, on by default): zero-width lines (parcel boundaries) are drawn one
+  device pixel wide, so dense ones do not run together; layers drawn as images zoomed out are
+  rendered at twice the resolution then, so their hairlines match.
 - **Network output folders** (a Windows share or mapped drive): the work files and the cache stay
   on this computer; only the finished map, the export log and the fidelity report go to the
   network folder.
@@ -468,14 +495,21 @@ Off by default (turn them on on *Interaction → Viewer*):
 ### Tools for big maps
 
 <p align="center">
-<img width="760" alt="The Zoomed-out load window: for each published layer, its features, its busiest zoomed-out tile, and suggested zooms from which its features or only its labels are drawn, each with a checkbox; the heaviest tile now and with the checked limits; the Apply the checked limits button" src="docs/images/zoomed-out-load.png" />
-<br><sub>The <i>Zoomed-out load</i> window (4.30).</sub>
+<img width="760" alt="The Zoomed-out load window as of 4.30: for each published layer, its features, its busiest zoomed-out tile, and suggested zooms from which its features or only its labels are drawn, each with a checkbox; the heaviest tile now and with the checked limits" src="docs/images/zoomed-out-load.png" />
+<br><sub>The <i>Zoomed-out load</i> window (4.30; since 4.58 it also has a <i>Drawn zoomed out</i> column).</sub>
 </p>
 
-- **Zoomed-out load** (*Map* tab → *Zoomed-out load…*): estimates which layers make the web map
-  slow when zoomed out and each layer's share of the heaviest tile, and suggests per layer a zoom
-  from which its features, or only its labels, are drawn. *Apply the checked limits* puts them
-  into the *Scales* column. Only the web map changes, not the QGIS project.
+- **Zoomed-out load** (*Map* tab → *Zoomed-out load…*, and before each export): estimates which
+  layers make the web map slow when zoomed out and each layer's share of the heaviest tile, and
+  suggests per layer a zoom from which its features, or only its labels, are drawn, and, for a
+  layer that is heavy but still worth seeing, how to draw it lighter (*Drawn zoomed out*: merged
+  for polygons with plain fills of a few styles, image otherwise; the tooltip says why). *Apply the
+  checked settings* puts them into the *Scales* and *Zoomed out* columns. It runs again only when
+  something it reads changed. Only the web map changes, not the QGIS project.
+- **Merged or image zoomed out** (*Zoomed out* column): keeps a dense layer visible instead of
+  hiding it. On a test layer of 100,000 parcels below zoom 15: every feature 31 MB of tiles, the
+  map settling in 2–12 s at zooms 11–14 and 359 MB of browser memory; merged 18 MB, 0.1–1.1 s and
+  14 MB; image 20 MB, 0.1–1 s and 31 MB, and a four times faster export.
 - **Labels-only scale limit** (*Selected layers → Visible scales… → Hide only the labels when
   zoomed out beyond*): a layer's labels are hidden when zoomed out while its features are still
   drawn; the *Scales* column shows it as "labels 1:10 000 –". Hidden labels are not tiled, so the
