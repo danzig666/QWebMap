@@ -588,7 +588,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.4**. Newest first:
+This README describes QWebMap **4.58.5**. Newest first:
+
+**4.58.5** — QGIS 4 no longer closes while exporting raster layers
+- The background tile work no longer uses GDAL while raster layers are rendered (an access violation on QGIS 4.2 / Windows); the export log says why helper processes did not start.
 
 **4.58.4** — Horizontal, Free and Around point labels 2–3 times lighter zoomed out
 - Polygons under a placed label are skipped without searching, geometry is decoded once per tile, and per-polygon work is reused per zoom; the same labels as before.
