@@ -1065,6 +1065,15 @@ export function labelPoints(features, view, maplibregl, options = {}) {
       if (memo && !free) {
         early = polygonSpot(rings, view, options.precision, (x, y) => strict(x, y) >= 0, memo);
       }
+      // Covered: the visible part lies inside one label box placed before it
+      // (grown by this label's size), deeper than the margins - no point of
+      // it has room, so the search below would find none (zoomed out, most
+      // small polygons next to a placed label): no label, without searching.
+      if (!early && !mayOverlap && near.length) {
+        const [bx0, by0, bx1, by1] = bounds(rings);
+        const pad = slack || 0;
+        if (near.some((b) => bx0 >= b[0] + pad && by0 >= b[1] + pad && bx1 <= b[2] - pad && by1 <= b[3] - pad)) continue;
+      }
       let { best, score } = early ? { best: { point: early.point, room: Infinity }, score: strict } : search();
       // No free spot of the polygon on the screen: no label (QGIS "Never overlap").
       if (!(best.room > 0)) continue;
