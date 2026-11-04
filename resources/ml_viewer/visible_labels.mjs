@@ -1404,6 +1404,8 @@ function nearEdge(rings, [x, y], [tx, ty], reach) {
 // query(box) gives the items whose bounds meet the box, without testing
 // every item for every query; add(item) adds one.
 const INDEX_CELLS = 32;
+const QUERY_STAMP = Symbol("query");
+let queries = 0;
 function boxIndex(items, view) {
   const cells = new Map();
   const [vx, vy] = [view[0], view[1]];
@@ -1430,14 +1432,27 @@ function boxIndex(items, view) {
     add,
     query(box) {
       const range = span(box);
-      const found = new Set();
       if (!range) return [];
+      // Each item once (it can be in several cells): stamped with this query
+      // instead of a Set per query (thousands of queries an update).
+      const stamp = ++queries;
+      const found = [];
+      const [qx0, qy0, qx1, qy1] = box;
       for (let i = range[0]; i <= range[2]; i++) {
         for (let j = range[1]; j <= range[3]; j++) {
-          for (const item of cells.get(j * INDEX_CELLS + i) || []) if (intersect(item.bounds, box)) found.add(item);
+          const cell = cells.get(j * INDEX_CELLS + i);
+          if (!cell) continue;
+          for (const item of cell) {
+            if (item[QUERY_STAMP] === stamp) continue;
+            const b = item.bounds;
+            if (Math.max(b[0], qx0) < Math.min(b[2], qx1) && Math.max(b[1], qy0) < Math.min(b[3], qy1)) {
+              item[QUERY_STAMP] = stamp;
+              found.push(item);
+            }
+          }
         }
       }
-      return [...found];
+      return found;
     },
   };
 }
