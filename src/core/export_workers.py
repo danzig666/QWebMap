@@ -118,6 +118,22 @@ def python_executable() -> Optional[str]:
     return next((c for c in candidates if c and os.path.isfile(c)), None)
 
 
+def startup_errors(log_dir: str, count: int = 4, limit: int = 1500) -> str:
+    """The end of the helpers' own logs (their Python errors: why they did
+    not start), for the export log; "" when they wrote nothing."""
+    parts = []
+    for number in range(count):
+        path = os.path.join(log_dir, f"worker_{number}.log")
+        try:
+            with open(path, "rb") as handle:
+                text = handle.read().decode("utf-8", "replace").strip()
+        except OSError:
+            continue
+        if text:
+            parts.append(f"\nworker {number} log:\n" + text[-limit:])
+    return "".join(parts)
+
+
 def _scope_variables(scope) -> Tuple[Dict[str, tuple], List[str]]:
     """{name: (value, static)} of the variables that can be sent, and the
     names of those that cannot."""

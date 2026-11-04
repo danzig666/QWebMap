@@ -2359,3 +2359,10 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
 * A polygon inside one placed label box (grown by its label, deeper than the margins) is skipped before the
   search (exact); `boxIndex.query` stamps items instead of a Set per query.
 * Checked equal to 4.58.3 on 540 random layouts (tests/browser/test_visible_labels.py has the cache tests).
+
+## 4.58.5 — GDAL in the tile thread vs. raster rendering
+
+* `tiles_generator._open_gpkg` (gdal.OpenEx, GPKG only); `utils/gdal_guard`: the tile thread's GDAL steps
+  (`remove_unused_fields`, `_size_range`, `_dataset_*`, `merge_per_tile`, `long_line_zoom`,
+  `grid_cut_lines`) shared, the controller's RASTER stage exclusive (tests/unit/test_gdal_guard.py);
+  `export_workers.startup_errors` adds the helpers' log ends to export_log.txt.
