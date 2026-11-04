@@ -1717,3 +1717,31 @@ console.log(JSON.stringify({ decoded, same: JSON.stringify(points(first)) === JS
     assert result["same"]
     assert result["first"]["1"] == pytest.approx([700 / 4096, 700 / 4096])
     assert result["first"]["3"][0] < 0.5          # its visible part's label, on the screen
+
+
+@pytest.mark.parametrize("placement", ["horizontal", "free", "around"])
+def test_other_placements_decode_each_polygon_once_and_keep_their_spots(placement):
+    """Horizontal, Free and Around point: every polygon is decoded once per
+    tile, and what depends only on a whole polygon (its ranked candidates,
+    its angle, its centroid and the positions around it) is reused; the
+    labels are the same as computed afresh, also with a label in the way."""
+    extra = {"horizontal": '{ anchor: "pole" }',
+             "free": '{ anchor: "pole", orient: "free", rotationField: "q2vt_free_rotation" }',
+             "around": '{ around: { anchors: ["top", "bottom", "left", "right"], distance: 0.002 } }'}[placement]
+    result = _run_points(f"""
+const decoded = {{}};
+const features = [square(1, [500, 500, 1100, 900], 0, 0, 0, decoded), square(2, [3000, 500, 3400, 900], 0, 0, 0, decoded),
+                  square(3, [1900, 1500, 2300, 1900], 0, 0, 0, decoded), square(4, [600, 2400, 1400, 2600], 0, 0, 0, decoded)];
+const base = {{ reach: [0, 0, 1, 1], guard: 0.01, precision: 0.0005, keepDistance: 0.01, labelBox: () => [0.03, 0.008],
+               boxKey: "z", avoid: [[0.13, 0.58, 0.2, 0.61]], ...{extra} }};
+const state = newLabelState();
+const points = (out) => JSON.stringify(out.features.map((f) => [f.properties.q2vt_orig_id, f.geometry.coordinates,
+  f.properties.q2vt_free_rotation ?? null]).sort());
+const runs = [0, 1, 2].map(() => points(labelPoints(features, [0, 0, 0.5, 1], maplibregl, {{ ...base, state }})));
+const once = {{ ...decoded }};
+const fresh = points(labelPoints(features, [0, 0, 0.5, 1], maplibregl, {{ ...base, state: newLabelState() }}));
+console.log(JSON.stringify({{ decoded: once, same: runs.every((r) => r === fresh), labelled: JSON.parse(fresh).map((p) => p[0]) }}));
+""")
+    assert result["decoded"] == {"1": 1, "2": 1, "3": 1, "4": 1}  # 3 crosses the screen edge: decoded once too
+    assert result["same"]
+    assert {1, 3, 4} <= set(result["labelled"])
