@@ -52,6 +52,14 @@ _PLUGIN_CLASSES = {("core.rules_exporter", "_RuleGroupSnapshot"), ("core.rules_e
                    ("core.fidelity.materialize", "Recipe")}
 _SAFE_BUILTINS = {"set", "frozenset", "complex", "bytearray", "range", "slice"}
 _QT_MODULES = ("qgis.", "PyQt5.", "PyQt6.")
+# Qt value types a project or global variable can hold. PyQt5 sends them
+# through sip._unpickle_type; PyQt6 (QGIS 4) as the class itself
+# (PyQt6.QtCore.QDateTime, ...): the helpers refused QGIS 4's
+# @project_creation_date and did not start.
+_QT_VALUE_CLASSES = {("QtCore", "QDateTime"), ("QtCore", "QDate"), ("QtCore", "QTime"),
+                     ("QtCore", "QPoint"), ("QtCore", "QPointF"), ("QtCore", "QSize"),
+                     ("QtCore", "QSizeF"), ("QtCore", "QRect"), ("QtCore", "QRectF"),
+                     ("QtCore", "QByteArray"), ("QtCore", "QUrl"), ("QtGui", "QColor")}
 _SRC_PACKAGE = __name__.rsplit(".", 2)[0] if __name__.count(".") >= 2 else ""
 
 
@@ -72,6 +80,9 @@ class _Unpickler(pickle.Unpickler):
             return super().find_class(module, name)
         if module.endswith("sip") and name in ("_unpickle_type", "_unpickle_enum"):
             return _qt_only(super().find_class(module, name))
+        package, _, submodule = module.partition(".")
+        if package in ("PyQt5", "PyQt6") and (submodule, name) in _QT_VALUE_CLASSES:
+            return super().find_class(module, name)
         prefix = _SRC_PACKAGE + "." if _SRC_PACKAGE else ""
         if module.startswith(prefix) and (module[len(prefix):], name) in _PLUGIN_CLASSES:
             return super().find_class(module, name)

@@ -588,7 +588,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.5**. Newest first:
+This README describes QWebMap **4.58.6**. Newest first:
+
+**4.58.6** — helper processes start on QGIS 4 for Windows
+- A project date variable sent by PyQt6 was refused by the helpers, so exports ran in QGIS itself.
 
 **4.58.5** — QGIS 4 no longer closes while exporting raster layers
 - The background tile work no longer uses GDAL while raster layers are rendered (an access violation on QGIS 4.2 / Windows); the export log says why helper processes did not start.

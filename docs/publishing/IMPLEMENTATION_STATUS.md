@@ -2366,3 +2366,8 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   (`remove_unused_fields`, `_size_range`, `_dataset_*`, `merge_per_tile`, `long_line_zoom`,
   `grid_cut_lines`) shared, the controller's RASTER stage exclusive (tests/unit/test_gdal_guard.py);
   `export_workers.startup_errors` adds the helpers' log ends to export_log.txt.
+
+## 4.58.6 — helpers on PyQt6
+
+* `export_workers._QT_VALUE_CLASSES`: Qt value classes of PyQt5 / PyQt6 unpickled as classes (PyQt6 on
+  Windows pickles QDateTime without sip._unpickle_type) (tests/unit/test_gdal_guard.py).
