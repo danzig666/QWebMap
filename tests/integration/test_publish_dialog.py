@@ -172,6 +172,24 @@ def test_export_preview_and_local_publish(project, messages, tmp_path):
     dialog.publish()  # local destination: export + local link
     assert dialog.public_url.startswith("file:")
     dialog.close()
+    # Another session (the window opened again, nothing exported yet): the
+    # map already in the output folder can be previewed and its folder opened.
+    again = _dialog()
+    again.o_dir.setText(str(tmp_path / "web maps"))
+    again.e_slug.setText("arlo-terv")
+    assert again.local_result is None
+    assert again.btn_preview.isEnabled() and again.btn_folder.isEnabled()
+    again.preview()
+    assert again.preview_server.root == os.path.realpath(folder)
+    with urllib.request.urlopen(again.preview_server.url("index.html")) as response:
+        assert response.status == 200 and b"assets/app.mjs" in response.read()
+    again.preview_server.stop()
+    slug = again.e_slug.text()
+    again.e_slug.setText(slug + "-masik")  # no map under that address name
+    assert not again.btn_preview.isEnabled() and not again.btn_folder.isEnabled()
+    again.e_slug.setText(slug)
+    assert again.btn_preview.isEnabled()
+    again.close()
 
 
 def test_r2_publish_needs_approval_and_runs_in_a_task(project, messages, tmp_path, monkeypatch):

@@ -322,8 +322,8 @@ into a public, self-contained web map. The window title shows the plugin version
   with its own `index.html`, ready to copy to any web server. Each export replaces the previous
   one there (only files an earlier export wrote are removed; your other files stay). Tick *Keep
   earlier versions in the local folder* (*Output* tab) to keep each export as a version in
-  `releases/` instead, with rollback. **Preview** (after an export) serves it
-  on `127.0.0.1` with byte ranges and opens your browser. Neither needs an account or an upload.
+  `releases/` instead, with rollback. **Preview** (after an export, or for a map
+  exported earlier into the output folder) serves it on `127.0.0.1` with byte ranges and opens your browser. Neither needs an account or an upload.
   They work offline unless the export reads OpenStreetMap data from the Protomaps build (the
   basemap, or, without a basemap, street-name search and house-number search without a street
   field), a published raster layer is
@@ -588,7 +588,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.8**. Newest first:
+This README describes QWebMap **4.58.9**. Newest first:
+
+**4.58.9** — Preview a web map exported earlier
+- *Preview* and *Open folder* are enabled whenever the output folder holds an exported map under the current address name.
 
 **4.58.8** — raster tiles start where the layer can be seen
 - From the first zoom where a raster layer is at least 8 px across (a crash on QGIS 4 for Windows exporting a hillshade).
