@@ -42,6 +42,7 @@ from .vendor.pmtiles.tile import Compression
 ORIGIN = 20037508.342789244          # half the Web Mercator world width (m)
 WEB_MERCATOR = "EPSG:3857"
 LARGE_TILES_PER_LAYER = 400_000      # past this a layer takes hours: warned about (no limit)
+MIN_LAYER_PX = 8                      # raster tiles from the zoom where the layer is this wide (CSS px)
 ONLINE_PROVIDERS = {"wms", "arcgismapserver", "arcgisfeatureserver", "xyz", "wcs"}
 
 
@@ -230,6 +231,15 @@ def plan_layer(project, layer, config: LayerConfig, profile: PublicationProfile,
     if online:
         warnings.append(f'"{layer.name()}" is an online map service: check that its licence allows '
                         "republishing its images.")
+    # Not from zooms where the layer is a few pixels at most (a 16 km DEM is
+    # under a pixel at zoom 0): nothing to see there, and on QGIS 4 for
+    # Windows such renders of a hillshade, started together at every zoom,
+    # ended QGIS at once.
+    if not area.isEmpty():
+        size = max(area.width(), area.height())
+        if size > 0:
+            first = math.ceil(math.log2(MIN_LAYER_PX * 2 * ORIGIN / (256 * size)))
+            low = min(high, max(low, first))
     box = (area.xMinimum(), area.yMinimum(), area.xMaximum(), area.yMaximum())
     tiles = 0 if area.isEmpty() else count_tiles(box, low, high)
     return RasterPlan(layer.id(), low, high, tiles, box, online, warnings, native_m, latitude, hidpi)
@@ -388,7 +398,8 @@ def render_layer(project, layer, config: LayerConfig, plan: RasterPlan, output: 
     # rendering ends QGIS without a message; the last lines say what it drew.
     renderer = layer.renderer()
     crash_log.note(f'Raster "{layer.name()}": {layer.providerType()}, '
-                   f'{renderer.type() if renderer is not None else "no renderer"}, {layer.crs().authid()}, '
+                   f'{renderer.type() if renderer is not None else "no renderer"}, '
+                   f'{layer.crs().authid() or layer.crs().description() or "custom CRS"}, '
                    f'zooms {plan.min_zoom}-{plan.max_zoom}, about {plan.tiles} tiles, {threads} renders at once')
     with opencl_off():
         warped = warped_copy(layer, plan, 512 if config.raster_hidpi else 256, output + ".warp.tif")

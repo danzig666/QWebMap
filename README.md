@@ -588,7 +588,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.7**. Newest first:
+This README describes QWebMap **4.58.8**. Newest first:
+
+**4.58.8** — raster tiles start where the layer can be seen
+- From the first zoom where a raster layer is at least 8 px across (a crash on QGIS 4 for Windows exporting a hillshade).
 
 **4.58.7** — the export log names the raster layer being drawn
 - For crashes inside QGIS's raster rendering, which end QGIS 4 on Windows without a message.
