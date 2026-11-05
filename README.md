@@ -588,7 +588,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.6**. Newest first:
+This README describes QWebMap **4.58.7**. Newest first:
+
+**4.58.7** — the export log names the raster layer being drawn
+- For crashes inside QGIS's raster rendering, which end QGIS 4 on Windows without a message.
 
 **4.58.6** — helper processes start on QGIS 4 for Windows
 - A project date variable sent by PyQt6 was refused by the helpers, so exports ran in QGIS itself.

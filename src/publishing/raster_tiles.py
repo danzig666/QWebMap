@@ -32,6 +32,7 @@ from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform, Qgs
 from qgis.PyQt.QtCore import QBuffer, QByteArray, QIODevice, QRect, QSize
 from qgis.PyQt.QtGui import QColor, QImage, QImageWriter, QPainter
 
+from ..utils import crash_log
 from .errors import PublishingError
 from .models import LayerConfig, PublicationProfile
 from .pmtiles_builder import IMAGE_TILE_TYPES, ArchiveDescriptor, TileSink
@@ -383,11 +384,21 @@ def render_layer(project, layer, config: LayerConfig, plan: RasterPlan, output: 
                  title: str = "", blend: str = "normal", threads: int = 1) -> Optional[ArchiveDescriptor]:
     """_render_layer with OpenCL off (opencl_off: QGIS's OpenCL hillshade
     crashes on the export's renders)."""
+    # In the export log (flushed line by line): a crash inside QGIS's raster
+    # rendering ends QGIS without a message; the last lines say what it drew.
+    renderer = layer.renderer()
+    crash_log.note(f'Raster "{layer.name()}": {layer.providerType()}, '
+                   f'{renderer.type() if renderer is not None else "no renderer"}, {layer.crs().authid()}, '
+                   f'zooms {plan.min_zoom}-{plan.max_zoom}, about {plan.tiles} tiles, {threads} renders at once')
     with opencl_off():
         warped = warped_copy(layer, plan, 512 if config.raster_hidpi else 256, output + ".warp.tif")
+        if warped is not None:
+            crash_log.note(f'Raster "{layer.name()}": rendered from a Web Mercator copy')
         try:
-            return _render_layer(project, warped or layer, config, plan, output, progress, metatile,
-                                 title, blend, threads)
+            result = _render_layer(project, warped or layer, config, plan, output, progress, metatile,
+                                   title, blend, threads)
+            crash_log.note(f'Raster "{layer.name()}": done')
+            return result
         finally:
             if warped is not None:
                 source = warped.source()
@@ -667,8 +678,12 @@ def _render_layer(project, layer, config: LayerConfig, plan: RasterPlan, output:
             write_ready(len(cutting) > 2 * threads)
 
         try:
+            noted = None
             for z, mx, my, nx, ny, rect in metatiles():
                 progress.check()
+                if z != noted:
+                    crash_log.note(f'Raster "{layer.name()}": zoom {z}')
+                    noted = z
                 job_settings = QgsMapSettings(settings)
                 job_settings.setExtent(rect)
                 job_settings.setOutputSize(QSize(nx * tile_px, ny * tile_px))
