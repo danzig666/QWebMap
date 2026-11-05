@@ -975,7 +975,10 @@ def _render_terrain(project, profile, extent_3857, work_dir, progress, warnings)
         os.remove(output)
     progress.info(f'Terrain: "{layer.name()}", zooms {low}-{high}')
     try:
+        from ..utils import crash_log  # pylint: disable=import-outside-toplevel
+        crash_log.note(f'Terrain "{layer.name()}": zooms {low}-{high}')
         descriptor = terrain.render_terrain(layer, area, low, high, output, progress)
+        crash_log.note(f'Terrain "{layer.name()}": done')
     except Cancelled:
         raise
     except PublishingError as error:
