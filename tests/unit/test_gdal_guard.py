@@ -69,3 +69,30 @@ def test_helper_start_up_errors_go_into_the_export_log(tmp_path):
     text = export_workers.startup_errors(str(tmp_path))
     assert "worker 0 log:" in text and "DLL load failed" in text and "worker 1" not in text
     assert export_workers.startup_errors(str(tmp_path / "missing")) == ""
+
+
+def test_helpers_accept_qt_date_and_colour_variables():
+    """A project variable holding a QDateTime (@project_creation_date) or a
+    QColor reaches the helpers on QGIS 3 (PyQt5: through sip) and on QGIS 4
+    (PyQt6: the class itself); other classes are still refused."""
+    import io  # pylint: disable=import-outside-toplevel
+    import pickle  # pylint: disable=import-outside-toplevel
+    import pytest  # pylint: disable=import-outside-toplevel
+    import export_workers  # pylint: disable=import-outside-toplevel
+    from qgis.PyQt.QtCore import QDateTime  # pylint: disable=import-outside-toplevel
+    from qgis.PyQt.QtGui import QColor  # pylint: disable=import-outside-toplevel
+    stream = io.BytesIO()
+    export_workers.send(stream, ("init", {"when": QDateTime(2026, 11, 5, 7, 2), "colour": QColor(10, 20, 30)}))
+    stream.seek(0)
+    message = export_workers.receive(stream)
+    assert message[1]["when"] == QDateTime(2026, 11, 5, 7, 2) and message[1]["colour"] == QColor(10, 20, 30)
+    unpickler = export_workers._Unpickler(io.BytesIO(b""))  # pylint: disable=protected-access
+    for package in ("PyQt5", "PyQt6"):
+        try:
+            assert unpickler.find_class(f"{package}.QtCore", "QDateTime").__name__ == "QDateTime"
+        except ImportError:
+            pass  # that PyQt is not installed here: its name was allowed
+        with pytest.raises(pickle.UnpicklingError):
+            unpickler.find_class(f"{package}.QtCore", "QProcess")
+    with pytest.raises(pickle.UnpicklingError):
+        unpickler.find_class("os", "system")
