@@ -207,6 +207,11 @@ class PublishDialog(QDialog):
         self.profile = self._load_profile()
         self._build()
         self._populate(self.profile)
+        # Preview / Open folder: also for a map exported earlier (another
+        # session) into the output folder, under this address name.
+        for field in (self.o_dir, self.e_slug, self.e_title):
+            field.textChanged.connect(self._update_local_buttons)
+        self._update_local_buttons()
         self._review_fp = None        # disclosure fingerprint shown on the Review tab
         self._project_gone = False    # the project was closed (File > Open, New)
         self._saved_json = self._profile_json()
@@ -3390,8 +3395,7 @@ class PublishDialog(QDialog):
             result.entry_path, len(result.release.files), result.release.total_bytes / 1e6))
         for warning in result.warnings:
             self.log(f"⚠ {warning}")
-        for button in (self.btn_preview, self.btn_folder):
-            button.setEnabled(True)
+        self._update_local_buttons()
         return True
 
     def _fail(self, code, message, detail=""):
@@ -3400,25 +3404,56 @@ class PublishDialog(QDialog):
             self.log(detail)
         QMessageBox.warning(self, tr("Web map"), f"{message}\n\n{code}")
 
+    def _existing_map_dir(self) -> str:
+        """The web map exported into the output folder under the current
+        address name (by this window or earlier: its index.html is there),
+        else ""."""
+        base = self.o_dir.text().strip()
+        slug = self.e_slug.text().strip() or slugify(self.e_title.text().strip())
+        if not base or not slug:
+            return ""
+        folder = os.path.join(os.path.abspath(os.path.expanduser(base)), slug)
+        return folder if os.path.isfile(os.path.join(folder, "index.html")) else ""
+
+    def _local_map_dir(self) -> str:
+        """What Preview and Open folder show: the map in the output folder for
+        the current settings, else the one this window last exported."""
+        folder = self._existing_map_dir()
+        if folder:
+            return folder
+        if self.local_result and os.path.isfile(os.path.join(self.local_result.publication_dir, "index.html")):
+            return self.local_result.publication_dir
+        return ""
+
+    def _update_local_buttons(self, *_):
+        available = bool(self._local_map_dir())
+        for button in (self.btn_preview, self.btn_folder):
+            button.setEnabled(available)
+        self.btn_preview.setToolTip(
+            tr("Opens the web map exported into the output folder in your browser (served from this "
+               "computer)") if available else tr("Export the web map locally first"))
+
     def preview(self):
-        if not self.local_result:
+        folder = self._local_map_dir()
+        if not folder:
+            self._update_local_buttons()
             return
         from ..publishing.preview_server import PreviewServer  # pylint: disable=import-outside-toplevel
-        folder = os.path.realpath(self.local_result.publication_dir)
-        if self.preview_server is not None and self.preview_server.root != folder:
+        if self.preview_server is not None and self.preview_server.root != os.path.realpath(folder):
             self.preview_server.stop()  # exported elsewhere since (another name or folder)
             self.preview_server = None
         if self.preview_server is None:
             # The publication folder only: not the work files, the cache or
             # other maps next to it.
-            self.preview_server = PreviewServer(self.local_result.publication_dir).start()
+            self.preview_server = PreviewServer(folder).start()
         url = self.preview_server.url("index.html")
         self.log(tr("Preview: {}").format(url))
         QDesktopServices.openUrl(QUrl(url))
 
     def open_folder(self):
-        if self.local_result:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self.local_result.publication_dir))
+        folder = self._local_map_dir()
+        if folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def open_map(self):
         if self.public_url:

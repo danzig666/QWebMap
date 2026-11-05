@@ -1008,7 +1008,7 @@ Online map services (WMS/XYZ rasters) are flagged: check their licence allows re
 </li><li>
 <strong>Export locally</strong> — Builds the web map into the local folder. Asks first if the extent is the current map view, and may offer to speed up a slow zoomed-out map. Saves the settings first. Blocks the rest of QGIS while it runs.
 </li><li>
-<strong>Preview</strong> — Enabled after an export. Serves the exported folder on a local web server and opens it in the browser.
+<strong>Preview</strong> — Enabled when the output folder holds an exported web map under the current address name: after an export, or exported earlier (another session). Serves that folder on a local web server and opens it in the browser.
 </li><li>
 <strong>Publish</strong> — Local only: exports, then enables Open map (file address). R2/S3/SSH: checks the approval, reuses the last export if the settings are identical (else exports), then uploads in the background, verifies the public URL and activates the release. The status shows the stable address and, for R2/S3, "This version" (versioned link).
 </li><li>
