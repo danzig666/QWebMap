@@ -22,6 +22,9 @@ def test_layers_a_browser_cannot_load_are_rendered():
         ({"type": "xyz", "url": "http://tiles.example.org/{z}/{x}/{y}.png"}, "https"),
         ({"type": "xyz", "url": "https://t.example.org/{z}/{x}/{y}.png", "authcfg": "abc123"}, "login"),
         ({"type": "xyz", "url": "https://t.example.org/{z}/{x}/{y}.png", "username": "u"}, "login"),
+        # A login written into the address stays in QGIS too (never in manifest.json).
+        ({"type": "xyz", "url": "https://alice:s3cret@t.example.org/{z}/{x}/{y}.png"}, "login"),
+        ({"url": "https://alice:s3cret@wms.example.org/ows", "layers": "a"}, "login"),
         ({"type": "xyz", "url": "https://t.example.org/{z}/{x}/{y}.png", "http-header:referer": "x"}, "headers"),
         ({"type": "xyz", "url": "https://t.example.org/q/{q}.png"}, "template"),
         ({"url": "https://wmts.example.org/wmts", "tileMatrixSet": "EPSG:3857", "layers": "a"}, "WMTS"),

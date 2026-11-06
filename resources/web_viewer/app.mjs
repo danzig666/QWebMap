@@ -227,6 +227,7 @@ async function start() {
   setText("q2vt-description", manifest.description || "");
   setText("q2vt-release", `${t("app.release")}: ${manifest.releaseId}`);
   setText("q2vt-loading-text", t("app.loading"));
+  document.getElementById("q2vt-map")?.setAttribute("aria-label", t("map.title"));
   applyBranding(manifest, pageUrl);
   applyInfo(manifest, pageUrl);
   viewer.manifest = manifest;
@@ -266,6 +267,14 @@ async function start() {
         "CooperativeGesturesHandler.WindowsHelpText": t("embed.zoomWindows"),
         "CooperativeGesturesHandler.MacHelpText": t("embed.zoomMac"),
         "CooperativeGesturesHandler.MobileHelpText": t("embed.zoomMobile"),
+        // The map controls' labels (screen readers, tooltips) in the map's language.
+        "NavigationControl.ZoomIn": t("map.zoomIn"),
+        "NavigationControl.ZoomOut": t("map.zoomOut"),
+        "NavigationControl.ResetBearing": t("map.resetBearing"),
+        "FullscreenControl.Enter": t("map.fullscreen"),
+        "FullscreenControl.Exit": t("map.exitFullscreen"),
+        "Popup.Close": t("map.closePopup"),
+        "Map.Title": t("map.title"),
       },
       transformConstrain: stay ? stay.constrain : null,
       canvasContextAttributes: { preserveDrawingBuffer: new URLSearchParams(location.search).has("print") },
@@ -460,7 +469,7 @@ function locateControl(map, maplibregl, bounds) {
           marker.setLngLat([longitude, latitude]).addTo(map);
           map.flyTo({ center: [longitude, latitude],
             zoom: Math.max(map.getZoom(), Math.min(17, map.getMaxZoom())) });
-        }, () => notice("app.locateFailed"), { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+        }, () => notice("app.locateFailed", 9000), { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
       });
       return box;
     },

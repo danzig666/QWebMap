@@ -1412,8 +1412,10 @@ def test_output_folder_with_shell_and_url_characters(plugin, tmp_path, monkeypat
     server_initializer.ServerInitializer(EXTENT, 10, 0, result, 11).serve_tiles(launch=False)
     with open(os.path.join(result, "utils", "activate_server.bat"), encoding="utf-8") as handle:
         batch = handle.read()
-    server = os.path.join(result, "utils", "tiles_server.py")
-    assert f'"C:\\Q%%GIS%%\\pythonw3.exe" "{server}" --port' in batch, batch
+    # The server next to it (cd /d "%~dp0"): no non-ASCII folder names read
+    # in the OEM code page; UTF-8 for the Python path.
+    assert '"C:\\Q%%GIS%%\\pythonw3.exe" "tiles_server.py" --port' in batch, batch
+    assert batch.index("chcp 65001") < batch.index("pythonw3.exe")
 
 
 def test_shared_polygons_are_not_cut_at_the_export_extent():

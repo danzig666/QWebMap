@@ -6,7 +6,8 @@
 
 import { replaceUrl } from "./backstack.mjs";
 
-const MAX_HASH = 24000;  // a drawing (d=) can be long
+const MAX_HASH = 24000;  // the state besides the drawing
+const MAX_DRAWING = 20000;  // d= (draw.mjs keeps a drawing under 16000)
 const RELEASE_PATH = /\/releases\/r-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\/(index\.html)?$/;
 
 function b64url(text) {
@@ -47,8 +48,12 @@ export function encodeState(manifest, value, camera, defaults) {
 
 export function decodeState(manifest, hash) {
   const text = (hash || "").replace(/^#/, "");
-  if (!text || text.length > MAX_HASH) return null;
+  if (!text || text.length > MAX_HASH + MAX_DRAWING) return null;
   const params = new URLSearchParams(text);
+  // (Counted apart: a long drawing plus many switched layers or rules is
+  // still a valid link; its drawing lives only in the link.)
+  const drawingLength = (params.get("d") || "").length;
+  if (text.length - drawingLength > MAX_HASH) return null;
   if (params.get("v") !== "1") return null;
   const out = { layers: {}, groups: {}, rules: {}, opacity: {} };
   const ids = {
@@ -80,13 +85,13 @@ export function decodeState(manifest, hash) {
   }
   if (params.get("f")) {
     try {
-      const json = unb64url(params.get("f"));  // (the hash is at most MAX_HASH long)
+      const json = unb64url(params.get("f"));  // (at most MAX_HASH long)
       const filters = JSON.parse(json);
       if (filters && typeof filters === "object") out.filters = filters;
     } catch { /* ignored */ }
   }
   const drawing = params.get("d");
-  if (drawing && drawing.length <= 20000 && /^[A-Za-z0-9_-]+$/.test(drawing)) out.drawing = drawing;
+  if (drawing && drawing.length <= MAX_DRAWING && /^[A-Za-z0-9_-]+$/.test(drawing)) out.drawing = drawing;
   const selected = params.get("sel");
   if (selected && selected.length <= 600) {
     const at = selected.indexOf("~");
@@ -141,14 +146,16 @@ export class Permalink {
     return { versioned: versioned.href, stable: stable ? stable.href : null };
   }
 
+  // Whether the link is on the clipboard (else it is shown to copy by hand).
   async copy(extra = {}, which = "stable") {
     const links = this.links(extra);
     const text = (which === "stable" && links.stable) || links.versioned;
     try {
       await navigator.clipboard.writeText(text);
+      return true;
     } catch {
       window.prompt("", text);  // eslint-disable-line no-alert
+      return false;
     }
-    return text;
   }
 }

@@ -329,7 +329,15 @@ class ExportCache:
             with open(meta_path, encoding="utf-8") as handle:
                 meta = json.load(handle)
             if not meta.get("empty"):
-                shutil.copyfile(data_path, target)
+                # Through a temporary file: a copy cut short (disk full) leaves
+                # no partial dataset that would pass for the finished one.
+                temp = f"{target}.{os.getpid()}.tmp"
+                try:
+                    shutil.copyfile(data_path, temp)
+                    os.replace(temp, target)
+                finally:
+                    if os.path.exists(temp):
+                        os.remove(temp)
         except (OSError, ValueError):
             self.misses["datasets"] += 1
             return None

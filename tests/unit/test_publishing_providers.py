@@ -153,6 +153,24 @@ def test_lost_activation_response_is_reconciled(env):
     assert env["provider"].read_pointer()[0]["releaseId"] == release.release_id
 
 
+def test_reads_are_retried_too(env):
+    """HEAD (one per uploaded file) and GET are retried like writes: one 503
+    or reset does not end an upload of thousands of files; a missing object is None."""
+    client, provider = env["client"], env["provider"]
+    provider.put_bytes("a.txt", b"hello", "text/plain", "no-cache")
+    client.inject("head_object", ClientError("SlowDown", 503))
+    client.inject("get_object", ClientError("InternalError", 500))
+    sleeps = []
+    provider.sleep = sleeps.append
+    assert provider.head("a.txt")["size"] == 5
+    assert provider.get_bytes("a.txt")[0] == b"hello"
+    assert len(sleeps) == 2
+    assert provider.head("missing.txt") is None and provider.get_bytes("missing.txt") is None
+    client.inject("head_object", ClientError("AccessDenied", 403))
+    with pytest.raises(PublishingError):
+        provider.head("a.txt")
+
+
 def test_transient_errors_are_retried_permission_errors_are_not(env):
     client = env["client"]
     client.inject("put_object", ClientError("SlowDown", 503), times=2)

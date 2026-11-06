@@ -588,7 +588,13 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.9**. Newest first:
+This README describes QWebMap **4.58.10**. Newest first:
+
+**4.58.10** — fixes from a full bug and usability review
+- A login written into a live layer's address is refused (it was published); archives are leak-scanned in blocks; S3 reads are retried.
+- Metres-at-scale marker sizes in degree and foot projects, paint-effect draw modes, data-defined opacity and halo opacity match QGIS.
+- The Publish window asks before closing with changes it cannot save, fits a 1366 × 768 screen and follows the project's layers.
+- Web viewer: empty values under filters, basemap and search retries, Escape closes the popup, Hungarian control labels, larger tap targets.
 
 **4.58.9** — Preview a web map exported earlier
 - *Preview* and *Open folder* are enabled whenever the output folder holds an exported map under the current address name.

@@ -57,6 +57,7 @@ from .fidelity import materialize as mat
 from .fidelity.diagnostics import DiagnosticCollector, Severity
 from .fidelity.units import MERCATOR_UNITS_PER_DEGREE, physical_factor, normalize_unit, MM, PERCENT
 from .fidelity.zoom import WEB_MERCATOR_TOP_SCALE
+from .fidelity.line_effects import MODIFIER_ONLY
 
 
 def replace_symbol_layer(symbol, layer, index: int = 0) -> None:
@@ -1197,10 +1198,16 @@ class SymbolMaterializer:
 
         def in_map(value, value_unit, zoom):
             if normalize_unit(value_unit) in ("map", "m"):
-                return value
+                return self._scaled_map_distance(value, value_unit)  # (meters: project units)
             mm = _to_mm(value, value_unit)
             return None if mm is None else mm * self._map_units_per_mm(flat_rule, zoom)
 
+        if any(normalize_unit(u) == "m" for u in (unit, offset_unit)) and \
+                (in_map(1.0, unit, 0.0) is None or in_map(1.0, offset_unit, 0.0) is None):
+            self._report("Q2VT_SYMBOL_APPROXIMATE",
+                         "Draw line only inside polygon: meters at scale in a geographic CRS; "
+                         "the whole stroke is drawn.", flat_rule)
+            return None
         if mixed and (in_map(1.0, unit, 0.0) is None or in_map(1.0, offset_unit, 0.0) is None):
             self._report("Q2VT_SYMBOL_APPROXIMATE",
                          "Draw line only inside polygon: the offset's unit cannot be converted; "
@@ -2681,10 +2688,10 @@ class SymbolMaterializer:
             params += (("vertex_offset", offset),)
         return params
 
-    @staticmethod
-    def _exact_interval(layer) -> bool:
-        """Interval markers whose positions do not depend on the zoom (map-unit
-        interval and offset along the line) can be placed exactly."""
+    def _exact_interval(self, layer) -> bool:
+        """Interval markers whose positions do not depend on the zoom (an
+        interval and offset along the line in map units, or in meters at
+        scale in a projected CRS) can be placed exactly."""
         if "Interval" not in _flag_names(layer.placements()):
             return False
         try:
@@ -2693,8 +2700,24 @@ class SymbolMaterializer:
             along, along_unit = 0.0, None
         if layer.dataDefinedProperties().isActive(QgsSymbolLayer.Property.PropertyInterval):
             return False
-        return normalize_unit(layer.intervalUnit()) == "map" and layer.interval() > 0 and (
-            not along or normalize_unit(along_unit) == "map")
+        return layer.interval() > 0 \
+            and self._scaled_map_distance(1.0, layer.intervalUnit()) is not None \
+            and (not along or self._scaled_map_distance(1.0, along_unit) is not None)
+
+    def _interval_in_map_units(self, layer):
+        """``layer`` with a meters-at-scale interval and offset along the line
+        as the same lengths in project map units (QGIS draws both alike)."""
+        if "m" not in (normalize_unit(layer.intervalUnit()), normalize_unit(layer.offsetAlongLineUnit())):
+            return layer
+        layer = layer.clone()
+        if normalize_unit(layer.intervalUnit()) == "m":
+            layer.setInterval(self._scaled_map_distance(layer.interval(), layer.intervalUnit()))
+            layer.setIntervalUnit(Qgis.RenderUnit.MapUnits)
+        if normalize_unit(layer.offsetAlongLineUnit()) == "m":
+            layer.setOffsetAlongLine(self._scaled_map_distance(float(layer.offsetAlongLine()),
+                                                               layer.offsetAlongLineUnit()))
+            layer.setOffsetAlongLineUnit(Qgis.RenderUnit.MapUnits)
+        return layer
 
     @staticmethod
     def _zoom_interval(layer) -> bool:
@@ -2884,6 +2907,8 @@ class SymbolMaterializer:
         placements = _flag_names(layer.placements())
         points = placements & mat.POINT_PLACEMENTS
         exact_interval = self._exact_interval(layer)
+        if exact_interval:
+            layer = self._interval_in_map_units(layer)
         zoom_interval = not exact_interval and self._zoom_interval(layer)
         if not points and not exact_interval and not zoom_interval:
             if "Interval" in placements and \
@@ -2891,6 +2916,11 @@ class SymbolMaterializer:
                 self._report("Q2VT_MARKER_PLACEMENT_APPROX",
                              "Data-defined interval: the browser spaces these markers along the lines, "
                              "not at QGIS's positions.", flat_rule)
+            elif "Interval" in placements and layer.interval() > 0:
+                self._report("Q2VT_MARKER_PLACEMENT_APPROX",
+                             "Meters at scale in a geographic CRS (interval, offset or offset along "
+                             "the line): the browser spaces these markers along the lines, not at "
+                             "QGIS's positions.", flat_rule)
             return None  # interval driven by data: native repeated symbol
         if "CurvePoint" in points:
             self._report("Q2VT_MARKER_PLACEMENT_APPROX",
@@ -3404,7 +3434,7 @@ class SymbolMaterializer:
             name = type(item).__name__
             if name == "QgsDrawSourceEffect":
                 return None  # only an effect drawn before the arrow lies under it
-            if name != "QgsDropShadowEffect" or _enum_value(item.drawMode()) == 1:
+            if name != "QgsDropShadowEffect" or _enum_value(item.drawMode()) == MODIFIER_ONLY:
                 continue
             if normalize_unit(layer.arrowWidthUnit()) != normalize_unit(layer.arrowStartWidthUnit()) \
                     or abs(layer.offset()) > 1e-9:

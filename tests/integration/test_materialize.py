@@ -3398,3 +3398,57 @@ def test_arrow_drop_shadow_is_a_blurred_line(plugin, tmp_path):
     assert line.color().alpha() == 0
     assert abs(line.width() - (arrow.arrowWidth() + arrow.arrowStartWidth()) / 2) < 1e-9
     assert rules.index(shadows[0]) == 0  # under the arrow
+
+
+def _export_in_feet(plugin, layer, tmp_path):
+    """``_export`` in a US-feet project (EPSG:2263): meters at scale are
+    3.28 map units each (international feet in QGIS 3.34, US survey feet,
+    2 ppm longer, in QGIS 4)."""
+    from qgis.core import QgsCoordinateReferenceSystem, QgsProject
+    from q2vt_plugin.src.core.rules_flattener import RulesFlattener
+    from q2vt_plugin.src.core.rules_exporter import RulesExporter
+    from fidelity.diagnostics import DiagnosticCollector
+    reset_project(layer)
+    QgsProject.instance().setCrs(QgsCoordinateReferenceSystem("EPSG:2263"))
+    try:
+        diags = DiagnosticCollector()
+        rules = RulesFlattener(0, 16, str(tmp_path), QgsProcessingFeedback(), diags).flatten_all_rules()
+        utils = tmp_path / "utils"
+        utils.mkdir()
+        _, rules = RulesExporter(rules, EXTENT, 0, 16, str(utils), 0, QgsProcessingFeedback(),
+                                 diagnostics=diags).export()
+    finally:
+        QgsProject.instance().setCrs(QgsCoordinateReferenceSystem("EPSG:3857"))
+    return rules, diags
+
+
+def test_meters_at_scale_interval_markers_are_placed_exactly(plugin, tmp_path):
+    """A marker line with its interval and offset along the line in meters
+    at scale (zoom-independent like map units) was left to the browser's
+    spacing with no diagnostic; it is placed at QGIS's positions, the
+    lengths in project map units."""
+    layer = _layer("LineString", LINES, str(tmp_path / "mi.gpkg"))
+    ml = QgsMarkerLineSymbolLayer(True, 20)
+    ml.setPlacements(Qgis.MarkerLinePlacement.Interval)
+    ml.setIntervalUnit(Qgis.RenderUnit.MetersInMapUnits)
+    ml.setOffsetAlongLine(5)
+    ml.setOffsetAlongLineUnit(Qgis.RenderUnit.MetersInMapUnits)
+    ml.setSubSymbol(_marker(Qgis.MarkerShape.Triangle, 8))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([ml])))
+    rules, _ = _export_in_feet(plugin, layer, tmp_path)
+    recipes = [r.recipe for r in rules if r.recipe is not None and r.recipe.kind == "marker_points"]
+    assert recipes
+    assert recipes[0].param("interval") == pytest.approx(20 / 0.3048, rel=1e-5)
+    assert recipes[0].param("along") == pytest.approx(5 / 0.3048, rel=1e-5)
+
+
+def test_meters_at_scale_line_inside_polygon_in_project_units(plugin, tmp_path):
+    """"Draw line only inside polygon" with a meters-at-scale width: the
+    band was the width taken as map units (16 m: 8 ft deep in a foot CRS,
+    8 degrees in a geographic one)."""
+    layer = _layer("Polygon", INSIDE_POLYGONS, str(tmp_path / "im.gpkg"))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol(
+        [_inside_line(16, Qgis.RenderUnit.MetersInMapUnits)])))
+    rules, _ = _export_in_feet(plugin, layer, tmp_path)
+    assert [r.recipe.kind for r in rules] == ["inside_band"]
+    assert rules[0].recipe.param("outer") == pytest.approx(8 / 0.3048, rel=1e-5)

@@ -5,6 +5,13 @@
 // see and share the short, stable address, not the release's own.
 const RELEASE = /^r-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$/;
 const status = document.getElementById("q2vt-status");
+// Its few words in the map's language (index.html's lang, set by the
+// export).
+const HU = /^hu\b/i.test(document.documentElement.lang || "");
+const TEXT = HU
+  ? { loading: "Betöltés…", failed: "A térkép nem nyitható meg: " }
+  : { loading: "Loading…", failed: "The map could not be opened: " };
+status.textContent = TEXT.loading;
 
 function fail(message) {
   status.textContent = message;
@@ -32,5 +39,5 @@ try {
   } catch { /* storage unavailable: the release address stays */ }
   location.replace(target.href);
 } catch (error) {
-  fail(`The map could not be opened: ${error.message}`);
+  fail(TEXT.failed + error.message);
 }

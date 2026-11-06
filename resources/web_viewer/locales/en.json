@@ -8,7 +8,7 @@
   "app.search": "Search",
   "app.filters": "Filters",
   "app.tools": "Tools",
-  "app.reset": "Reset view and layers",
+  "app.reset": "Reset layers and filters",
   "app.share": "Share",
   "app.copyLink": "Copy link",
   "app.copied": "Link copied",
@@ -176,8 +176,16 @@
   "error.addon": "An add-on of this map could not be loaded.",
   "app.locate": "Show my location",
   "app.locateOutside": "Your location is outside this map's area.",
-  "app.locateFailed": "Your location could not be determined.",
+  "app.locateFailed": "Your location could not be determined. Allow location access for this page in your browser, then try again.",
   "wms.open": "Open the server's answer",
   "wms.blocked": "The map server does not let this page read its answer.",
-  "layer.zoomTo": "Zoom to layer"
+  "layer.zoomTo": "Zoom to layer",
+  "app.copyFailed": "The link could not be copied: select it and copy it yourself.",
+  "map.zoomIn": "Zoom in",
+  "map.zoomOut": "Zoom out",
+  "map.resetBearing": "Reset bearing to north",
+  "map.fullscreen": "Enter fullscreen",
+  "map.exitFullscreen": "Exit fullscreen",
+  "map.closePopup": "Close popup",
+  "map.title": "Map"
 }

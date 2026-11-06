@@ -11,6 +11,7 @@ import { button, el, icon } from "./icons.mjs";
 import { formatValue } from "./identify.mjs";
 import { richText } from "./rich_text.mjs";
 import { openReader } from "./reader.mjs";
+import { notice } from "./diagnostics.mjs";
 
 export function formatArea(m2) {
   if (m2 >= 10000) return `${formatNumber(m2 / 10000, 4)} ha`;
@@ -351,9 +352,11 @@ export class ParcelReport {
     }
     card.append(restrictions);
     const actions = el("div", "q2vt-chips");
-    if (this.permalink) {
+    const parcels = this.manifest.layers.find((l) => l.id === this.layerId);
+    if (this.permalink && parcels && parcels.deepLinks) { // (only those are in the feature lookup)
       const link = button("q2vt-chip", null, "link", { text: t("popup.link") });
-      link.addEventListener("click", () => this.permalink.copy({ selected: { layerId: this.layerId, key: record.k } }));
+      link.addEventListener("click", () => this.permalink.copy({ selected: { layerId: this.layerId, key: record.k } })
+        .then((copied) => notice(copied ? "app.copied" : "app.copyFailed")));
       actions.append(link);
     }
     const print = button("q2vt-chip q2vt-chip-ghost", null, "print", { text: t("parcel.print") });

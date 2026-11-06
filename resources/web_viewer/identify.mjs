@@ -12,6 +12,7 @@ import { BackEntry } from "./backstack.mjs";
 import { t, formatNumber } from "./i18n.mjs";
 import { matchesFilters } from "./style_control.mjs";
 import { WmsInfo } from "./wms_info.mjs";
+import { notice } from "./diagnostics.mjs";
 
 const KEY = "q2vt_feature_key";
 const SAFE_URL = /^(https?:|mailto:)/i;
@@ -66,6 +67,16 @@ export class Identify {
     // No hover highlight (owner's choice): only a click selects and marks.
     this.onClick = (event) => this.click(event);
     this.map.on("click", this.onClick);
+    // Escape closes the popup; the keyboard goes back to the map.
+    this.onKey = (event) => {
+      if (event.key !== "Escape" || !this.popup.isOpen()) return;
+      const inside = this.popup.getElement()?.contains(document.activeElement);
+      // (Escape in the search box or another field is theirs.)
+      if (!inside && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target?.tagName || "")) return;
+      this.popup.remove();
+      if (inside) this.map.getCanvas().focus();
+    };
+    document.addEventListener("keydown", this.onKey);
   }
 
   interactiveLayerIds() {
@@ -96,12 +107,13 @@ export class Identify {
   async click(event) {
     if (this.viewer.measuring || this.viewer.streetView || this.viewer.drawing) return;
     this.ticket = (this.ticket || 0) + 1;  // an earlier click still loading is dropped
-    const hits = this.hits(event.point);
+    // Popups off, the parcel report on (reportOnly): a click opens parcels only.
+    const hits = this.hits(event.point).filter((h) => !this.reportOnly || h.layerId === this.prefer);
     if (!hits.length) {
       this.popup.remove();
       // Live WMS layers: what their servers know about this place.
       const ticket = this.ticket;
-      const info = this.wms && this.wms.available ? await this.wms.query(event.lngLat).catch(() => null) : null;
+      const info = this.wms && this.wms.available && !this.reportOnly ? await this.wms.query(event.lngLat).catch(() => null) : null;
       if (info && ticket === this.ticket) {
         this.popup.setLngLat(event.lngLat).setDOMContent(info).addTo(this.map);
         this.back.open();
@@ -122,6 +134,7 @@ export class Identify {
       this.select({ layerId, key });
       return;
     }
+    if (this.reportOnly) return;  // (no popups)
     const layer = this.layers.get(layerId);
     let record = null;
     try { record = await this.lookup.get(layerId, key); } catch { record = null; }
@@ -176,7 +189,8 @@ export class Identify {
     if (layer && layer.deepLinks && this.viewer.permalink) {
       const link = element("button", "q2vt-chip q2vt-chip-ghost", t("popup.link"));
       link.type = "button";
-      link.addEventListener("click", () => this.viewer.permalink.copy({ selected: { layerId, key } }));
+      link.addEventListener("click", () => this.viewer.permalink.copy({ selected: { layerId, key } })
+        .then((copied) => notice(copied ? "app.copied" : "app.copyFailed")));
       box.append(link);
     }
     // Edition add-ons append their own sections (e.g. zone rules).
@@ -241,12 +255,16 @@ export class Identify {
   select(selection) {
     this.selected = selection;
     this.setOverlay("sel", selection);
-    this.state.value.selected = selection; // not persisted; permalink reads it
+    // Not persisted; the permalink reads it. Only layers with deep links are
+    // in the published feature lookup, so only their features go in links.
+    const layer = selection && this.layers.get(selection.layerId);
+    this.state.value.selected = layer && layer.deepLinks ? selection : null;
     if (this.viewer.permalink) this.viewer.permalink.schedule();
   }
 
   destroy() {
     this.map.off("click", this.onClick);
+    document.removeEventListener("keydown", this.onKey);
     this.popup.remove();
     for (const id of this.overlays) if (this.map.getLayer(id)) this.map.removeLayer(id);
     this.overlays.clear();

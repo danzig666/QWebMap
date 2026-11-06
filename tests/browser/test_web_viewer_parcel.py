@@ -232,6 +232,35 @@ def test_without_the_layers_tab_the_legend_switches_layers(legend_only_site, tmp
     assert len(after) == len(before)
 
 
+def test_without_the_layers_tab_a_layer_of_an_off_group_can_be_switched_on(legend_only_site, tmp_path):
+    """No group switches in the legend: a layer whose group is off is listed
+    off, and switching it on also switches its group on (it used to be left
+    out of the legend for good)."""
+    anchor = legend_only_site["records"]["100/1"]["p"][0]["x"]
+    results = _run(legend_only_site["url"], [
+        {"eval": """const v = q2vtViewer, c = v.controls;
+          const layer = v.manifest.layers.find((l) => l.title === 'Földrészletek');
+          c.control.groups.set('q2vt_test_group', { id: 'q2vt_test_group', parentId: null });
+          layer.groupId = 'q2vt_test_group';
+          document.getElementById('q2vt-tab-legend').click();
+          v.map.jumpTo({ center: %s, zoom: 15 });
+          c.state.setIn('groups', 'q2vt_test_group', false); return 1;""" % json.dumps(anchor)},
+        {"idle": True}, {"wait": 300},
+        {"eval": LEGEND_ROWS},
+        {"eval": """const row = [...document.querySelectorAll('#q2vt-pane-legend .q2vt-legend-layer')]
+            .find((b) => b.textContent.includes('Földrészletek'));
+          row.querySelector('input[role=switch]').click(); return q2vtViewer.controls.state.value.groups;"""},
+        {"idle": True}, {"wait": 300},
+        {"eval": LEGEND_ROWS},
+    ], tmp_path)
+    before, groups, after = results[1], results[2], results[3]
+    parcels = next(r for r in before if r["title"] == "Földrészletek")
+    assert parcels["on"] is False and parcels["off"]
+    assert groups["q2vt_test_group"] is True
+    parcels = next(r for r in after if r["title"] == "Földrészletek")
+    assert parcels["on"] is True and not parcels["off"]
+
+
 def test_without_the_layers_tab_the_legend_zooms_to_layers(legend_only_zoom_site, tmp_path):
     """Zoom-to-layer buttons (an option) are in the Layers tab; without the
     tab the legend has them, beside its layer switches, also on a layer
@@ -333,3 +362,21 @@ def test_print_lays_texts_out_across_the_page_once(site, tmp_path):
     assert state["general"] == 1 and len(state["same"]) == 1 and "Lke-1" in state["same"][0], state
     assert state["wide"] and state["columns"] == "3" and set(state["breaks"]) == {"auto"}
     assert pdf.stat().st_size > 10000
+
+
+def test_report_opens_with_popups_off(tmp_path_factory, tmp_path):
+    """Popups switched off, the parcel report on: a click on a parcel still
+    opens its report (no popup for the other layers)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "integration"))
+    from test_publishing_parcel_report import build_site  # pylint: disable=import-error
+    built = build_site(tmp_path_factory.mktemp("parcelnopopups"), popups=False)
+    publication = os.path.dirname(os.path.dirname(built["rel"]))
+    anchor = built["records"]["100/1"]["p"][0]["x"]
+    with PreviewServer(os.path.dirname(publication)) as server:
+        card = _run(server.url(f"{os.path.basename(publication)}/index.html"), [
+            {"eval": "q2vtViewer.map.jumpTo({ center: %s, zoom: 18 }); return 1;" % json.dumps(anchor)},
+            {"idle": True},
+            {"clickLngLat": anchor}, {"wait": 800},
+            {"eval": CARD},
+        ], tmp_path)[1]
+    assert card["title"] == "Hrsz. 100/1" and card["popups"] == 0

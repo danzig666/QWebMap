@@ -398,3 +398,29 @@ def test_a_new_layer_keeps_the_others_cached(plugin, tmp_path):
     hits, total = counts(log)
     assert 0 < hits < total, [l for l in log.lines if "Redone (" in l]
     assert not any("(view)" in l for l in log.lines if "Redone (" in l), log.lines
+
+
+def test_an_unparsable_filter_is_not_cached_as_empty(plugin, tmp_path):
+    """A filter calling a function that is not loaded (a plugin's, a project
+    macro's) makes its dataset fail; with the function back, the next export
+    redoes it instead of reusing an "empty" result and its old warning."""
+    from qgis.core import (QgsExpression, QgsFillSymbol,  # pylint: disable=import-outside-toplevel
+                           QgsRuleBasedRenderer)
+    from qgis.core import qgsfunction  # pylint: disable=import-outside-toplevel
+    project, profile, parcels, _ = _setup(tmp_path)  # (the zones: something to publish)
+    root = QgsRuleBasedRenderer.Rule(None)
+    root.appendChild(QgsRuleBasedRenderer.Rule(QgsFillSymbol.createSimple({"color": "red"}),
+                                               filterExp='q2vt_test_keep("hrsz")'))
+    parcels.setRenderer(QgsRuleBasedRenderer(root))
+    first = export_local(project, profile, EXTENT, Log())
+    assert any(code == "Q2VT_EXPR_INVALID" for code, _ in _diagnostics(first))
+
+    @qgsfunction(args="auto", group="Custom", register=False)
+    def q2vt_test_keep(value, feature, parent):  # pylint: disable=unused-argument
+        return True
+    QgsExpression.registerFunction(q2vt_test_keep)
+    try:
+        second = export_local(project, profile, EXTENT, Log())
+    finally:
+        QgsExpression.unregisterFunction("q2vt_test_keep")
+    assert not any(code == "Q2VT_EXPR_INVALID" for code, _ in _diagnostics(second))

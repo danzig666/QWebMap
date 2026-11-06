@@ -146,12 +146,16 @@ class S3Provider(Provider):
 
     def _call(self, name: str, progress=None, **params):
         """Call a client method with bounded retries for transient failures."""
+        return self._retried(lambda: getattr(self.client, name)(**params), progress)
+
+    def _retried(self, operation, progress=None):
+        """``operation()`` with bounded retries for transient failures."""
         attempt = 0
         while True:
             if progress is not None and progress.canceled():
                 raise Cancelled()
             try:
-                return getattr(self.client, name)(**params)
+                return operation()
             except Exception as error:  # noqa: BLE001 - classified below
                 if isinstance(error, (PublishingError, Cancelled)):
                     raise
@@ -184,11 +188,11 @@ class S3Provider(Provider):
 
     def head(self, relative: str) -> Optional[dict]:
         try:
-            response = self.client.head_object(Bucket=self.bucket, Key=self.key(relative))
-        except Exception as error:  # noqa: BLE001
-            if self._not_found(error):
+            response = self._call("head_object", Bucket=self.bucket, Key=self.key(relative))
+        except PublishingError as error:
+            if self._not_found(error.__cause__):
                 return None
-            raise self._classify(error) from error
+            raise
         return {"size": response.get("ContentLength"), "etag": response.get("ETag"),
                 "metadata": response.get("Metadata") or {}, "contentType": response.get("ContentType")}
 
@@ -246,13 +250,15 @@ class S3Provider(Provider):
         return True
 
     def get_bytes(self, relative: str) -> Optional[Tuple[bytes, str]]:
-        try:
+        def fetch():  # the body is read inside the retries too (a reset mid-read)
             response = self.client.get_object(Bucket=self.bucket, Key=self.key(relative))
-        except Exception as error:  # noqa: BLE001
-            if self._not_found(error):
+            return response["Body"].read(), response.get("ETag", "")
+        try:
+            return self._retried(fetch)
+        except PublishingError as error:
+            if self._not_found(error.__cause__):
                 return None
-            raise self._classify(error) from error
-        return response["Body"].read(), response.get("ETag", "")
+            raise
 
     def put_file(self, relative: str, path: str, content_type: str, cache_control: str,
                  sha256: str, progress=None, journal=None) -> str:
@@ -434,7 +440,8 @@ class Journal:
             tmp = f"{self.path}.tmp"
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(self.data, handle, indent=1, default=str)
+                # json.dumps without indent: the C encoder (rewritten twice per uploaded file)
+                handle.write(json.dumps(self.data, separators=(",", ":"), default=str))
             os.replace(tmp, self.path)
             try:
                 os.chmod(self.path, 0o600)

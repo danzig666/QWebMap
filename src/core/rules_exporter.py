@@ -1249,6 +1249,14 @@ class RulesExporter:
                         f"Base-layer build failed for layer_id={lid}:\n"
                         f"{traceback.format_exc()}"
                     )
+                    # A file written part way would pass for the finished one
+                    # (its rule groups read only the features in it); the
+                    # worker path deletes it too.
+                    try:
+                        if exists(target_paths[lid]):
+                            os.remove(target_paths[lid])
+                    except OSError:
+                        pass
         return target_paths
 
     def transform_extent(self, src_path):
@@ -1956,6 +1964,9 @@ class RulesExporter:
         expr = QgsExpression(expr_str)
 
         if expr.hasParserError():
+            # Not cached as "empty": the function it misses (a plugin's, a
+            # project macro's) may be there next time, with the same key.
+            self._failed_groups.add(grp.output_dataset)
             self._post("pushWarning", f"{warning_msg} is not valid.")
             self.diagnostics.add(
                 "Q2VT_EXPR_INVALID", f"{warning_msg} is not valid: {expr.parserErrorString()}",

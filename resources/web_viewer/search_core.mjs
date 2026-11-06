@@ -76,7 +76,8 @@ export function rank(entries, query, { allowSubstring = true, limit = 50 } = {})
     if (!previous || score < previous.score) best.set(id, { score, entry });
   }
   const ordered = [...best.values()].sort((a, b) => a.score - b.score
-    || normalize(a.entry[2]).localeCompare(normalize(b.entry[2]))
-    || a.entry[0] - b.entry[0] || String(a.entry[1]).localeCompare(String(b.entry[1])));
+    // (Numbers in labels by value: parcel 9/1 before 10/1.)
+    || normalize(a.entry[2]).localeCompare(normalize(b.entry[2]), undefined, { numeric: true })
+    || a.entry[0] - b.entry[0] || String(a.entry[1]).localeCompare(String(b.entry[1]), undefined, { numeric: true }));
   return { results: ordered.slice(0, limit), total: ordered.length };
 }

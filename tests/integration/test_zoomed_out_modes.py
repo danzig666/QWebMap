@@ -119,3 +119,11 @@ def test_image_tiles_follow_the_thin_hairlines_option(plugin, tmp_path):
     image = next(c for c in manifest["components"] if c["role"] == "image")
     source = next(s for s in manifest["sources"] if s["id"] == image["sourceId"])
     assert _image_px(release, source) == {256}
+
+
+def test_merged_mode_reads_rule_numbers_of_three_digits(plugin):  # pylint: disable=unused-argument
+    """A layer with over 100 classes has datasets ...r100g02c02...: merged too."""
+    from q2vt_plugin.src.core.tiles_generator import GDALTilesGenerator  # pylint: disable=import-error
+    for name in ("t00d01r07g02c02", "t00d01r100g02c02", "t00d100r1234g02c01"):
+        match = GDALTilesGenerator._DATASET.search(name)  # pylint: disable=protected-access
+        assert match and (match.group(1), match.group(2)) == ("00", "02"), name

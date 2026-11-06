@@ -38,8 +38,9 @@ def test_viewer_options_reflow_with_the_window_width(plugin):
     reset_project()
     from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error
     dialog = PublishDialog(iface=None)
-    tab = dialog.tabs.widget(1)
-    tab.setParent(None)  # the Interaction tab alone (the Map tab sets the window's minimum width)
+    # The Interaction tab alone (the Map tab sets the window's minimum width),
+    # out of its scroll area.
+    tab = dialog.tabs.widget(1).takeWidget()
     tab.show()
     try:
         wide_rows, wide_columns = _show(dialog, tab, 1900)

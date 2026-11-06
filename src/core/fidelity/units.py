@@ -101,6 +101,33 @@ def qgis_metres_per_degree(latitude: float) -> float:
     return radius * c / 180.0
 
 
+# Metres of a projected CRS's map unit, by its Qgis.DistanceUnit name (any
+# letter case); QgsUnitTypes knows the rest (QGIS 3.30+ has the US survey,
+# British, Indian... feet as units of their own).
+_METRES_PER_UNIT = {"meters": 1.0, "kilometers": 1000.0, "feet": 0.3048,
+                    "feetussurvey": 1200.0 / 3937.0, "usfeet": 1200.0 / 3937.0,
+                    "yards": 0.9144, "miles": 1609.344, "nauticalmiles": 1852.0,
+                    "centimeters": 0.01, "millimeters": 0.001, "inches": 0.0254}
+
+
+def metres_per_unit(name: str) -> float:
+    """Metres of the distance unit called ``name`` (1 when unknown)."""
+    key = (name or "").replace(" ", "").replace("_", "")
+    if key.lower() in _METRES_PER_UNIT:
+        return _METRES_PER_UNIT[key.lower()]
+    try:
+        from qgis.core import Qgis, QgsUnitTypes  # pylint: disable=import-outside-toplevel
+        unit = next((getattr(Qgis.DistanceUnit, attr) for attr in dir(Qgis.DistanceUnit)
+                     if attr.lower() == key.lower()), None)
+        if unit is not None:
+            factor = QgsUnitTypes.fromUnitToUnitFactor(unit, Qgis.DistanceUnit.Meters)
+            if factor > 0 and math.isfinite(factor):
+                return float(factor)
+    except (ImportError, AttributeError, TypeError):
+        pass
+    return 1.0
+
+
 @dataclass(frozen=True)
 class MapUnitContext:
     """How project map units and ground meters relate to Web Mercator units.
@@ -144,8 +171,7 @@ class MapUnitContext:
             return cls(MERCATOR_UNITS_PER_DEGREE, mercator_per_meter, False,
                        "Geographic project: 1 degree = Mercator x-extent of 1 degree",
                        qgis_metres_per_degree(lat))
-        feet = {"feet": 0.3048, "usfeet": 1200.0 / 3937.0}.get(units.replace(" ", ""))
-        unit_m = feet or 1.0
+        unit_m = metres_per_unit(map_units)
         return cls(unit_m * mercator_per_meter, mercator_per_meter, False,
                    f"Projected project CRS; scale factor at latitude {lat:.4f}", unit_m)
 

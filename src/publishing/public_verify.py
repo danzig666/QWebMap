@@ -136,7 +136,10 @@ def verify_release(public_release_url: str, release_dir: str, viewer_origin: Opt
         ok = status == 200 and head.get("content-type", "").startswith(kind) \
             and "attachment" not in head.get("content-disposition", "")
         if ok and not truncated and rel in inventory:
-            ok = hashlib.sha256(_decoded(body, head)).hexdigest() == inventory[rel]["sha256"]
+            try:
+                ok = hashlib.sha256(_decoded(body, head)).hexdigest() == inventory[rel]["sha256"]
+            except ValueError:  # a broken gzip body
+                ok = False
         result.add(f"mime:{rel}", ok, f"status {status}, Content-Type {head.get('content-type')!r}")
     # The whole manifest (a large project's is over SMALL; cut short it did
     # not parse and the release was never activated).
@@ -158,7 +161,7 @@ def verify_release(public_release_url: str, release_dir: str, viewer_origin: Opt
         local_path = os.path.join(release_dir, *source["href"].split("/"))
         size = os.path.getsize(local_path)
         status, head, _, _ = http.request(url, method="HEAD")
-        result.add("archive:head", status == 200 and int(head.get("content-length", -1)) == size,
+        result.add("archive:head", status == 200 and _length(head) == size,
                    f"status {status}, Content-Length {head.get('content-length')} (local {size})")
         result.add("encoding:archive", not head.get("content-encoding"),
                    f"Content-Encoding {head.get('content-encoding')!r} would break byte offsets")
@@ -181,9 +184,21 @@ def verify_release(public_release_url: str, release_dir: str, viewer_origin: Opt
 
 
 def _decoded(body: bytes, head: dict) -> bytes:
+    """The body, gzip undone; a broken gzip body raises ValueError (as bad JSON does)."""
     if head.get("content-encoding") == "gzip":
-        return gzip.decompress(body)
+        try:
+            return gzip.decompress(body)
+        except (OSError, EOFError) as error:
+            raise ValueError(f"broken gzip body: {error}") from error
     return body
+
+
+def _length(head: dict) -> int:
+    """Content-Length as a number (-1: missing or not a number)."""
+    try:
+        return int(head.get("content-length", -1))
+    except (TypeError, ValueError):
+        return -1
 
 
 def _cors(http: Http, url: str, origin: str, result: VerifyResult) -> None:
@@ -234,6 +249,8 @@ def verify_pointer(public_base: str, expected_release: str, http: Optional[Http]
         pointer = json.loads(_decoded(body, head))
     except ValueError:
         return Check("activation", False, f"current.json: status {status}, not JSON")
+    if not isinstance(pointer, dict):
+        return Check("activation", False, f"current.json: status {status}, not a JSON object")
     ok = status == 200 and pointer.get("releaseId") == expected_release
     return Check("activation", ok, f"current.json points at {pointer.get('releaseId')} "
                                    f"(expected {expected_release}); Cache-Control "

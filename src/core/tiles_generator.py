@@ -910,14 +910,18 @@ class GDALTilesGenerator:
         try:
             self._run_parallel([job[2] for job in jobs], [job[3] for job in jobs], [job[4] for job in jobs])
             for index, (key, target, *_rest) in enumerate(groups):
-                pieces = [job for job in jobs if job[0] == index]
+                # (A job may write no file: a merged copy without features.)
+                pieces = [job for job in jobs if job[0] == index and os.path.exists(job[1])]
                 if len(pieces) > 1 or (pieces and pieces[0][1] != target):  # one piece: as it is
                     self._check_cancelled()
                     merge_mbtiles([job[1] for job in pieces], target, min_zoom, max_zoom, workers=cpu)
             self._check_cancelled()
+            # A group without a single tile has no file: left out (not cached).
             stored = {target: self.cache.put_tiles(key, target)
-                      for key, target, *_ in groups if key and self.cache is not None}
-            merge_mbtiles([stored.get(path, path) for path in parts], output, min_zoom, max_zoom,
+                      for key, target, *_ in groups if key and self.cache is not None
+                      and os.path.exists(target)}
+            merge_mbtiles([stored.get(path, path) for path in parts
+                           if path in stored or os.path.exists(path)], output, min_zoom, max_zoom,
                           workers=cpu)
         finally:
             # Kept in the cache; not needed here (nor the pieces of a failed
@@ -952,7 +956,7 @@ class GDALTilesGenerator:
             jobs.append((index, piece, command, cost, owner))
         return jobs
 
-    _DATASET = re.compile(r"t(\d\d)d\d\dr\d\dg(\d\d)c(\d\d)")
+    _DATASET = re.compile(r"t(\d+)d\d+r\d+g(\d+)c(\d+)")  # (2 digits, more when needed)
 
     def _merged_members(self, owner: str, members: List[QgsVectorLayer]) -> Dict[str, Tuple[int, int, bool]]:
         """{dataset: (first, last merged zoom, outline)} of a merged layer's

@@ -4,11 +4,12 @@
 // moves to its bounds/anchor, marks it, selects the feature and opens its
 // popup (offering to switch a hidden layer on; filters are not overridden).
 import { t, formatNumber } from "./i18n.mjs";
-import { button, el, icon } from "./icons.mjs";
+import { button, el, icon, mapPadding } from "./icons.mjs";
 
 const MARKER = "q2vt_search_marker";
 const STREETS = "q2vt-streets";  // OpenStreetMap street names (no map layer behind them)
 const ADDRESSES = "q2vt-addresses";  // house numbers "street number" (no map layer behind them)
+const FIT_MAX_ZOOM = 19;  // a found feature is not fitted closer than this
 
 export class Search {
   constructor({ map, manifest, manifestUrl, assetsUrl, container, identify }) {
@@ -42,7 +43,7 @@ export class Search {
     field.append(icon("search", 18), this.input, clear);
     container.append(field, this.list);
     this.collapsible(container, clear);
-    this.input.addEventListener("focus", () => this.start(), { once: true });
+    this.input.addEventListener("focus", () => this.start().catch(() => {}), { once: true });
     this.input.addEventListener("input", () => this.debounce());
     this.input.addEventListener("keydown", (e) => this.key(e));
     document.addEventListener("click", (e) => { if (!container.contains(e.target)) this.close(); });
@@ -78,7 +79,7 @@ export class Search {
 
   start() {
     if (this.worker) return this.ready;
-    this.worker = new Worker(this.workerUrl, { type: "module" });
+    const worker = (this.worker = new Worker(this.workerUrl, { type: "module" }));
     this.ready = new Promise((resolve, reject) => {
       this.worker.onmessage = (event) => {
         const msg = event.data;
@@ -87,10 +88,21 @@ export class Search {
         const callback = this.pending.get(msg.id);
         if (callback) { this.pending.delete(msg.id); callback(msg); }
       };
-      this.worker.onerror = (error) => reject(error);
+      this.worker.onerror = (error) => { reject(error); this.reset(worker); };
     });
     this.worker.postMessage({ type: "init", manifestUrl: this.manifestUrl });
+    this.ready.catch(() => this.reset(worker));
     return this.ready;
+  }
+
+  // A failed index load or a broken worker: the next query starts afresh (a
+  // network blip does not leave search unavailable until a reload).
+  reset(worker) {
+    if (this.worker !== worker) return;
+    worker.terminate();
+    this.worker = null;
+    for (const callback of this.pending.values()) callback({ type: "error", message: "search unavailable" });
+    this.pending.clear();
   }
 
   debounce() {
@@ -217,7 +229,9 @@ export class Search {
 // Fit a record's bounds (or centre its anchor), then wait for the tiles.
 export function goTo(map, record) {
   const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const maxZoom = Math.min(record.zoom ?? record.z ?? 18, map.getMaxZoom());
+  // (A small feature is not zoomed in to fill the screen: its street stays in view.)
+  const maxZoom = Math.min(record.zoom ?? record.z ?? 18, FIT_MAX_ZOOM, map.getMaxZoom());
+  const padding = mapPadding(60);
   const bounds = record.bounds || record.b;
   const anchor = record.anchor || record.p;
   return new Promise((resolve) => {
@@ -235,9 +249,10 @@ export function goTo(map, record) {
     });
     if (bounds && bounds[0] !== bounds[2]) {
       map.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
-        { padding: 60, maxZoom, animate: !reduce, maxDuration: 2500 });
+        { padding, maxZoom, animate: !reduce, maxDuration: 2500 });
     } else if (anchor) {
-      map.jumpTo({ center: anchor, zoom: Math.max(map.getZoom(), maxZoom) });
+      map.easeTo({ center: anchor, zoom: Math.max(map.getZoom(), maxZoom), duration: 0,
+        offset: [(padding.left - padding.right) / 2, 0] });
     }
     map.triggerRepaint();
   });

@@ -5,7 +5,7 @@
 // publisher locked show a lock instead of a switch. Helper datasets never
 // appear here.
 import { t } from "./i18n.mjs";
-import { button, el, icon, toggle } from "./icons.mjs";
+import { button, el, icon, mapPadding, toggle } from "./icons.mjs";
 
 // "Zoom to layer" (an option of the map): the layer's extent within the
 // map's. In the layer list, or in the legend when there is no Layers tab.
@@ -17,7 +17,7 @@ export function zoomToLayerButton(map, layer) {
   const zoom = button("q2vt-icon-btn q2vt-zoom-layer", `${t("layer.zoomTo")}: ${layer.title}`, "zoomin");
   zoom.addEventListener("click", () => {
     const [w, s, e, n] = layer.bounds;
-    map.fitBounds([[w, s], [e, n]], { padding: 40, maxZoom: Math.min(18, map.getMaxZoom()) });
+    map.fitBounds([[w, s], [e, n]], { padding: mapPadding(40), maxZoom: Math.min(18, map.getMaxZoom()) });
   });
   return zoom;
 }
