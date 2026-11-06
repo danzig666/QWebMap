@@ -93,9 +93,23 @@ export class Legend {
     // orthophoto or other background, ...): a layer switched off stays
     // listed - one row - so it can be switched on again.
     const switches = !print && this.manifest.interaction?.layersPanel === false;
+    // (Its groups too: no group switches here, so on also switches on the
+    // groups that are off.)
+    const offGroups = (layer) => {
+      const ids = [];
+      for (let id = layer.groupId; id; id = this.control.groups.get(id)?.parentId || null) {
+        if (state.groups[id] === false) ids.push(id);
+      }
+      return ids;
+    };
     const layerSwitch = (layer) => {
-      const { wrap, input } = toggle(layer.title, (checked) => this.state.setIn("layers", layer.id, checked));
-      input.checked = state.layers[layer.id] !== false;
+      const { wrap, input } = toggle(layer.title, (checked) => {
+        const now = this.state.value;
+        const groups = { ...now.groups };
+        if (checked) for (const id of offGroups(layer)) groups[id] = true;
+        this.state.set({ layers: { ...now.layers, [layer.id]: checked }, groups }, "layers");
+      });
+      input.checked = state.layers[layer.id] !== false && !offGroups(layer).length;
       wrap.classList.add("q2vt-legend-switch");
       return wrap;
     };
@@ -110,7 +124,8 @@ export class Legend {
       if (layer.legend === false) continue;
       const canSwitch = switches && layer.toggleable !== false;
       if (!this.control.layerEnabled(layer.id, state)) {
-        if (!canSwitch || state.layers[layer.id] !== false) continue;  // off by its group: not here
+        // (Off by its opacity only: not here.)
+        if (!canSwitch || (state.layers[layer.id] !== false && !offGroups(layer).length)) continue;
         const block = el("section", "q2vt-legend-layer q2vt-legend-single q2vt-legend-off");
         const list = el("ul", "q2vt-legend-items");
         const item = el("li", "q2vt-legend-item");

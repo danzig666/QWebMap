@@ -50,6 +50,8 @@ if command -v xdg-open &>/dev/null; then xdg-open "$URL"; elif command -v open &
 '''
     WINDOWS_ACTIVATOR = r'''
 @echo off
+rem UTF-8 from here on: the Python path below may hold non-ASCII letters
+chcp 65001 > nul
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr :18111991 ^| findstr LISTENING') do taskkill /PID %%a /F
 cd /d "%~dp0"
 echo Starting MBTiles server...
@@ -228,6 +230,9 @@ Set WshShell = Nothing
         activator_dir = utils_dir if wrapper else output_folder
         server = join(utils_dir, "tiles_server.py")
         if wrapper:
+            # Next to the batch file (it starts with cd /d "%~dp0"): no folder
+            # name with non-ASCII letters (C:\Users\Kovács\...) in the file.
+            server = "tiles_server.py"
             # Inside the batch file's double quotes only % is special.
             python_exe, server = python_exe.replace("%", "%%"), server.replace("%", "%%")
         else:

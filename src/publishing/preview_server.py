@@ -78,13 +78,17 @@ class _Handler(BaseHTTPRequestHandler):
         if "\x00" in path or "\\" in path:
             return None
         parts = [p for p in path.split("/") if p]
-        if any(p in (".", "..") for p in parts):
+        # (os.path.splitdrive: a "D:" segment would switch drive on Windows)
+        if any(p in (".", "..") or os.path.splitdrive(p)[0] for p in parts):
             return None
         target = os.path.join(root, *parts)
         if raw.endswith("/") or not parts:
             target = os.path.join(target, "index.html")
         real = os.path.realpath(target)
-        if os.path.commonpath([real, root]) != root:
+        try:
+            if os.path.commonpath([real, root]) != root:
+                return None
+        except ValueError:  # another drive (Windows)
             return None
         return real if os.path.isfile(real) else ""
 
@@ -106,13 +110,25 @@ class _Handler(BaseHTTPRequestHandler):
         if not target:
             self._error(HTTPStatus.NOT_FOUND)
             return
-        size = os.path.getsize(target)
+        try:
+            handle = open(target, "rb")  # pylint: disable=consider-using-with
+        except OSError:
+            self._error(HTTPStatus.NOT_FOUND)
+            return
+        with handle:
+            self._send_file(handle, target, head_only)
+
+    def _send_file(self, handle, target: str, head_only: bool):
+        """The file opened once: its size, ETag and bytes all of the same
+        file (an export replacing it meanwhile leaves this answer whole)."""
+        stat = os.fstat(handle.fileno())
+        size = stat.st_size
         kind, span = parse_range(self.headers.get("Range"), size)
         if kind == "invalid":
             self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
             self.send_header("Content-Range", f"bytes */{size}")
             self.send_header("Content-Length", "0")
-            self._common_headers(target)
+            self._common_headers(target, stat)
             self.end_headers()
             self._record(416, 0)
             return
@@ -122,33 +138,33 @@ class _Handler(BaseHTTPRequestHandler):
         if span:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Content-Length", str(length))
-        self._common_headers(target)
+        self._common_headers(target, stat)
         self.end_headers()
         # Recorded before the body is sent: a client that has read the
         # whole response always finds its request in the log.
         self._record(206 if span else 200, 0 if head_only else length)
         sent = 0
         if not head_only and length:
-            with open(target, "rb") as handle:
-                handle.seek(start)
-                remaining = length
-                while remaining:
-                    block = handle.read(min(1 << 16, remaining))
-                    if not block:
-                        break
-                    try:
-                        self.wfile.write(block)
-                    except ConnectionError:  # the client went away (Windows: aborted)
-                        break
-                    sent += len(block)
-                    remaining -= len(block)
+            handle.seek(start)
+            remaining = length
+            while remaining:
+                block = handle.read(min(1 << 16, remaining))
+                if not block:  # cut short meanwhile: the client must not wait for the rest
+                    self.close_connection = True
+                    break
+                try:
+                    self.wfile.write(block)
+                except ConnectionError:  # the client went away (Windows: aborted)
+                    self.close_connection = True
+                    break
+                sent += len(block)
+                remaining -= len(block)
 
-    def _common_headers(self, target: str):
+    def _common_headers(self, target: str, stat):
         rel = os.path.relpath(target, self.server.root).replace(os.sep, "/")  # type: ignore[attr-defined]
         self.send_header("Content-Type", content_type(rel))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", "no-cache")
-        stat = os.stat(target)
         self.send_header("ETag", f'"{stat.st_size:x}-{stat.st_mtime_ns:x}"')
         self.send_header("Last-Modified", formatdate(stat.st_mtime, usegmt=True))
         self.send_header("X-Content-Type-Options", "nosniff")

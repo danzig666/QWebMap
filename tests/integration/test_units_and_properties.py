@@ -541,3 +541,61 @@ def test_data_defined_multiline_alignment_uses_maplibre_names(mc):
     assert value[0] == "match" and value[1][0] == "downcase"
     pairs = dict(zip(value[2:-1:2], value[3:-1:2]))
     assert pairs["follow"] == "auto" and pairs["justify"] == "left" and pairs["right"] == "right"
+
+
+def test_symbol_data_defined_opacity_replaces_the_static_one(mc):
+    """QgsSymbol::renderFeature: a data-defined Opacity replaces the
+    symbol's own (80 % with 50 drew 50 %); it was multiplied (40 %)."""
+    layer = QgsSimpleLineSymbolLayer()
+    symbol = QgsLineSymbol([layer])
+    symbol.setOpacity(0.8)
+    symbol.setDataDefinedProperty(mc._SYMBOL_OPACITY_KEY, QgsProperty.fromValue(50))  # pylint: disable=protected-access
+    assert mc.PropertyExtractor.opacity(symbol, layer) == pytest.approx(0.5)
+    symbol.setDataDefinedProperty(mc._SYMBOL_OPACITY_KEY, QgsProperty.fromField("q2vt_o"))  # pylint: disable=protected-access
+    out = mc.PropertyExtractor.opacity(symbol, layer)
+    assert ex.referenced_fields(out) == {"q2vt_o"} and "0.8," not in str(out).replace(" ", "")
+
+
+def test_label_data_defined_opacity_and_buffer_colour(mc):
+    """QgsTextFormat::updateDataDefinedProperties: FontOpacity replaces the
+    format's opacity, and a data-defined buffer colour keeps the buffer's
+    opacity (both checked against QGIS)."""
+    from qgis.core import QgsPalLayerSettings, QgsPropertyCollection, QgsTextFormat
+    text = QgsTextFormat()
+    text.setOpacity(0.8)
+    text.buffer().setEnabled(True)
+    text.buffer().setOpacity(0.5)
+    settings = QgsPalLayerSettings()
+    settings.setFormat(text)
+    props = QgsPropertyCollection()
+    props.setProperty(QgsPalLayerSettings.Property.FontOpacity, QgsProperty.fromValue(50))
+    props.setProperty(QgsPalLayerSettings.Property.BufferColor, QgsProperty.fromValue("255,255,0,255"))
+    settings.setDataDefinedProperties(props)
+    assert mc.TextPropertyExtractor.get_text_opacity(text, settings) == pytest.approx(0.5)
+    assert mc.TextPropertyExtractor.get_text_halo_color(text, settings).replace(" ", "") == \
+        "rgba(255,255,0,0.5)"
+    props.setProperty(QgsPalLayerSettings.Property.BufferColor, QgsProperty.fromField("q2vt_c"))
+    settings.setDataDefinedProperties(props)
+    halo = mc.TextPropertyExtractor.get_text_halo_color(text, settings)
+    assert halo[0] == "let" and "q2vt_c" in str(halo) and halo[-1][-1] == ["*", ["at", 3, ["var", "q2vt_halo"]], 0.5]
+
+
+@pytest.mark.parametrize("mode,drawn", [(0, False), (1, True), (2, True)])
+def test_paint_effect_draw_modes(mc, mode, drawn):
+    """QgsPaintEffect.DrawMode: Modifier 0 (passed on, not drawn), Render 1,
+    ModifyAndRender 2. "Render only" shadows were dropped and "Modifier
+    only" ones drawn."""
+    from qgis.core import QgsDrawSourceEffect, QgsDropShadowEffect, QgsEffectStack, QgsPaintEffect
+    from fidelity import line_effects
+    shadow = QgsDropShadowEffect()
+    shadow.setDrawMode(QgsPaintEffect.DrawMode(mode))
+    stack = QgsEffectStack(shadow)
+    stack.appendEffect(QgsDrawSourceEffect())
+    layer = QgsSimpleLineSymbolLayer(QColor("black"), 1.0)
+    layer.setPaintEffect(stack)
+    assert line_effects._draws(shadow) is drawn  # pylint: disable=protected-access
+    exporter = mc.QgisMapLibreStyleExporter.__new__(mc.QgisMapLibreStyleExporter)
+    exporter.context = mc.PropertyExtractor.context
+    below, _ = exporter._line_effect_layers(  # pylint: disable=protected-access
+        layer, {"id": "l", "type": "line", "paint": {"line-width": 1, "line-color": "#000"}})
+    assert bool(below) is drawn

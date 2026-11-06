@@ -516,7 +516,7 @@ def build_release(bundle: ExportBundle, profile: PublicationProfile, publication
             shutil.rmtree(staging, ignore_errors=True)
             raise
         if stable_entry:
-            _write_stable_entry(publication_dir, profile.title)
+            _write_stable_entry(publication_dir, profile.title, profile.locale)
         activated = False
         if activate:
             activate_release(publication_dir, profile.publication_id, release_id)
@@ -868,8 +868,12 @@ def copy_descriptor_from_info(mbtiles: str, info) -> ArchiveDescriptor:
                              vector_layers=[layer["id"] for layer in layers])
 
 
-def _write_stable_entry(publication_dir: str, title: str) -> None:
-    """``index.html`` + ``bootstrap.<hash>.mjs`` at the publication root."""
+_ENTRY_TEXTS = {"hu": ("Betöltés…", "Ehhez a térképhez JavaScript szükséges.")}
+
+
+def _write_stable_entry(publication_dir: str, title: str, locale: str = "en") -> None:
+    """``index.html`` + ``bootstrap.<hash>.mjs`` at the publication root
+    (its few words in the map's language)."""
     with open(os.path.join(WEB_VIEWER, "bootstrap.mjs"), "rb") as handle:
         code = handle.read()
     name = f"bootstrap.{hashlib.sha256(code).hexdigest()[:10]}.mjs"
@@ -882,6 +886,11 @@ def _write_stable_entry(publication_dir: str, title: str) -> None:
     with open(os.path.join(WEB_VIEWER, "bootstrap.html"), encoding="utf-8") as handle:
         page = handle.read().replace("__Q2VT_TITLE__", html.escape(title, quote=True)) \
                             .replace("__Q2VT_BOOTSTRAP__", name)
+    language = "hu" if str(locale or "").lower().startswith("hu") else "en"
+    if language in _ENTRY_TEXTS:
+        loading, needs_js = _ENTRY_TEXTS[language]
+        page = page.replace('<html lang="en">', f'<html lang="{language}">') \
+                   .replace("Loading…", loading).replace("This map needs JavaScript.", needs_js)
     index = os.path.join(publication_dir, "index.html")
     old = None
     if os.path.exists(index):

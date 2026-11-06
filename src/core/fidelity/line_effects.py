@@ -23,6 +23,9 @@ INNER_EFFECTS = ("innerShadow", "innerGlow")
 SOURCE_EFFECT = "drawSource"
 DIRECTION_BUCKETS = 36  # 10 degrees: the inner shadow moves <= 0.17 x its offset
 DPI = 96.0
+# QgsPaintEffect.DrawMode: Modifier 0 (passed on to the next effect, not
+# drawn), Render 1, ModifyAndRender 2 (both drawn).
+MODIFIER_ONLY = 0
 
 
 def effect_list(layer) -> list:
@@ -37,7 +40,7 @@ def effect_list(layer) -> list:
 
 def _draws(effect) -> bool:
     try:
-        return int(getattr(effect.drawMode(), "value", effect.drawMode())) != 1  # not modifier only
+        return int(getattr(effect.drawMode(), "value", effect.drawMode())) != MODIFIER_ONLY
     except (AttributeError, TypeError, ValueError):
         return True
 

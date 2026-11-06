@@ -154,3 +154,14 @@ def test_meters_at_scale_are_mercator_units_in_web_mercator():
     # on the ellipsoid in a degree CRS, by the unit factor in a projected one).
     geographic = u.MapUnitContext.for_project(False, "degrees", 47.5)
     assert geographic.mercator_per_meter == pytest.approx(1 / math.cos(math.radians(47.5)))
+
+
+@pytest.mark.parametrize("name,metres", [("Feet", 0.3048), ("FeetUSSurvey", 1200.0 / 3937.0),
+                                         ("Kilometers", 1000.0), ("Yards", 0.9144),
+                                         ("Meters", 1.0), ("Unknown", 1.0)])
+def test_projected_map_units_by_their_qgis_names(name, metres):
+    """Qgis.DistanceUnit names as the exporter passes them (crs.mapUnits().name):
+    only "feet" was known, US survey feet, kilometres and yards counted as metres."""
+    ctx = u.MapUnitContext.for_project(False, name, 47.5)
+    assert ctx.scale_metres_per_map_unit == pytest.approx(metres)
+    assert ctx.mercator_per_map_unit == pytest.approx(metres / math.cos(math.radians(47.5)))

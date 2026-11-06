@@ -18,6 +18,17 @@ def plugin():
     return register_plugin_package()
 
 
+@pytest.fixture(autouse=True)
+def _no_blocking_questions(monkeypatch):
+    """A question box no test answers (closing a shown window with settings
+    that cannot be saved asks first) would wait forever offscreen: Yes.
+    Tests that check a question patch it themselves."""
+    if QGIS_AVAILABLE:
+        from qgis.PyQt.QtWidgets import QMessageBox  # pylint: disable=import-outside-toplevel
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+
+
 def pytest_sessionfinish(session, exitstatus):
     session.config._q2vt_exitstatus = int(exitstatus)  # pylint: disable=protected-access
 

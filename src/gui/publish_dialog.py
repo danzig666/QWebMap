@@ -187,8 +187,6 @@ class PublishDialog(QDialog):
         self.project = QgsProject.instance()
         from ..publishing.web_builder import plugin_version  # pylint: disable=import-outside-toplevel
         self.setWindowTitle(tr("Publish Web Map — QWebMap {}").format(plugin_version()))
-        self.resize(980, 760)
-        self._restore_geometry()
         self.layer_configs = {}
         self.current_layer_id = None
         self.local_result = None
@@ -206,6 +204,8 @@ class PublishDialog(QDialog):
         self._back_timer.timeout.connect(self._back_from_drawing)
         self.profile = self._load_profile()
         self._build()
+        self._default_size()
+        self._restore_geometry()
         self._populate(self.profile)
         # Preview / Open folder: also for a map exported earlier (another
         # session) into the output folder, under this address name.
@@ -218,6 +218,39 @@ class PublishDialog(QDialog):
         # Another project opened while the window is open: it must not save
         # this project's settings into the new one.
         self.project.cleared.connect(self._on_project_cleared)
+        # Layers added, removed or renamed in QGIS while the window is open:
+        # its layer list follows (one refresh after a burst of changes).
+        self._tree_timer = QTimer(self)
+        self._tree_timer.setSingleShot(True)
+        self._tree_timer.setInterval(200)
+        self._tree_timer.timeout.connect(self._refresh_layers)
+        root = self.project.layerTreeRoot()
+        for signal in (root.addedChildren, root.removedChildren, root.nameChanged):
+            signal.connect(self._layers_changed)
+
+    def _layers_changed(self, *_):
+        if not self._project_gone:
+            self._tree_timer.start()
+
+    def _refresh_layers(self):
+        """The layer list rebuilt from the window's current settings (so
+        nothing edited is lost): new layers appear unpublished, removed ones
+        go, renamed ones show their new name. Not while exporting."""
+        if self._project_gone or not self.tabs.isEnabled():
+            if not self._project_gone:
+                self._tree_timer.start()  # after the export / upload
+            return
+        try:
+            profile = self.collect()
+        except Exception:  # noqa: BLE001 - a half-edited row: try again later
+            self._tree_timer.start(1000)
+            return
+        self.profile = profile
+        self._fill_tree(profile)
+        try:
+            self._fill_interaction_layers()
+        except Exception:  # noqa: BLE001 - the Interaction tab fills itself when shown
+            pass
 
     def _profile_json(self):
         try:
@@ -324,12 +357,13 @@ class PublishDialog(QDialog):
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
-        self.tabs.addTab(self._map_tab(), tr("Map"))
-        self.tabs.addTab(self._interaction_tab(), tr("Interaction"))
+        # The widest tabs scroll: the window fits a 1366 × 768 screen.
+        self.tabs.addTab(self._scrolled(self._map_tab()), tr("Map"))
+        self.tabs.addTab(self._scrolled(self._interaction_tab()), tr("Interaction"))
         self.tabs.addTab(self._basemap_tab(), tr("Basemap"))
         self.tabs.addTab(self._parcel_tab(), tr("Parcel report"))
         self.tabs.addTab(self._info_tab(), tr("Info"))
-        self.tabs.addTab(self._output_tab(), tr("Output"))
+        self.tabs.addTab(self._scrolled(self._output_tab()), tr("Output"))
         self.tabs.addTab(self._destination_tab(), tr("Destination"))
         self.tabs.addTab(self._review_tab(), tr("Review"))
         self.tabs.currentChanged.connect(self._tab_changed)
@@ -462,6 +496,7 @@ class PublishDialog(QDialog):
             "(you are asked each time). Extent of a layer: follows the layer when its data "
             "changes. Fixed area: drawn on the map, or the map view frozen with “Freeze view”."))
         self.e_extent_mode.currentIndexChanged.connect(self._extent_mode_changed)
+        self.e_extent_mode.activated.connect(self._extent_mode_chosen)
         show_button = QPushButton(tr("Show on map"))
         show_button.setToolTip(tr("Outline the area that will be published on the QGIS map."))
         show_button.clicked.connect(self._flash_extent)
@@ -767,8 +802,9 @@ class PublishDialog(QDialog):
         if not remind:
             QgsSettings().setValue(self.ZOOM_LOAD_CHECK_KEY, False)
         if answer == "faster":
-            self.analyse_zoom_load(estimate=estimate)
-            return True
+            # Its window cancelled: the export too (asked about once: the next
+            # export goes on as it is).
+            return bool(self.analyse_zoom_load(estimate=estimate))
         if answer == "as-is":
             self._zoom_load_handled = current
         return answer == "as-is"
@@ -1253,6 +1289,12 @@ class PublishDialog(QDialog):
             self.profile.view.extent = self._layer_extent_3857(self.e_extent_layer.currentLayer())
         self._set_extent_mode(mode)
 
+    def _extent_mode_chosen(self, _index=None):
+        """“Current map view” chosen in the list (again, by the user): the
+        question before each export is back after a “Don't ask again”."""
+        if self.e_extent_mode.currentData() == "canvas":
+            self.profile.view.confirm_canvas_extent = True
+
     def _flash_extent(self):
         """The area that will be published, outlined on the QGIS map."""
         extent = self._current_extent_3857()
@@ -1264,23 +1306,51 @@ class PublishDialog(QDialog):
                                flashes=4, duration=600)
 
     def _layer_extent_3857(self, layer):
-        transform = QgsCoordinateTransform(layer.crs(), QgsCoordinateReferenceSystem("EPSG:3857"),
-                                           self.project)
-        box = transform.transformBoundingBox(layer.extent())
+        """The layer's extent in Web Mercator, cut to the area a web map shows
+        (latitudes to ±85.05°: a world layer has no Mercator box beyond)."""
+        import math  # pylint: disable=import-outside-toplevel
+        mercator, wgs84 = QgsCoordinateReferenceSystem("EPSG:3857"), QgsCoordinateReferenceSystem("EPSG:4326")
+        half = 20037508.342789244
+        try:
+            box = QgsCoordinateTransform(layer.crs(), mercator, self.project).transformBoundingBox(layer.extent())
+            values = (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())
+            fits = all(math.isfinite(v) and abs(v) <= half * 1.0001 for v in values)
+        except QgsCsException:
+            fits = False
+        try:
+            if not fits:  # through degrees, cut to the latitudes a web map shows
+                box = QgsCoordinateTransform(layer.crs(), wgs84, self.project).transformBoundingBox(
+                    layer.extent()).intersect(QgsRectangle(-180.0, -85.0511, 180.0, 85.0511))
+                if box.isEmpty():
+                    return self.profile.view.extent
+                box = QgsCoordinateTransform(wgs84, mercator, self.project).transformBoundingBox(box)
+        except QgsCsException:
+            return self.profile.view.extent
         if box.isEmpty():
             return self.profile.view.extent
         return [box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum()]
+
+    def _extent_layer(self):
+        """The layer whose extent is published, if that mode is set and the layer exists."""
+        view = self.profile.view
+        return self.project.mapLayer(view.extent_layer) \
+            if view.extent_mode == "layer" and view.extent_layer else None
+
+    def _extent_is_canvas(self) -> bool:
+        """The current map view is published: that mode, or the layer mode
+        without its layer (none chosen, or removed from the project)."""
+        mode = self.profile.view.extent_mode
+        return mode == "canvas" or (mode == "layer" and self._extent_layer() is None)
 
     def _current_extent_3857(self):
         """The extent setting now: the map canvas (current map view mode),
         the chosen layer's extent (refreshed) or the fixed extent; a mode
         without its layer or area falls back to the map canvas."""
         view = self.profile.view
-        layer = self.project.mapLayer(view.extent_layer) \
-            if view.extent_mode == "layer" and view.extent_layer else None
+        layer = self._extent_layer()
         if layer is not None:
             view.extent = self._layer_extent_3857(layer)
-        elif view.extent_mode == "canvas" or not view.extent:
+        elif self._extent_is_canvas() or not view.extent:
             if self.iface is None:
                 return view.extent
             try:
@@ -1329,7 +1399,7 @@ class PublishDialog(QDialog):
         area): says so, with the area's size and tile count, and lets the
         export be cancelled; "Don't ask again" is kept with the project."""
         view = self.profile.view
-        if view.extent_mode != "canvas" or not view.confirm_canvas_extent or self.iface is None:
+        if not self._extent_is_canvas() or not view.confirm_canvas_extent or self.iface is None:
             return True
         extent = self._current_extent_3857()
         if not extent:
@@ -1349,6 +1419,7 @@ class PublishDialog(QDialog):
         export = box.addButton(tr("Export this view"), QMessageBox.ButtonRole.AcceptRole)
         box.setDefaultButton(QMessageBox.StandardButton.Cancel)
         again = QCheckBox(tr("Don't ask again for this project"))
+        again.setToolTip(tr("To be asked again, choose “Current map view” again in the Map tab (Extent)."))
         box.setCheckBox(again)
         self._flash_extent()
         box.exec()
@@ -1824,6 +1895,7 @@ class PublishDialog(QDialog):
         self.b_source.setPlaceholderText("https://…/planet.pmtiles  |  C:/maps/hungary.pmtiles")
         browse = QPushButton("…")
         browse.clicked.connect(self._choose_basemap_file)
+        self.b_browse = browse
         source_row.addWidget(self.b_source, 1)
         source_row.addWidget(browse)
         self.b_flavors = {}
@@ -1848,6 +1920,7 @@ class PublishDialog(QDialog):
         self.b_overview_km.setRange(0, 5000)
         self.b_overview_km.setSuffix(" km")
         form.addRow(tr("Basemap"), self.b_kind)
+        self.b_kind.currentIndexChanged.connect(self._basemap_kind_changed)
         form.addRow("", self.b_latest)
         form.addRow("", self.b_custom)
         form.addRow("", source_row)
@@ -2179,6 +2252,17 @@ class PublishDialog(QDialog):
                 out.append(PopupField(table.item(row, 0).text(), title, kind))
         return out
 
+    @staticmethod
+    def _scrolled(widget):
+        """``widget`` in a scroll area (no frame): shown whole where there is
+        room, scrolled on a small screen instead of making the window larger."""
+        from qgis.PyQt.QtWidgets import QFrame, QScrollArea  # pylint: disable=import-outside-toplevel
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(widget)
+        return scroll
+
     def _parcel_tab(self):
         from qgis.PyQt.QtWidgets import QScrollArea  # pylint: disable=import-outside-toplevel
         scroll = QScrollArea()
@@ -2418,13 +2502,21 @@ class PublishDialog(QDialog):
             self.b_source.setText(path)
             self.b_custom.setChecked(True)
 
+    def _basemap_kind_changed(self, *_):
+        """No basemap: its source, styles, zooms and area have no effect."""
+        on = self.b_kind.currentData() == "protomaps"
+        for widget in (self.b_latest, self.b_custom, self.b_source, self.b_browse, self.b_max, self.b_padding,
+                       self.b_overview_zoom, self.b_overview_km, *self.b_flavors.values()):
+            widget.setEnabled(on)
+        self._refresh_basemap_initial()
+
     def _refresh_basemap_initial(self, *_):
         current, current_text = self.b_initial.currentData(), self.b_initial.currentText()
         self.b_initial.blockSignals(True)
         self.b_initial.clear()
         self.b_initial.addItem(tr("None (switched off)"), "none")
         for flavor, box in self.b_flavors.items():
-            if box.isChecked():
+            if box.isChecked() and self.b_kind.currentData() == "protomaps":
                 self.b_initial.addItem(box.text(), flavor)
         for number, entry in enumerate(self._xyz_rows() if hasattr(self, "b_xyz") else [], start=1):
             self.b_initial.addItem(f"{tr('Web')}: {entry.title}", f"xyz-{number}")
@@ -2706,6 +2798,9 @@ class PublishDialog(QDialog):
         session.addWidget(save_keys)
         form.addRow(tr("Or keys for this session only"), self.d_session_row)
         form.addRow(tr("Or a password for this session only"), self.d_ssh_password_row)
+        self.d_retention.setToolTip(tr(
+            "How many releases Releases and rollback… → Delete old releases… keeps. Nothing is deleted "
+            "automatically: until you delete them, every release stays in the storage (and is billed)."))
         form.addRow(tr("Releases to keep"), self.d_retention)
         form.addRow("", self.d_conditional)
         self.d_kind.currentIndexChanged.connect(self._destination_kind_changed)
@@ -2716,7 +2811,7 @@ class PublishDialog(QDialog):
         cors.clicked.connect(self.show_cors)
         history = QPushButton(tr("Releases and rollback…"))
         history.clicked.connect(self.show_history)
-        self.d_cors, self.d_history = cors, history
+        self.d_cors, self.d_history, self.d_test = cors, history, test
         buttons.addWidget(test)
         buttons.addWidget(cors)
         buttons.addWidget(history)
@@ -2802,7 +2897,7 @@ class PublishDialog(QDialog):
         for flavor, box in self.b_flavors.items():
             box.setChecked(flavor in basemap.flavors)
         self._fill_xyz_table(basemap.xyz)
-        self._refresh_basemap_initial()
+        self._basemap_kind_changed()  # (also lists the start basemaps)
         self.b_initial.setCurrentIndex(max(0, self.b_initial.findData(basemap.initial)))
         self.b_max.setValue(basemap.max_zoom)
         self.b_padding.setValue(int(round(basemap.padding * 100)))
@@ -2817,7 +2912,7 @@ class PublishDialog(QDialog):
         self.i_address_street.setLayer(address_layer)
         self.i_address_number.setField(profile.interaction.address_number_field)
         self.i_address_street.setField(profile.interaction.address_street_field)
-        self.i_google_key.setEnabled(profile.interaction.street_view)
+        self.i_google_key.setEnabled(profile.interaction.street_view and not profile.interaction.map_only)
         # The Interaction tab shows the new settings: the widgets still hold
         # the previous layer's values, which must not be stored into them.
         self.current_layer_id = None
@@ -3212,6 +3307,7 @@ class PublishDialog(QDialog):
         return True
 
     def export_settings_file(self, path=None) -> bool:
+        interactive = not path
         if not path:
             start = os.path.join(os.path.dirname(self.project.fileName()) or os.path.expanduser("~"),
                                  f"{self.e_slug.text().strip() or 'web-map'}.q2vt.json")
@@ -3221,6 +3317,14 @@ class PublishDialog(QDialog):
             return False
         profile = self.collect()
         keys = self._exportable_credentials(profile)
+        if keys and interactive and QMessageBox.question(
+                self, tr("Export settings"),
+                tr("Include the object storage keys (the secret key too) in the file?\n\n"
+                   "Yes: whoever has the file can upload to the storage; keep it private. "
+                   "No: the file has every other setting; the keys are entered again where it is imported."),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            keys = None
         try:
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(store.export_document(profile, self.project, keys))
@@ -3274,8 +3378,12 @@ class PublishDialog(QDialog):
             answer = QMessageBox.question(
                 self, tr("Import settings"),
                 tr("Yes: keep publishing the same web map as the file (same address).\n"
-                   "No: a new, separate web map with these settings."),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                   "No: a new, separate web map with these settings.\n"
+                   "Cancel: import nothing."),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if answer not in (QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No):
+                return False  # Cancel, Esc or the title bar's close button
             same_map = answer == QMessageBox.StandardButton.Yes
         if not same_map:
             profile = store.as_new_publication(profile)
@@ -3332,6 +3440,7 @@ class PublishDialog(QDialog):
         # importing or presets meanwhile.
         self.tabs.setEnabled(not busy)
         self.btn_settings_file.setEnabled(not busy)
+        self.btn_preset.setEnabled(not busy)
         self.btn_cancel.setEnabled(busy)
 
     def _block_qgis(self, block: bool):
@@ -3362,6 +3471,12 @@ class PublishDialog(QDialog):
         return QgsRectangle(*extent)
 
     def export_locally(self) -> bool:
+        # Settings with problems: said at once, before the extent question and
+        # the zoomed-out estimate (which can take a while) are asked for nothing.
+        problems = validate(self.collect())
+        if problems:
+            QMessageBox.warning(self, tr("Settings"), "\n".join(problems[:12]))
+            return False
         if not self._confirm_extent():
             return False
         if not self._check_zoom_load_before_export():
@@ -3456,7 +3571,11 @@ class PublishDialog(QDialog):
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def open_map(self):
-        if self.public_url:
+        if self.public_url.startswith("file:"):
+            # A local web map: browsers do not run the viewer from file://
+            # (its modules and the byte ranges of its archives): served as Preview.
+            self.preview()
+        elif self.public_url:
             QDesktopServices.openUrl(QUrl(self.public_url))
 
     def copy_link(self):
@@ -3556,18 +3675,26 @@ class PublishDialog(QDialog):
             if self.d_auth is not None:
                 self.d_auth.setConfigId(ref)
         self._dest_family = family
+        local = kind == "local"  # nothing uploaded: no destination fields at all
         for widget, shown in ((self.d_account, kind == "r2"), (self.d_endpoint, storage),
-                              (self.d_bucket, not ssh), (self.d_prefix, not ssh),
-                              (self.d_session_row, not ssh), (self.d_retention, not ssh),
-                              (self.d_conditional, not ssh), (self.d_ssh_host, ssh), (self.d_ssh_port, ssh),
+                              (self.d_bucket, storage), (self.d_prefix, storage),
+                              (self.d_session_row, storage), (self.d_retention, storage),
+                              (self.d_conditional, storage), (self.d_ssh_host, ssh), (self.d_ssh_port, ssh),
                               (self.d_ssh_user, ssh), (self.d_ssh_dir, ssh), (self.d_ssh_key_row, ssh),
-                              (self.d_ssh_password_row, ssh)):
+                              (self.d_ssh_password_row, ssh), (self.d_public, not local),
+                              (self.d_address, not local)):
             widget.setVisible(shown)
             label = self.d_form.labelForField(widget)
             if label is not None:
                 label.setVisible(shown)
-        for widget in (self.d_guide, self.d_cors, self.d_history):  # releases, CORS: object storage only
-            widget.setVisible(not ssh)
+        if self.d_auth is not None:
+            self.d_auth.setVisible(not local)
+        if self.d_auth_label is not None:
+            self.d_auth_label.setVisible(not local)
+        for widget in (self.d_cors, self.d_history):  # releases, CORS: object storage only
+            widget.setVisible(storage)
+        self.d_guide.setVisible(not ssh)  # (also how to set up R2 when choosing a destination)
+        self.d_test.setVisible(not local)
         label = self.d_form.labelForField(self.d_endpoint)
         if label is not None:
             label.setText(tr("S3 API endpoint (optional)") if kind == "r2" else tr("S3 API endpoint"))
@@ -3597,6 +3724,8 @@ class PublishDialog(QDialog):
                "upload.") + (tr(" On Windows a password or passphrase needs OpenSSH 8.4 or newer (Windows "
                                  "10's built-in client is older: use a key or ssh-agent there).")
                               if os.name == "nt" else "") if ssh else
+            tr("Publish writes the map into the output folder (Output tab) on this computer: nothing is "
+               "uploaded. Copy that folder to any web server, or choose a destination above.") if local else
             tr("Use bucket-scoped API tokens. The S3 API endpoint is not the public "
                "address: connect a custom domain to the bucket (r2.dev is rate "
                "limited and meant for development). Nothing is created, made "
@@ -3818,18 +3947,25 @@ class PublishDialog(QDialog):
         for name, url in self._live_layers(profile):
             external.append(tr("live layer „{}” loaded from {} (its address is in the published "
                                "files)").format(name, urlparse(url).hostname or "?"))
+        local = profile.destination.kind == "local"
         lines += ["", tr("External resources for visitors: ") + ("; ".join(external) if external else tr(
-                      "none (no CDN, no third-party tiles, no telemetry).")),
-                  tr("Cost: storage of the archive and retained releases plus requests; R2 has no "
-                     "egress fees but limits above the free tier are billed — see "
-                     "https://developers.cloudflare.com/r2/pricing/ (checked 1 Oct 2026).")]
+                      "none (no CDN, no third-party tiles, no telemetry)."))]
+        if profile.destination.kind in ("r2", "s3"):
+            lines.append(tr("Cost: storage of the archive and retained releases plus requests; R2 has no "
+                            "egress fees but limits above the free tier are billed — see "
+                            "https://developers.cloudflare.com/r2/pricing/ (checked 1 Oct 2026)."))
         if self.local_result:
             lines.append(tr("Last local export: {} files, {:.1f} MB.").format(
                 len(self.local_result.release.files), self.local_result.release.total_bytes / 1e6))
         review = needs_review(profile, self._live_review_extra(profile))
-        lines += ["", tr("Approval needed (first publication or what becomes public changed).")
-                  if review else tr("Approved earlier for this exact data scope.")]
+        if local:  # nothing goes online: nothing to approve
+            lines += ["", tr("Local only: the map is written to the output folder, nothing is uploaded "
+                             "and no approval is needed.")]
+        else:
+            lines += ["", tr("Approval needed (first publication or what becomes public changed).")
+                      if review else tr("Approved earlier for this exact data scope.")]
         self.review.setPlainText("\n".join(lines))
+        self.approve.setVisible(not local)
         self.approve.setChecked(not review)
         self._review_fp = disclosure_fingerprint(profile, self._live_review_extra(profile))
 
@@ -3873,11 +4009,13 @@ class PublishDialog(QDialog):
             QMessageBox.information(self, tr("Review"), tr("Review what becomes public and tick the "
                                                            "approval before publishing."))
             return
+        # Reuse a valid local export of identical settings (retry/new destination);
+        # compared before the approval is recorded: approving changes nothing exported.
+        reuse = self.local_result is not None and self.local_profile_json == store.dumps_profile(profile)
         if needs_review(profile, extra):
             profile.approval.fingerprint = disclosure_fingerprint(profile, extra)
             profile.approval.approved_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
-        # Reuse a valid local export of identical settings (retry/new destination).
-        if self.local_result is None or self.local_profile_json != store.dumps_profile(profile):
+        if not reuse:
             if not self.export_locally():
                 return
         try:
@@ -3936,6 +4074,22 @@ class PublishDialog(QDialog):
     # Size and position of the window, kept between QGIS sessions (QGIS settings).
     GEOMETRY_KEY = "QGIS2VectorTilesFork/publishDialog/geometry"  # pre-rename key, kept
 
+    def _default_size(self):
+        """Wide enough for the tabs' contents where the screen has room (the
+        tabs scroll on a smaller screen), at least 980 × 760."""
+        from qgis.PyQt.QtWidgets import QScrollArea  # pylint: disable=import-outside-toplevel
+        pages = [self.tabs.widget(i) for i in range(self.tabs.count())]
+        # (A scroll area's own size hint is capped: its contents' instead.)
+        content = max((page.widget().sizeHint().width() if isinstance(page, QScrollArea) and page.widget()
+                       else page.sizeHint().width()) for page in pages) if pages else 0
+        width, height = max(980, content + 60), 760
+        screen = self.screen() if hasattr(self, "screen") else None
+        screen = screen or QGuiApplication.primaryScreen()
+        if screen is not None:
+            room = screen.availableGeometry()
+            width, height = min(width, int(room.width() * 0.95)), min(height, int(room.height() * 0.92))
+        self.resize(width, height)
+
     def _restore_geometry(self):
         try:
             saved = QgsSettings().value(self.GEOMETRY_KEY)
@@ -3946,7 +4100,7 @@ class PublishDialog(QDialog):
         # A screen that is gone (laptop undocked): back to the default size and place.
         frame = self.frameGeometry()
         if not any(screen.availableGeometry().intersects(frame) for screen in QGuiApplication.screens()):
-            self.resize(980, 760)
+            self._default_size()
             primary = QGuiApplication.primaryScreen()
             if primary is not None:
                 self.move(primary.availableGeometry().center() - self.rect().center())
@@ -3964,8 +4118,30 @@ class PublishDialog(QDialog):
     def done(self, result):  # every close of a shown window: Close, title bar ✕ and Escape
         if self.feedback is not None:
             return  # a local export is running (its Cancel button stops it)
+        if self.isVisible() and not self._may_close():
+            return  # back to the settings
         self._closing()
         super().done(result)
+
+    def _may_close(self) -> bool:
+        """Changed settings that cannot be saved (closing keeps only valid
+        ones): ask before they are lost instead of dropping them silently."""
+        if self._project_gone:
+            return True
+        try:
+            if self._profile_json() == self._saved_json:
+                return True
+            problems = validate(self.collect())
+        except Exception:  # noqa: BLE001 - closing must not fail
+            return True
+        if not problems:
+            return True
+        answer = QMessageBox.question(
+            self, tr("Close without saving?"),
+            tr("Your changes cannot be saved until these are fixed:") + "\n\n" + "\n".join(problems[:8])
+            + "\n\n" + tr("Close the window and lose the changes since the last save?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        return answer == QMessageBox.StandardButton.Yes
 
     def _closing(self):
         """Settings and window geometry saved, project link ended: on every
@@ -3988,6 +4164,13 @@ class PublishDialog(QDialog):
             self.project.cleared.disconnect(self._on_project_cleared)
         except (TypeError, RuntimeError):
             pass
+        try:
+            root = self.project.layerTreeRoot()
+            for signal in (root.addedChildren, root.removedChildren, root.nameChanged):
+                signal.disconnect(self._layers_changed)
+        except (TypeError, RuntimeError):
+            pass
+        self._tree_timer.stop()
 
     def closeEvent(self, event):  # noqa: N802
         if not self.isVisible():  # hidden (drawing the extent, or never shown): no done()

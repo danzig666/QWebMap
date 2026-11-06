@@ -28,7 +28,7 @@ from qgis.core import (
     QgsProperty,
     QgsSymbolLayer,
     QgsTextBufferSettings, QgsTextFormat, QgsTextShadowSettings,
-    QgsProject,
+    QgsProject, QgsRenderContext,
     QgsTextBackgroundSettings,
 )
 from qgis.core import NULL, Qgis, QgsFontUtils, QgsSymbolLayerUtils, QgsFillSymbol, QgsLineSymbol, QgsUnitTypes
@@ -44,6 +44,7 @@ from .fidelity import materialize as mat
 from .fidelity import zoom as fidelity_zoom
 from .fidelity import layer_merge
 from .fidelity.capabilities import SPRITE_FAMILIES, capability, classify
+from .fidelity.line_effects import MODIFIER_ONLY
 from .fidelity.diagnostics import DiagnosticCollector, Severity
 from .fidelity.model import ExportProfile, Strategy, ZoomInterval
 from .fidelity.validation import drop_unloadable_layers
@@ -389,22 +390,25 @@ class PropertyExtractor:
 
     @staticmethod
     def opacity(symbol=None, symbol_layer=None) -> Union[float, List]:
-        """Symbol opacity × data-defined opacity (QGIS 0–100 → MapLibre 0–1)."""
+        """The symbol's opacity × the symbol layer's data-defined opacity
+        (QGIS 0–100 → MapLibre 0–1). The symbol's data-defined Opacity
+        replaces its static one, as QgsSymbol::renderFeature applies it (the
+        static one stays where the value is NULL)."""
         try:
             base = float(symbol.opacity()) if symbol is not None else 1.0
         except (AttributeError, RuntimeError):
             base = 1.0
         result: Any = base
-        props = []
-        if symbol is not None:
-            props.append(symbol.dataDefinedProperties().property(_SYMBOL_OPACITY_KEY))
-        if symbol_layer is not None:
-            props.append(symbol_layer.dataDefinedProperties().property(
-                QgsSymbolLayer.Property.PropertyOpacity))
-        for prop in props:
-            if prop is not None and prop.isActive():
-                value = PropertyExtractor.get_value_or_expression(100.0, prop, "number")
-                result = ex.mul(result, ex.div(value, 100.0))
+        prop = symbol.dataDefinedProperties().property(_SYMBOL_OPACITY_KEY) \
+            if symbol is not None else None
+        if prop is not None and prop.isActive():
+            result = ex.div(PropertyExtractor.get_value_or_expression(base * 100.0, prop, "number"),
+                            100.0)
+        prop = symbol_layer.dataDefinedProperties().property(QgsSymbolLayer.Property.PropertyOpacity) \
+            if symbol_layer is not None else None
+        if prop is not None and prop.isActive():
+            value = PropertyExtractor.get_value_or_expression(100.0, prop, "number")
+            result = ex.mul(result, ex.div(value, 100.0))
         if ex.is_number(result):
             return max(0.0, min(1.0, result))
         return ex.clamp(result, 0, 1)
@@ -903,6 +907,16 @@ class FillPropertyExtractor:
         return None
 
 
+def _meters_in_map_units(meters: float) -> float:
+    """``meters`` (meters at scale) in project map units, as a sprite's
+    render context (with_map_distances, no extent) converts them."""
+    try:
+        converted = with_map_distances(QgsRenderContext()).convertMetersToMapUnits(meters)
+    except (AttributeError, RuntimeError, TypeError):
+        return meters
+    return converted if converted > 0 and math.isfinite(converted) else meters
+
+
 class IconPropertyExtractor:
     """Extract icon paint and layout properties for MapLibre symbol layers."""
 
@@ -980,7 +994,10 @@ class IconPropertyExtractor:
         unit_name = "map" if unit not in ("map", "m") else unit
         unclamped_px = PropertyExtractor.static_pixels(size, unit_name, context.reference_zoom)
         reference_px = max(1.0, unclamped_px)
-        map_units_per_pixel = size / reference_px
+        # The sprite is drawn with QgsMapToPixel in project map units: a size
+        # in meters at scale becomes map units there (a degree, a foot) the
+        # way QGIS converts it in the sprite's render context.
+        map_units_per_pixel = (_meters_in_map_units(size) if unit == "m" else size) / reference_px
         # QGIS applies the size's QgsMapUnitScale (min/max mm, scale range)
         # when it draws the sprite (at the scale of map_units_per_pixel), so
         # the sprite is the limited size at that scale: icon-size is relative
@@ -1472,7 +1489,7 @@ class TextPropertyExtractor:
         text_format: QgsTextFormat,
         label_settings: QgsPalLayerSettings = None,
     ) -> Union[float, List]:
-        """Return ``text-opacity`` (format opacity × data-defined 0–100 opacity)."""
+        """Return ``text-opacity``: the format's opacity, or its data-defined 0–100 one."""
         try:
             base_opacity = text_format.opacity()
         except (AttributeError, RuntimeError):
@@ -1485,8 +1502,10 @@ class TextPropertyExtractor:
         opacity_prop = label_settings.dataDefinedProperties().property(prop_key)
         if not opacity_prop or not opacity_prop.isActive():
             return base_opacity
-        value = PropertyExtractor.get_value_or_expression(100.0, opacity_prop, "number")
-        return ex.clamp(ex.mul(ex.div(value, 100.0), base_opacity), 0, 1)
+        # The data-defined opacity replaces the format's (QgsTextFormat::
+        # updateDataDefinedProperties), which stays where it is NULL.
+        value = PropertyExtractor.get_value_or_expression(base_opacity * 100.0, opacity_prop, "number")
+        return ex.clamp(ex.div(value, 100.0), 0, 1)
 
     @staticmethod
     def get_text_halo_color(
@@ -1505,7 +1524,22 @@ class TextPropertyExtractor:
         color_prop = label_settings.dataDefinedProperties().property(
             QgsPalLayerSettings.Property.BufferColor
         )
-        return PropertyExtractor.get_value_or_expression(base_color, color_prop, "color")
+        value = PropertyExtractor.get_value_or_expression(base_color, color_prop, "color")
+        opacity = float(buffer.opacity())
+        if value == base_color or opacity >= 1.0 or color_prop is None or not color_prop.isActive():
+            return value
+        # A data-defined colour replaces the colour only: QGIS still draws
+        # the buffer at its opacity.
+        if isinstance(value, str):
+            match = re.fullmatch(r"\s*rgba?\(([^,]+),([^,]+),([^,)]+)(?:,([^)]+))?\)\s*", value)
+            if match:
+                alpha = float(match.group(4)) if match.group(4) else 1.0
+                return (f"rgba({match.group(1).strip()}, {match.group(2).strip()}, "
+                        f"{match.group(3).strip()}, {round(alpha * opacity, 4)})")
+        rgba = ["var", "q2vt_halo"]
+        return ["let", "q2vt_halo", ["to-rgba", value],
+                ["rgba", ["at", 0, rgba], ["at", 1, rgba], ["at", 2, rgba],
+                 ["*", ["at", 3, rgba], opacity]]]
 
     @staticmethod
     def get_text_halo_width(
@@ -5338,7 +5372,7 @@ class QgisMapLibreStyleExporter:
             name = type(effect).__name__
             if name == "QgsDrawSourceEffect":
                 return  # a blur drawn after the line is a separate copy: not this
-            if name != "QgsBlurEffect" or _enum_int(effect.drawMode()) == 1:
+            if name != "QgsBlurEffect" or _enum_int(effect.drawMode()) == MODIFIER_ONLY:
                 continue
             unit = effect.blurUnit() if hasattr(effect, "blurUnit") else Qgis.RenderUnit.Millimeters
             scale = self.blur_scale(effect, PropertyExtractor.static_pixels(effect.blurLevel(), unit))
@@ -5369,7 +5403,7 @@ class QgisMapLibreStyleExporter:
             if name == "QgsDrawSourceEffect":
                 target = above
                 continue
-            if name not in self.LINE_EFFECTS or _enum_int(effect.drawMode()) == 1:  # modifier only
+            if name not in self.LINE_EFFECTS or _enum_int(effect.drawMode()) == MODIFIER_ONLY:
                 continue
             extra = copy.deepcopy(layer_def)
             extra["id"] = f"{layer_def['id']}_fx{index}"

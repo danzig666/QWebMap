@@ -133,8 +133,10 @@ function shareBlock(container, permalink) {
   for (const [which, label] of [["stable", "app.linkCurrent"], ["versioned", "app.linkRelease"]]) {
     const node = button("q2vt-chip", null, "link", { text: t(label) });
     node.addEventListener("click", async () => {
-      await permalink.copy({}, which);
-      status.textContent = t("app.copied");
+      const copied = await permalink.copy({}, which);
+      status.textContent = `${t(label)}: ${t(copied ? "app.copied" : "app.copyFailed")}`;
+      clearTimeout(status.q2vtTimer);
+      status.q2vtTimer = setTimeout(() => { status.textContent = ""; }, 6000);
     });
     block.append(node);
   }
@@ -425,8 +427,10 @@ export async function mount({ map, manifest, manifestUrl, pageUrl, assetsUrl, ma
     enabled: manifest.interaction?.permalinks !== false });
   viewer.permalink = permalink;
   const lookup = new FeatureLookup(manifest, manifestUrl);
-  const identify = manifest.interaction?.popups === false ? null
-    : new Identify({ map, manifest, maplibregl, control, state, lookup, viewer });
+  // Popups off: no identify, unless the parcel report needs the clicks.
+  const popupsOff = manifest.interaction?.popups === false;
+  const identify = popupsOff && !panel.panes.parcel ? null
+    : new Identify({ map, manifest, maplibregl, control, state, lookup, viewer, reportOnly: popupsOff });
   const parts = { state, control, permalink, lookup, identify, panel, basemap };
   if (panel.panes.layers) {
     parts.layers = new LayerControls({ map, manifest, state, control, container: panel.panes.layers, releaseBase });
@@ -493,15 +497,23 @@ export async function mount({ map, manifest, manifestUrl, pageUrl, assetsUrl, ma
   if (basemap.available) {
     const switcher = new BasemapControl(basemap, state);
     map.addControl(switcher, "bottom-right");
-    let shown = state.value.basemap;
+    // What the map draws: a basemap that failed to load leaves the previous
+    // one, and choosing it again tries again.
+    let shown = basemap.active;
+    if (shown !== state.value.basemap) switcher.sync(shown);
     state.onChange((value) => {
       if (value.basemap === shown) return;
-      shown = value.basemap;
-      basemap.set(shown).then(() => {
+      const id = (shown = value.basemap);
+      basemap.set(id).then(() => {
         switcher.sync(shown);
         attribution.parts = [manifest.attribution, shown !== "none" ? basemap.attribution(shown) : null];
         attribution.render();
-      }).catch((error) => warn("error.basemap", String(error)));
+      }).catch((error) => {
+        warn("error.basemap", String(error));
+        if (shown !== id) return;  // another one was chosen meanwhile
+        shown = basemap.active;
+        switcher.sync(shown);
+      });
     });
   }
   if (manifest.interaction?.overviewMap) {

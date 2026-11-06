@@ -88,7 +88,7 @@ def test_nested_unicode_paths_and_index(site):
 
 
 @pytest.mark.parametrize("path", ["/../secret.txt", "/%2e%2e/secret.txt", "/data/../../secret.txt",
-                                  "/link.txt", "/..%5csecret.txt"])
+                                  "/link.txt", "/..%5csecret.txt", "/C:/secret.txt"])
 def test_no_escape_from_the_root(site, path):
     response, body = _request(site, path)
     assert response.status in (403, 404) and b"outside" not in body

@@ -244,3 +244,15 @@ def test_the_page_preloads_every_module_the_viewer_imports(tmp_path):
     page = _render_index(os.path.join(WEB_VIEWER, "index.html"), "T", preloads=["app.mjs", "a.mjs"])
     assert '<link rel="modulepreload" href="assets/a.mjs">' in page and "__Q2VT_" not in page
     assert '<link rel="preload" href="manifest.json" as="fetch" crossorigin="anonymous">' in page
+
+
+def test_stable_entry_speaks_the_maps_language(tmp_path, bundle):
+    """The short address's own page (shown while current.json is read) in the
+    map's language: lang and its words; the bootstrap reads lang."""
+    build_release(bundle, PublicationProfile(title="Térkép", slug="hu-terkep", locale="hu"), _pub(tmp_path))
+    page = open(os.path.join(_pub(tmp_path), "index.html"), encoding="utf-8").read()
+    assert '<html lang="hu">' in page and "Betöltés…" in page and "JavaScript szükséges" in page
+    english = str(tmp_path / "web" / "en")
+    build_release(bundle, PublicationProfile(title="Map", slug="en-map", locale="en"), english)
+    page = open(os.path.join(english, "index.html"), encoding="utf-8").read()
+    assert '<html lang="en">' in page and "Loading…" in page

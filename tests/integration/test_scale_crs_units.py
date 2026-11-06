@@ -548,3 +548,41 @@ def test_map_unit_pattern_marker_limits_in_degrees_and_feet(plugin, units, refer
     one, _ = exporter._marker_images(symbol)  # pylint: disable=protected-access
     box = one.getchannel("A").point(lambda alpha: 255 if alpha > 127 else 0).getbbox()
     assert box[2] - box[0] == pytest.approx(_qgis_marker_px(symbol, reference_zoom), abs=1.5)
+
+
+@pytest.mark.parametrize("crs, units", [("EPSG:4326", "degrees"), ("EPSG:2263", "feet"),
+                                        ("EPSG:3857", "meters")])
+def test_meters_at_scale_marker_sprite_in_degrees_and_feet(plugin, crs, units):
+    """A "meters at scale" marker's sprite is drawn with map units per px:
+    metres per px were given, so in a degree project the 50 m square became
+    a 1 px dot and in a foot project 3.28 times too large."""
+    from qgis.core import QgsProject
+    from qgis.PyQt.QtCore import Qt
+    from q2vt_plugin.src.core import maplibre_converter as mc  # pylint: disable=import-error
+    from q2vt_plugin.src.core import sprite_generator as sg  # pylint: disable=import-error
+    from q2vt_plugin.src.core.fidelity.diagnostics import DiagnosticCollector  # pylint: disable=import-error
+    from q2vt_plugin.src.core.fidelity.units import LengthConverter  # pylint: disable=import-error
+    context = _crs_context(units) if units != "meters" else None
+    project = QgsProject.instance()
+    previous = project.crs()
+    project.setCrs(QgsCoordinateReferenceSystem(crs))
+    try:
+        if context is None:
+            from q2vt_plugin.src.core.fidelity.units import MapUnitContext  # pylint: disable=import-error
+            context = MapUnitContext.for_project(True, "meters", LAT)
+        layer = QgsSimpleMarkerSymbolLayer(Qgis.MarkerShape.Square, 50.0)
+        layer.setColor(QColor("black"))
+        layer.setStrokeStyle(Qt.PenStyle.NoPen)
+        layer.setSizeUnit(Qgis.RenderUnit.MetersInMapUnits)
+        symbol = QgsMarkerSymbol([layer])
+        mc.PropertyExtractor.context = mc.ConversionContext(
+            DiagnosticCollector(), LengthConverter(map_context=context))
+        mc.PropertyExtractor.context.reference_zoom = 16.0
+        icon_size, map_units_per_pixel, oversampling = mc.IconPropertyExtractor.marker_scale(
+            symbol, layer)
+        image = sg.SymbolImage(symbol, "m", oversampling, False, map_units_per_pixel)
+        sprite_px = image.img.width / oversampling
+        expected = mc.PropertyExtractor.static_pixels(50.0, "m", 16.0)
+        assert sprite_px * _curve_at(icon_size, 16.0) == pytest.approx(expected, rel=0.08, abs=1.5)
+    finally:
+        project.setCrs(previous)

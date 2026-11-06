@@ -89,8 +89,11 @@ def describe(uri: Dict[str, object], formats: Optional[List[str]] = None) -> Tup
     if any(str(k).lower().startswith("http-header") or str(k).lower() == "referer" for k in uri):
         return None, "it sends its own HTTP headers"
     url = str(uri.get("url") or "")
-    if urlsplit(url).scheme != "https":
+    parts = urlsplit(url)
+    if parts.scheme != "https":
         return None, "its address is not https"
+    if "@" in parts.netloc:  # https://user:password@host/: a login written into the address
+        return None, "it needs a login"
     if str(uri.get("type") or "") == "xyz":
         if "{q}" in url or not all(p in url for p in ("{z}", "{x}")) \
                 or not ("{y}" in url or "{-y}" in url):

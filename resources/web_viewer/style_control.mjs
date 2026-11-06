@@ -63,11 +63,15 @@ export function filterPredicate(layer, filters) {
     const get = ["get", config.field];
     if (config.kind === "values") {
       const options = [];
-      if (value.values && value.values.length) options.push(["in", ["to-string", get], ["literal", value.values]]);
+      // NULL (missing) is only the "no value" choice: to-string would make it "".
+      if (value.values && value.values.length) options.push(["all", ["!=", get, null], ["in", ["to-string", get], ["literal", value.values]]]);
       if (value.nulls) options.push(["==", get, null]);
       if (options.length) parts.push(options.length === 1 ? options[0] : ["any", ...options]);
     } else if (config.kind === "range") {
       const number = ["to-number", get, NaN];
+      const bounded = (value.min !== null && value.min !== undefined) || (value.max !== null && value.max !== undefined);
+      // NULL (missing) has no value in the range (to-number would make it 0).
+      if (bounded) parts.push(["!=", get, null]);
       if (value.min !== null && value.min !== undefined) parts.push([">=", number, value.min]);
       if (value.max !== null && value.max !== undefined) parts.push(["<=", number, value.max]);
     } else if (config.kind === "text" && value.text) {
@@ -216,6 +220,8 @@ export function matchesFilters(layer, filters, properties) {
       const isNull = raw === null || raw === undefined;
       if (isNull ? !value.nulls : !(value.values || []).includes(String(raw))) return false;
     } else if (config.kind === "range") {
+      const bounded = (value.min !== null && value.min !== undefined) || (value.max !== null && value.max !== undefined);
+      if (!bounded) continue;
       const number = Number(raw);
       if (raw === null || raw === undefined || Number.isNaN(number)) return false;
       if (value.min !== null && value.min !== undefined && number < value.min) return false;

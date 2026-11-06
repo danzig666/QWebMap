@@ -245,10 +245,18 @@ class WorkerPool:
             self.alive.append(True)
             threading.Thread(target=self._read, args=(number, process), daemon=True,
                              name=f"q2vt-worker-{number}").start()
-            try:
-                send(process.stdin, ("init", state))
-            except OSError as error:
-                self.error = f"worker {number}: {error}"
+            # Sent from a thread: the worker reads it only once its QGIS has
+            # started, and the state is larger than a Windows pipe's buffer
+            # (sent here, each start waited for the one before, QGIS frozen).
+            # Nothing else is sent before its "ready", which follows the read.
+            threading.Thread(target=self._send_init, args=(number, process, state), daemon=True,
+                             name=f"q2vt-worker-init-{number}").start()
+
+    def _send_init(self, number: int, process, state) -> None:
+        try:
+            send(process.stdin, ("init", state))
+        except (OSError, ValueError) as error:  # (wait_ready reports the worker's exit)
+            self.error = self.error or f"worker {number}: {error}"
 
     def _read(self, number: int, process) -> None:
         while True:

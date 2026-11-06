@@ -88,3 +88,29 @@ def test_binary_files_are_scanned_for_secrets_like_text(tmp_path):
     assert scan_bundle(str(tmp_path), ["map.pmtiles"], ["pw1"]) == []
     assert scan_bundle(str(tmp_path), ["map.pmtiles"], ["sEcReT-value-1234"]) == \
         ["map.pmtiles: secret/canary bytes"]
+
+
+def test_large_binary_files_are_scanned_in_blocks(tmp_path, monkeypatch):
+    """An archive is read block by block, a secret across two blocks found too."""
+    from publishing import validation  # pylint: disable=import-outside-toplevel
+    blob = b"x" * 1000 + b"sEcReT-value-1234" + b"y" * 1000
+    (tmp_path / "terrain.pmtiles").write_bytes(blob)
+    original = validation._file_contains  # pylint: disable=protected-access
+    monkeypatch.setattr(validation, "_file_contains", lambda path, values: original(path, values, block=1005))
+    assert validation.scan_bundle(str(tmp_path), ["terrain.pmtiles"], ["sEcReT-value-1234"]) == \
+        ["terrain.pmtiles: secret/canary bytes"]
+    assert validation.scan_bundle(str(tmp_path), ["terrain.pmtiles"], ["not-in-the-file"]) == []
+
+
+def test_web_addresses_and_approved_attribute_values_are_no_leaks(tmp_path):
+    """A web address with /home/ or /tmp/ in it is no local path; approved
+    attribute values (popup lookup, search) may hold paths or "password =":
+    only secret and canary values are looked for there."""
+    assert not scan_text_for_leaks('{"doc": "https://www.example.com/home/plans/a.pdf"}')
+    assert not scan_text_for_leaks('{"doc": "https://x.org/tmp/a"}')
+    assert scan_text_for_leaks('{"x": "/tmp/q2vt/map.gpkg"}')
+    (tmp_path / "search").mkdir()
+    (tmp_path / "search" / "index.json").write_text('{"note": "D:\\\\archive, password = see desk"}')
+    assert scan_bundle(str(tmp_path), ["search/index.json"]) == []
+    (tmp_path / "search" / "manifest.json").write_text('{"x": "/home/user/a.gpkg"}')
+    assert scan_bundle(str(tmp_path), ["search/manifest.json"]) == ["search/manifest.json: absolute local path"]

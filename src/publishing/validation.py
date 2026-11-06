@@ -403,8 +403,13 @@ FORBIDDEN_EXTENSIONS = {
 FORBIDDEN_NAMES = {"export_log.txt", "fidelity_report.json", "fidelity_report.html",
                    "activate_server.sh", "tiles_server.py", ".env"}
 TEXT_EXTENSIONS = {".html", ".json", ".mjs", ".js", ".css", ".txt", ".md", ".svg"}
-_ABS_PATH = re.compile(r"(?:[A-Za-z]:\\\\|[A-Za-z]:\\[^\\\s\"]|/home/|/Users/|/tmp/|/var/folders/|"
-                       r"\\\\Users\\\\|file:///)")
+# (A Unix path after a host name or a word is part of a web address:
+# https://example.com/home/plans.pdf is no local path.)
+_ABS_PATH = re.compile(r"(?:[A-Za-z]:\\\\|[A-Za-z]:\\[^\\\s\"]|(?<![\w.~%-])(?:/home/|/Users/|/tmp/|"
+                       r"/var/folders/)|\\\\Users\\\\|file:///)")
+# Attribute values the user approved (popup lookup, search): a value may be a
+# Windows path or say "password =": only secret and canary values are looked for.
+_ATTRIBUTE_DATA = ("features/", "search/")
 
 
 def safe_relative_path(path: str) -> str:
@@ -467,7 +472,8 @@ def scan_bundle(root: str, files: Iterable[str], secrets: Iterable[str] = (),
             scan = scan_text_for_leaks(text, secrets)
             # Third-party bundles and the documents the user publishes (a decree
             # in .txt may quote a path): secret values only.
-            if relative.startswith(("assets/vendor/", "assets/maplibre-gl", "docs/")):
+            if relative.startswith(("assets/vendor/", "assets/maplibre-gl", "docs/")) or (
+                    relative.startswith(_ATTRIBUTE_DATA) and not relative.endswith("manifest.json")):
                 scan = [p for p in scan if p == "credential value"]
             problems.extend(f"{relative}: {p}" for p in scan)
             for canary in canaries:
@@ -481,11 +487,24 @@ def scan_bundle(root: str, files: Iterable[str], secrets: Iterable[str] = (),
                         problems.append(f"{relative}: canary value in tile {address}")
                         break
         elif secrets or canaries:
-            with open(path, "rb") as handle:
-                blob = handle.read()
             # Secrets as in text files (6+ characters): a short password matches random bytes.
-            for value in (*[s for s in secrets if len(s) >= 6], *canaries):
-                if value.encode("utf-8") in blob:
-                    problems.append(f"{relative}: secret/canary bytes")
-                    break
+            values = [v.encode("utf-8") for v in (*[s for s in secrets if len(s) >= 6], *canaries)]
+            if values and _file_contains(path, values):
+                problems.append(f"{relative}: secret/canary bytes")
     return problems
+
+
+def _file_contains(path: str, values: List[bytes], block: int = 4 << 20) -> bool:
+    """Whether the file holds one of ``values``, read in blocks (an archive
+    of several GB is not loaded into memory)."""
+    overlap = max(len(v) for v in values) - 1
+    tail = b""
+    with open(path, "rb") as handle:
+        while True:
+            data = handle.read(block)
+            if not data:
+                return False
+            window = tail + data
+            if any(v in window for v in values):
+                return True
+            tail = window[-overlap:] if overlap else b""

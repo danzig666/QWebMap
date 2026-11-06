@@ -46,7 +46,21 @@ export function warn(key, detail = "") {
   const bar = document.getElementById("q2vt-warning");
   if (!bar) return;
   const item = document.createElement("div");
-  item.textContent = t(key);
+  item.className = "q2vt-warning-item";
+  const text = document.createElement("span");
+  text.textContent = t(key);
+  // It stays until closed (a notice goes by itself).
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "q2vt-warning-close";
+  close.textContent = "\u00d7";
+  close.setAttribute("aria-label", t("app.close"));
+  close.title = t("app.close");
+  close.addEventListener("click", () => {
+    item.remove();
+    if (!bar.childElementCount) bar.hidden = true;
+  });
+  item.append(text, close);
   bar.append(item);
   bar.hidden = false;
 }

@@ -81,3 +81,17 @@ export function toggle(label, onChange) {
   wrap.append(input, el("span", "q2vt-switch-track"));
   return { wrap, input };
 }
+
+// Padding for fitting a place into view: on wide screens the open side panel
+// covers the map's left part, so the place goes beside it, not under it.
+export function mapPadding(base = 40) {
+  const pad = { top: base, bottom: base, left: base, right: base };
+  const panel = document.getElementById("q2vt-panel");
+  const side = document.getElementById("q2vt-side");
+  const map = document.getElementById("q2vt-map");
+  if (!panel || panel.hidden || !side || !map || window.matchMedia("(max-width: 760px)").matches) return pad;
+  const box = map.getBoundingClientRect();
+  const covered = side.getBoundingClientRect().right - box.left;
+  if (covered > 0 && covered < box.width / 2) pad.left = covered + base;
+  return pad;
+}
