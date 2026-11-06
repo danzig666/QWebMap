@@ -2371,3 +2371,24 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
 
 * `export_workers._QT_VALUE_CLASSES`: Qt value classes of PyQt5 / PyQt6 unpickled as classes (PyQt6 on
   Windows pickles QDateTime without sip._unpickle_type) (tests/unit/test_gdal_guard.py).
+
+## 4.58.10 — bug and usability review
+
+* Publishing: `live_raster.describe` refuses `user:pass@` addresses; `validation.scan_bundle` reads
+  binary files in blocks (`_file_contains`), no path check for web addresses or approved attribute
+  data (`features/`, `search/`); `S3Provider.head` / `get_bytes` retried (`_retried`);
+  `public_verify` odd answers are failed checks; preview server answers from one opened file and
+  refuses drive segments; journal written with `json.dumps` (C encoder).
+* Export: unparsable filters are `_failed_groups` (not cached empty); `_DATASET` reads 3+ digits;
+  worker init sent from a thread; `get_dataset` copies through a temporary file; failed base-layer
+  builds removed; tile groups without a file left out of the merge; `activate_server.bat` uses
+  `chcp 65001` and the relative server path.
+* Style: metres at scale in map units (`_meters_in_map_units`, `_exact_interval`, `_inside_polygon`);
+  `MODIFIER_ONLY = 0`; data-defined symbol/label opacity replaces the static one; halo opacity kept;
+  `units.metres_per_unit`.
+* Publish window: close prompt (`_may_close`), import Cancel, layer tree follows the project,
+  `_basemap_kind_changed`, local-only destination, `_extent_is_canvas`, `_extent_mode_chosen`,
+  extent cut to Web Mercator, scrolled tabs and `_default_size` (tests/integration/test_publish_dialog_review.py).
+* Web viewer: filter NULLs, deep links, basemap retry, legend of off groups, search retry, entry page
+  language (`web_builder._write_stable_entry`), permalink limits, report-only identify; usability
+  quick wins (tests/browser/test_web_viewer_filters.py, test_web_viewer_permalink.py).

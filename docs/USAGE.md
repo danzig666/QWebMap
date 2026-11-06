@@ -92,7 +92,7 @@ With several rows selected, a limit appears only if every row has the same value
 
 **Pitfalls**
 
-- "Current map view" publishes whatever QGIS shows at export time. Before each export you see "Published area" with the size and tile count. Click **Export this view** to go on. "Don't ask again for this project" turns this prompt off. To publish the same area every time, use a layer extent or a drawn area.
+- "Current map view" publishes whatever QGIS shows at export time. Before each export you see "Published area" with the size and tile count. Click **Export this view** to go on. "Don't ask again for this project" turns this prompt off; choose "Current map view" in the list again to bring it back. To publish the same area every time, use a layer extent or a drawn area.
 - If the extent layer is removed from the project, its last extent is kept and the mode becomes Fixed area.
 - Changing the slug of a map that is already published gives it a new address and folder. The old address is not updated.
 - A logo that does not exist or has another file extension is silently left out.
@@ -200,7 +200,7 @@ With several rows selected, a limit appears only if every row has the same value
 - **My location button** works only on https pages.
 - Street search with no basemap reads streets from the latest Protomaps build, so exporting needs internet. Large areas take extra export time.
 - Filter titles have no widget here. Values saved in the profile are kept.
-- Raster *Load live* works only if the address is https with no login and no custom headers, the server allows CORS, and the source is not WMTS. Otherwise QGIS renders the layer into the release and the export log says why.
+- Raster *Load live* works only if the address is https with no login (also none written into the address, `https://user:password@…`) and no custom headers, the server allows CORS, and the source is not WMTS. Otherwise QGIS renders the layer into the release and the export log says why.
 - Finer *Sharpest detail* or a lower *Shown from zoom* makes raster exports much larger (about 4× per zoom).
 
 **Errors**
@@ -435,7 +435,7 @@ With several rows selected, a limit appears only if every row has the same value
 
 ## Destination tab
 
-- **Destination** — Where Publish sends the map: "Local only (no upload)" (default), "Cloudflare R2", "Other S3-compatible storage", or "SSH / SFTP server (one folder, not versioned)". The fields below change with the choice.
+- **Destination** — Where Publish sends the map: "Local only (no upload)" (default), "Cloudflare R2", "Other S3-compatible storage", or "SSH / SFTP server (one folder, not versioned)". The fields below change with the choice ("Local only" has none: Publish writes into the output folder).
 - **Step-by-step: set up Cloudflare R2…** — Opens the "Cloudflare R2: step by step" guide (see below). Hidden for SSH.
 - **Map address** — Read-only. The final address: `<public base URL>/<prefix>/` (R2/S3) or `<public URL>/` (SSH). Shows "— (enter the public base URL)", "— (check the prefix)" or "— (local only)" when it cannot be built.
 
@@ -569,7 +569,7 @@ With several rows selected, a limit appears only if every row has the same value
 
 - Settings live in the project: after Save settings, also save the project file.
 - If the project was saved under another name or in another folder, every setting is kept, and so is the web map (same address). The window asks only where to export: **Keep the folder**, **Next to this project** (its `web_maps` folder) or **Choose a folder…** (not asked when the new file is in the same folder). Both projects now publish one map: for a separate one, use *Settings file… › Export settings to a file…*, then *Import settings from a file…* and answer No (a new web map).
-- Invalid settings are not saved on Close; the last valid ones stay.
+- Invalid settings are not saved on Close; the last valid ones stay. Closing with such changes first asks "Close without saving?" and lists what to fix.
 - Opening another project closes the window; its settings are not saved into the new project.
 - During an export the tabs are locked and QGIS takes no input until it ends or you press Cancel.
 - Copy link stays disabled for a local-only Publish; use Open map / Open local package.
