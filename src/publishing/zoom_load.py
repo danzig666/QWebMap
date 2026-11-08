@@ -466,10 +466,11 @@ def fingerprint(project, profile, extent_3857: QgsRectangle) -> Optional[str]:
     from qgis.core import QgsProviderRegistry, QgsReadWriteContext  # pylint: disable=import-outside-toplevel
     from qgis.PyQt.QtXml import QDomDocument  # pylint: disable=import-outside-toplevel
     from .profile import dumps  # pylint: disable=import-outside-toplevel
+    from ..utils.crs_ref import crs_ref  # pylint: disable=import-outside-toplevel
     box = extent_3857 if isinstance(extent_3857, QgsRectangle) else QgsRectangle(*extent_3857)
     parts = [int(profile.view.min_zoom), int(profile.view.max_zoom),
              [round(v, 3) for v in (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())],
-             project.crs().authid(), zoom_scale_factor(project, box)]
+             crs_ref(project.crs()), zoom_scale_factor(project, box)]
     for config in profile.layers:
         layer = project.mapLayer(config.layer_id)
         if not (config.included and isinstance(layer, QgsVectorLayer) and layer.isSpatial()):
@@ -484,7 +485,7 @@ def fingerprint(project, profile, extent_3857: QgsRectangle) -> Optional[str]:
         document = QDomDocument()
         layer.exportNamedStyle(document, QgsReadWriteContext())
         style = hashlib.sha1(document.toString().encode("utf-8"), usedforsecurity=False).hexdigest()
-        parts.append([layer.id(), layer.crs().authid(), layer.source(), layer.subsetString(),
+        parts.append([layer.id(), crs_ref(layer.crs()), layer.source(), layer.subsetString(),
                       layer.featureCount(), modified, layer.hasScaleBasedVisibility(),
                       layer.minimumScale(), layer.maximumScale(), style])
     configs = json.loads(dumps(profile)).get("layers", [])

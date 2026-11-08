@@ -45,6 +45,7 @@ from ..utils.qt_compat import (CURVED_AT_VERTICES, CURVED_DEFAULT, MULTIPART_LAR
                                MULTIPART_SPLIT, curved_label_mode, enum_int,
                                label_multipart_mode, symbol_layer_key)
 from ..utils.config import QDomDocument
+from ..utils.crs_ref import crs_ref
 from ..utils.flattened_rule import FlattenedRule
 from ..utils.zoom_levels import ZoomLevels
 from .fidelity.diagnostics import DiagnosticCollector
@@ -417,7 +418,7 @@ class RulesFlattener:
             return
         converter = ReferenceScaleConverter(
             reference, self.lengths.map_context.scale_metres_per_map_unit,
-            self.lengths.map_context.mercator_per_map_unit, layer.crs().authid())
+            self.lengths.map_context.mercator_per_map_unit, crs_ref(layer.crs()))
         apply_to_rules(rule_system, rule_type, converter)
         if converter.unhandled:
             self.diagnostics.add(
@@ -648,7 +649,7 @@ class RulesFlattener:
 
         crs = QgsProject.instance().crs() if QgsProject.instance().crs().isValid() else layer.crs()
         params = [("tolerance", map_units(renderer.tolerance(), renderer.toleranceUnit())),
-                  ("crs", crs.authid())]
+                  ("crs", crs_ref(crs))]
         if renderer.type() == "pointDisplacement":
             sizes = [map_units(symbol.size(), symbol.sizeUnit())
                      for symbol in renderer.embeddedRenderer().symbols(QgsRenderContext())
@@ -1751,7 +1752,7 @@ class RulesFlattener:
         for index in indices:
             rest.rule.symbol().symbolLayer(index).setEnabled(False)
         rules = self._split_by_symbol_layers(rest)
-        layer_crs = flat_rule.layer.crs().authid()
+        layer_crs = crs_ref(flat_rule.layer.crs())
         per_zoom = self.materializer._per_zoom(flat_rule)  # pylint: disable=protected-access
         slices = []
         for position, zoom_rule in enumerate(per_zoom):
@@ -1982,8 +1983,8 @@ class RulesFlattener:
         if abs(field_layer.offset().x()) > 1e-9 or abs(field_layer.offset().y()) > 1e-9:
             self.diagnostics.add("Q2VT_SYMBOL_APPROXIMATE", "Vector field offset is not applied.",
                                  layer_id=flat_rule.layer.id(), rule_id=flat_rule.rule_id)
-        project_crs = QgsProject.instance().crs().authid() or flat_rule.layer.crs().authid()
-        layer_crs = flat_rule.layer.crs().authid()
+        project_crs = crs_ref(QgsProject.instance().crs()) or crs_ref(flat_rule.layer.crs())
+        layer_crs = crs_ref(flat_rule.layer.crs())
 
         def generator(factor):
             point = "$geometry" if project_crs == layer_crs else \
@@ -2299,7 +2300,7 @@ class RulesFlattener:
         except (AttributeError, TypeError, ValueError):
             anchor = 0
         recipe = Recipe("callout", params=(("x", x), ("y", y), ("anchor", anchor),
-                                           ("crs", pinned.layer.crs().authid())))
+                                           ("crs", crs_ref(pinned.layer.crs()))))
         leader = FlattenedRule(rule, pinned.layer, "", pinned.visibility, recipe,
                                self._CALLOUT_ORDER, provenance=self._leader_provenance(pinned))
         leader.set_attr("t", 0)

@@ -45,6 +45,7 @@ from qgis.PyQt.QtCore import QPointF
 from qgis.PyQt.QtGui import QColor
 
 from ..utils.config import Qt
+from ..utils.crs_ref import crs_ref
 from ..utils.flattened_rule import FlattenedRule
 from ..utils.qt_compat import enum_int, symbol_layer_key
 from ..utils.zoom_levels import ZoomLevels
@@ -283,7 +284,7 @@ class SymbolMaterializer:
         # not materialized at zooms where they reach beyond it.
         self.extent = extent
         crs = QgsProject.instance().crs()
-        self.project_crs = crs.authid() if crs.isValid() else ""
+        self.project_crs = crs_ref(crs)
 
     # -- helpers -----------------------------------------------------------
     def _zoom_range(self, rule: FlattenedRule) -> Tuple[int, int]:
@@ -975,7 +976,7 @@ class SymbolMaterializer:
             if layer.layerType() in ("MarkerLine", "HashLine") and (
                     self._exact_interval(layer) or self._zoom_interval(layer)):
                 return None  # exact interval markers or hashes (see _marker_line)
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         rule = flat_rule.derive()
         clone = rule.rule.symbol().symbolLayer(0)
         params = [("ring_filter", _ring_filter(layer)), ("crs", crs)]
@@ -1127,7 +1128,7 @@ class SymbolMaterializer:
         if layer.id() in cache:
             return cache[layer.id()]
         transform = None
-        if self.project_crs and layer.crs().authid() != self.project_crs:
+        if self.project_crs and crs_ref(layer.crs()) != self.project_crs:
             transform = QgsCoordinateTransform(layer.crs(), QgsCoordinateReferenceSystem(self.project_crs),
                                                QgsProject.instance())
         rings = []
@@ -1224,7 +1225,7 @@ class SymbolMaterializer:
         solid = layer.penStyle() == Qt.PenStyle.SolidLine and not layer.useCustomDashPattern()
         effect = layer.paintEffect()
         native_only = not solid or (effect is not None and effect.enabled())
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         if mixed:
             # The band as a line needs one unit: the whole stroke.
             line = layer.clone()
@@ -1333,7 +1334,7 @@ class SymbolMaterializer:
         from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform,  # pylint: disable=import-outside-toplevel
                                QgsCsException)
         extent = layer.extent()
-        if self.project_crs and layer.crs().authid() != self.project_crs:
+        if self.project_crs and crs_ref(layer.crs()) != self.project_crs:
             try:
                 extent = QgsCoordinateTransform(layer.crs(), QgsCoordinateReferenceSystem(self.project_crs),
                                                 QgsProject.instance()).transformBoundingBox(extent)
@@ -1349,7 +1350,7 @@ class SymbolMaterializer:
         cache = self.__dict__.setdefault("_longest", {})
         if layer.id() not in cache:
             transform = None
-            if self.project_crs and layer.crs().authid() != self.project_crs:
+            if self.project_crs and crs_ref(layer.crs()) != self.project_crs:
                 transform = QgsCoordinateTransform(layer.crs(),
                                                    QgsCoordinateReferenceSystem(self.project_crs),
                                                    QgsProject.instance())
@@ -1380,7 +1381,7 @@ class SymbolMaterializer:
         (``QgsSymbolLayerUtils::offsetLine``: mitred offset curve): MapLibre's
         ``line-offset`` crosses itself and bunches up at sharp corners
         (Gyorsforgalmi út, +-15 m of a 10 m wide line)."""
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         rule = flat_rule.derive()
         rule.rule.symbol().symbolLayer(0).setOffset(0.0)
         rule.recipe = mat.Recipe("line_offset", params=(
@@ -1413,7 +1414,7 @@ class SymbolMaterializer:
         for name, key in (("start", P.PropertyTrimStart), ("end", P.PropertyTrimEnd)):
             if props.isActive(key):
                 expressions[name] = props.property(key).asExpression()
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         polygon = flat_rule.get_attr("g") == 2
         ends = []  # (name, map units | None, per cent | None, mm | None, (expression, per unit) | None)
         for name, value, unit in (("start", layer.trimDistanceStart(), layer.trimDistanceStartUnit()),
@@ -1510,7 +1511,7 @@ class SymbolMaterializer:
         if key in cache:
             return cache[key]
         transform = None
-        if self.project_crs and layer.crs().authid() != self.project_crs:
+        if self.project_crs and crs_ref(layer.crs()) != self.project_crs:
             transform = QgsCoordinateTransform(layer.crs(), QgsCoordinateReferenceSystem(self.project_crs),
                                                QgsProject.instance())
         px0 = self._map_units_per_mm(None, 0.0, layer) * 25.4 / 96.0
@@ -1639,7 +1640,7 @@ class SymbolMaterializer:
                          "Line offset curves would exceed the output budget; drawn with the "
                          "browser's line offset.", flat_rule)
             return None
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         offset_mm = _to_mm(layer.offset(), layer.offsetUnit())
         visible = flat_rule.visibility or ZoomInterval(float(low), None)
         rules = []
@@ -1755,7 +1756,7 @@ class SymbolMaterializer:
                 fill.setDataDefinedProperty(key, QgsProperty(props.property(key)))
         symbol = QgsFillSymbol([fill])
         symbol.setOpacity(flat_rule.rule.symbol().opacity())
-        recipe = mat.glyph_recipe(wkt, angle, self.project_crs or flat_rule.layer.crs().authid())
+        recipe = mat.glyph_recipe(wkt, angle, self.project_crs or crs_ref(flat_rule.layer.crs()))
         return [self._with_symbol(flat_rule, symbol, 2, 3, recipe)]
 
     # A simple marker sized in map units is drawn as its shape (geometry)
@@ -1819,7 +1820,7 @@ class SymbolMaterializer:
         coords = ", ".join(f"{ring[i]!r} {ring[i + 1]!r}" for i in range(0, len(ring), 2))
         wkt = f"POLYGON(({coords}))"
         recipe = mat.glyph_recipe(wkt, repr(float(marker_layer.angle())),
-                                  self.project_crs or flat_rule.layer.crs().authid(),
+                                  self.project_crs or crs_ref(flat_rule.layer.crs()),
                                   anchor, all_parts)
         # The fill and, as its own line (polygon outlines are lines in the
         # style), the outline with its width and pen style (dashes).
@@ -1916,7 +1917,7 @@ class SymbolMaterializer:
                 return None
             offset = float(layer.offset())
         polygon = flat_rule.get_attr("g") == 2
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         recipe = mat.dash_recipe(pattern, dash_offset, crs, offset,
                                  _ring_filter(layer) if polygon else 0)
 
@@ -1981,7 +1982,7 @@ class SymbolMaterializer:
                       if per_zoom_elements * n <= self.MAX_PATTERN_ELEMENTS), 1)
         if self._over_budget(native, per_zoom_elements * steps, "Dash pattern"):
             return None
-        crs = self.project_crs or native.layer.crs().authid()
+        crs = self.project_crs or crs_ref(native.layer.crs())
         rings = _ring_filter(layer) if native.get_attr("g") == 2 else 0
         zoom_rules = self._per_zoom(native)
         rules = []
@@ -2062,7 +2063,7 @@ class SymbolMaterializer:
         if key in cache:
             return cache[key]
         transform = None
-        if self.project_crs and layer.crs().authid() != self.project_crs:
+        if self.project_crs and crs_ref(layer.crs()) != self.project_crs:
             transform = QgsCoordinateTransform(layer.crs(),
                                                QgsCoordinateReferenceSystem(self.project_crs),
                                                QgsProject.instance())
@@ -2207,7 +2208,7 @@ class SymbolMaterializer:
                      "(QGIS draws them in screen coordinates, so they change with the view); "
                      "their number and density follow QGIS.", flat_rule)
         recipe = mat.random_points_recipe(count, density, int(layer.seed()),
-                                          self.project_crs or flat_rule.layer.crs().authid())
+                                          self.project_crs or crs_ref(flat_rule.layer.crs()))
 
         def points(rule):
             return [self._with_symbol(rule, inherit_opacity(flat_rule.rule.symbol(), marker.clone()),
@@ -2296,7 +2297,7 @@ class SymbolMaterializer:
         recipe = mat.grid_recipe(
             layer.distanceX(), layer.distanceY(),
             *self._grid_shift(layer, flat_rule, clip == enum_int(Qgis.MarkerClipMode.Shape)),
-            self.project_crs or flat_rule.layer.crs().authid(), self._anchor(layer, flat_rule),
+            self.project_crs or crs_ref(flat_rule.layer.crs()), self._anchor(layer, flat_rule),
             inset, rows_from_top=clip != enum_int(Qgis.MarkerClipMode.Shape),
             deviation=self._deviation(layer, flat_rule), seed=layer.seed())
         return [self._with_symbol(flat_rule, inherit_opacity(flat_rule.rule.symbol(), marker.clone()),
@@ -2363,7 +2364,7 @@ class SymbolMaterializer:
             self._report("Q2VT_PATTERN_APPROXIMATE", "Random deviation of pattern markers "
                          "in screen units is not reproduced.", flat_rule)
         anchor = self._anchor(layer, flat_rule)
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         zoom_rules = self._per_zoom(flat_rule)
         area = self._layer_totals(flat_rule.layer)[0]
         elements = sum(area / (dx_mm * dy_mm * self._map_units_per_mm(flat_rule, z + 0.5) ** 2)
@@ -2478,7 +2479,7 @@ class SymbolMaterializer:
         offset = simple.offset()
         paths = mat.marker_paths((mat.MARKER_SHAPE_POLYGONS[shape],), simple.size(),
                                  simple.angle(), offset.x(), offset.y())
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
 
         def recipe(fill):
             return mat.grid_recipe(
@@ -2559,7 +2560,7 @@ class SymbolMaterializer:
         recipe = mat.grid_recipe(
             layer.distanceX(), layer.distanceY(),
             *self._grid_shift(layer, flat_rule, clip == enum_int(Qgis.MarkerClipMode.Shape)),
-            self.project_crs or flat_rule.layer.crs().authid(), self._anchor(layer, flat_rule),
+            self.project_crs or crs_ref(flat_rule.layer.crs()), self._anchor(layer, flat_rule),
             0.0, rows_from_top=clip != enum_int(Qgis.MarkerClipMode.Shape), segments=segments,
             clip_shape=clip == enum_int(Qgis.MarkerClipMode.Shape), clip_mode={
                 enum_int(Qgis.MarkerClipMode.Shape): "shape",
@@ -2592,7 +2593,7 @@ class SymbolMaterializer:
                          "Rotated SVG fill in map units: each SVG is turned, but the grid is not "
                          "(QGIS turns the whole texture).", flat_rule)
         recipe = mat.grid_recipe(width, height, 0.0, 0.0, width / 2.0, -height / 2.0,
-                                 self.project_crs or flat_rule.layer.crs().authid(),
+                                 self.project_crs or crs_ref(flat_rule.layer.crs()),
                                  self._anchor(layer, flat_rule))
         # QGIS multiplies the fill symbol's opacity into the SVG texture.
         return [self._with_symbol(flat_rule, inherit_opacity(flat_rule.rule.symbol(),
@@ -2931,7 +2932,7 @@ class SymbolMaterializer:
         offset, offset_unit = layer.offset(), layer.offsetUnit()
         if abs(offset) <= 1e-9:
             offset = 0.0  # styles store float noise such as 5.55e-17
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         # QGIS offsets the line (polygons: every ring, as a buffer) before
         # measuring positions along it; vertex ends of open lines are the only
         # positions where offsetting the markers instead is equivalent.
@@ -3121,7 +3122,7 @@ class SymbolMaterializer:
         if scale is None and (any(uses_map_scale(end[2]) for end in ends if end is not None)
                               or uses_map_scale(blank) or uses_map_scale(extra)):
             return self._templated_per_zoom(flat_rule, layer)
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         clone = layer.clone()
         if any(ends):
             clone.setTrimDistanceStart(0.0)
@@ -3404,7 +3405,7 @@ class SymbolMaterializer:
         """Project CRS map units per screen millimetre at ``zoom``."""
         from qgis.core import QgsCoordinateReferenceSystem, QgsUnitTypes  # pylint: disable=import-outside-toplevel
         layer = layer if layer is not None else flat_rule.layer
-        crs = QgsCoordinateReferenceSystem(self.project_crs or layer.crs().authid())
+        crs = QgsCoordinateReferenceSystem(self.project_crs or crs_ref(layer.crs()))
         if crs.isGeographic():
             # QGIS's map units per pixel in degrees: the browser's Mercator
             # metres per mm over the Mercator x-extent of a degree (the
@@ -3484,7 +3485,7 @@ class SymbolMaterializer:
                   (layer.offset(), layer.offsetUnit())]
         screen = any(abs(v or 0.0) > 1e-12 and normalize_unit(u) not in ("map", "m")
                      for v, u in values)
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         base = (("crs", crs), ("curved", bool(layer.isCurved())),
                 ("repeated", bool(layer.isRepeated())), ("head_type", _enum_value(layer.headType())),
                 ("arrow_type", _enum_value(layer.arrowType())))
@@ -3937,7 +3938,7 @@ class SymbolMaterializer:
         if gradient_type == 2 and spread:
             self._report("Q2VT_GRADIENT_APPROXIMATE",
                          "Conical gradients have no spread; drawn once around the centre.", flat_rule)
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         p1, p2 = layer.referencePoint1(), layer.referencePoint2()
 
         def recipe(band, bands, opaque):
@@ -4004,7 +4005,7 @@ class SymbolMaterializer:
         in QGIS: one band set per zoom step, the distance in map units at the
         middle of the step (96 dpi CSS pixels, the project CRS's units)."""
         whole = layer.useWholeShape()
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         ramp = self._ramp_of(layer)
         distance = layer.maxDistance()
         mm = _to_mm(distance, layer.distanceUnit())
@@ -4160,7 +4161,7 @@ class SymbolMaterializer:
         _, _, count, diagonals = self._layer_totals(flat_rule.layer)
         if self._over_budget(flat_rule, diagonals / layer.distance() + 5 * count, "Hatch"):
             return None
-        crs = self.project_crs or flat_rule.layer.crs().authid()
+        crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         symbol = sub.clone()
         # QgsLinePatternFillSymbolLayer draws a pattern image clipped to the
         # polygon at the painter, or (mRenderUsingLines) the lines one by

@@ -123,6 +123,7 @@ from qgis.core import (
 
 from ..utils import crash_log, main_thread
 from ..utils.config import _DATA_SIMPLIFICATION_TOLERANCE, _EPSG_CRS, _FIELD_PREFIX
+from ..utils.crs_ref import crs_ref
 from ..utils.flattened_rule import FlattenedRule
 from ..utils.qt_compat import (CURVED_AT_VERTICES, CURVED_STRETCH_CHARS, CURVED_STRETCH_WORDS,
                                MULTIPART_EVERY, MULTIPART_LARGEST, MULTIPART_SPLIT,
@@ -509,8 +510,7 @@ class RulesExporter:
         self.extra_tile_fields = {k: list(v) for k, v in (extra_tile_fields or {}).items()}
         # QGIS draws in the project CRS: pattern anchors are measured there.
         project_crs = QgsProject.instance().crs()
-        self._map_crs = project_crs.authid() if project_crs.isValid() and project_crs.authid() \
-            else f"EPSG:{_EPSG_CRS}"
+        self._map_crs = crs_ref(project_crs) or f"EPSG:{_EPSG_CRS}"
         # Share of the Processing progress bar this export fills.
         self._progress_range = progress_range
         # Messages from worker threads, written by the main thread
@@ -766,7 +766,7 @@ class RulesExporter:
                                    if name == f"{_FIELD_PREFIX}_label"), None)
 
             # Evaluate scalar expressions on layer-CRS geometry, as QGIS does.
-            layer_crs = primary.layer.crs().authid()
+            layer_crs = crs_ref(primary.layer.crs())
             part_fields = self._part_fields(primary, expr_fields, layer_crs)
             pre_generator, generated_fields = None, []
             if primary.pre_generator:
@@ -2728,7 +2728,7 @@ class RulesExporter:
             layer = self._open(source, "point_groups")
             if not layer.isValid():
                 return None
-            target = QgsCoordinateReferenceSystem(params.get("crs") or layer.crs().authid())
+            target = QgsCoordinateReferenceSystem(params.get("crs") or crs_ref(layer.crs()))
             to_crs = QgsCoordinateTransform(layer.crs(), target, self._transform_context)
             from_crs = QgsCoordinateTransform(target, layer.crs(), self._transform_context)
             order_field = f"{_FIELD_PREFIX}_orig_id"
@@ -4087,7 +4087,7 @@ class RulesExporter:
         # walked there, the position taken back to the lines' CRS.
         along_crs = recipe.param("crs") if along and recipe is not None else None
         to_crs = back = None
-        if along_crs and along_crs != source.crs().authid():
+        if along_crs and along_crs != crs_ref(source.crs()):
             target = QgsCoordinateReferenceSystem(along_crs)
             if target.isValid():
                 to_crs = QgsCoordinateTransform(source.crs(), target, QgsProject.instance())
@@ -4196,7 +4196,7 @@ class RulesExporter:
         (the project's, where QGIS measures lengths); (None, None) when they
         are the same."""
         crs = recipe.param("crs") or ""
-        if not crs or crs == source.crs().authid():
+        if not crs or crs == crs_ref(source.crs()):
             return None, None
         target = QgsCoordinateReferenceSystem(crs)
         if not target.isValid():
@@ -5163,7 +5163,7 @@ class RulesExporter:
             # Data-defined label position (layer CRS), see
             # RulesFlattener._split_pinned_labels.
             flat_rule.set_attr("c", 0)
-            return [0, self._layer_point_expression(*pinned, flat_rule.layer.crs().authid())]
+            return [0, self._layer_point_expression(*pinned, crs_ref(flat_rule.layer.crs()))]
         if settings and settings.geometryGeneratorEnabled:
             target_geom = settings.geometryGeneratorType
            
@@ -5303,7 +5303,7 @@ class RulesExporter:
         transformed back to the layer CRS, and the result is transformed to
         the export CRS again.
         """
-        layer_crs = flat_rule.layer.crs().authid()
+        layer_crs = crs_ref(flat_rule.layer.crs())
         if not layer_crs or layer_crs == f"EPSG:{_EPSG_CRS}":
             return generator_exp
         bound = bind_geometry(

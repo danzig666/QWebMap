@@ -75,6 +75,46 @@ def test_area_labels_use_qgis_measurement(tmp_path, plugin, ellipsoid, expected,
     assert values and abs(values[0] - expected) <= tolerance, values
 
 
+def _custom_eov():
+    """EOV with another false easting: a CRS without an authority code
+    (authid() ""), like a .prj QGIS cannot match or a project's own CRS."""
+    eov = QgsCoordinateReferenceSystem("EPSG:23700")
+    crs = QgsCoordinateReferenceSystem.fromProj(eov.toProj().replace("+x_0=650000", "+x_0=650123"))
+    assert crs.isValid() and crs.authid() == ""
+    return crs
+
+
+def _reads_wkt_in_expressions():
+    """QGIS 3.44+ (the plugin's minimum) reads a WKT in transform(); 3.34 does not."""
+    from qgis.core import QgsExpression, QgsExpressionContext  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.utils.crs_ref import crs_ref  # pylint: disable=import-error,import-outside-toplevel
+    value = QgsExpression(f"x(transform(make_point(650000, 240000), '{crs_ref(_custom_eov())}', "
+                          "'EPSG:4326'))").evaluate(QgsExpressionContext())
+    return value is not None and abs(value) < 180
+
+
+def test_area_labels_in_a_crs_without_an_authority_code(tmp_path, plugin):
+    """A layer in a custom CRS: $area is still measured in it (with an empty
+    authid() it was the Web Mercator area, about 2.2 times too large here)."""
+    from q2vt_plugin.src.utils.crs_ref import crs_ref  # pylint: disable=import-error
+    crs = _custom_eov()
+    ref = crs_ref(crs)
+    assert ref and "'" not in ref and QgsCoordinateReferenceSystem(ref) == crs
+    if not _reads_wkt_in_expressions():
+        pytest.skip("this QGIS does not read a WKT in expressions (QGIS 3.44+ does)")
+    layer = _eov_layer(tmp_path)
+    layer.setCrs(crs)
+    _area_label(layer)
+    transform = QgsCoordinateTransform(crs, QgsCoordinateReferenceSystem("EPSG:3857"), QgsProject.instance())
+    extent = transform.transformBoundingBox(QgsGeometry.fromWkt(EOV_SQUARE).boundingBox())
+    extent.grow(500)
+    layers, rules = _export(tmp_path, layer, extent)
+    labels = [l for l, r in zip(layers, rules) if r.get_attr("t") == 1] or \
+        [l for l in layers if "q2vt_label" in l.fields().names()]
+    values = [float(f["q2vt_label"]) for f in labels[0].getFeatures()]
+    assert values and abs(values[0] - 10000) <= 0.5, values
+
+
 def test_feature_dependent_enabled_filters_features(tmp_path, plugin):
     layer = zoning_layer(path=str(tmp_path / "z.gpkg"))
     symbol = QgsMarkerSymbol.createSimple({"name": "circle", "size": "3"})
