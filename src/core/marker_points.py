@@ -276,10 +276,12 @@ def interval_points(source, recipe, export_crs: str, expression_context, express
         context = expression_context.variable("_project_transform_context")
         if not isinstance(context, QgsCoordinateTransformContext):
             context = QgsCoordinateTransformContext()
-        forward = QgsCoordinateTransform(QgsCoordinateReferenceSystem.fromOgcWmsCrs(export_crs),
-                                         QgsCoordinateReferenceSystem.fromOgcWmsCrs(crs), context)
-        backward = QgsCoordinateTransform(QgsCoordinateReferenceSystem.fromOgcWmsCrs(crs),
-                                          QgsCoordinateReferenceSystem.fromOgcWmsCrs(export_crs), context)
+        # (QgsCoordinateReferenceSystem(str): an authority code, or the WKT of a
+        # CRS without one, see utils.crs_ref)
+        forward = QgsCoordinateTransform(QgsCoordinateReferenceSystem(export_crs),
+                                         QgsCoordinateReferenceSystem(crs), context)
+        backward = QgsCoordinateTransform(QgsCoordinateReferenceSystem(crs),
+                                          QgsCoordinateReferenceSystem(export_crs), context)
     linestring = QgsWkbTypes.LineString
 
     blank_index = source.fields().indexFromName(BLANK_FIELD)
