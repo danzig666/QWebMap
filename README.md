@@ -588,7 +588,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.10**. Newest first:
+This README describes QWebMap **4.58.11**. Newest first:
+
+**4.58.11** — CRS without an EPSG code
+- Expressions (`$area`, `$x`, geometry generators, map-unit offsets) are evaluated in a layer's or the project's CRS also when it has no authority code (they were evaluated in Web Mercator).
 
 **4.58.10** — fixes from a full bug and usability review
 - A login written into a live layer's address is refused (it was published); archives are leak-scanned in blocks; S3 reads are retried.

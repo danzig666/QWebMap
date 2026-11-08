@@ -2392,3 +2392,11 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
 * Web viewer: filter NULLs, deep links, basemap retry, legend of off groups, search retry, entry page
   language (`web_builder._write_stable_entry`), permalink limits, report-only identify; usability
   quick wins (tests/browser/test_web_viewer_filters.py, test_web_viewer_permalink.py).
+
+## 4.58.11 — CRS without an authority code
+
+* `utils.crs_ref.crs_ref`: `authid()`, else a WKT (or `PROJ:`) string that reads back as the same CRS
+  and holds no single quote; used for every layer / project CRS passed into expressions and
+  recipes (rules_exporter, rules_flattener, materializer, zoom_load keys); `marker_points` reads it
+  with `QgsCoordinateReferenceSystem(str)` (tests/integration/test_expression_semantics.py,
+  QGIS 3.44+: 3.34 does not read a WKT in `transform()`).
