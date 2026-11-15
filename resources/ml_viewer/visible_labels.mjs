@@ -3081,10 +3081,12 @@ export function renderedLabelBoxes(map, maplibregl, groups, zoom, perPx, fonts) 
   }
   // Point symbols that keep labels off them (QGIS "Features act as
   // obstacles"): the invisible obstacle copies of their icons (metadata
-  // q2vt:obstacle-of), boxes of the icon's image at its size.
+  // q2vt:obstacle-of), boxes of the icon's image at its size. (Not a
+  // label's invisible stand-in below its own zoom: q2vt:hidden-below.)
   const isObstacle = (l) => Boolean((l.metadata || {})["q2vt:obstacle-of"]);
   const defs = new Map(styleLayers(map).filter((l) => l.type === "symbol" && !ours.has(l.id)
-    && (isObstacle(l) || map.getLayoutProperty(l.id, "text-field") !== undefined)).map((l) => [l.id, l]));
+    && (isObstacle(l) || map.getLayoutProperty(l.id, "text-field") !== undefined)
+    && !(zoom < (l.metadata?.["q2vt:hidden-below"] ?? -Infinity))).map((l) => [l.id, l]));
   const layers = [...defs.keys()];
   if (!layers.length) return [];
   const boxes = [];

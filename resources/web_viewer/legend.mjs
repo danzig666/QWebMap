@@ -6,6 +6,7 @@
 import { t } from "./i18n.mjs";
 import { el, icon, toggle } from "./icons.mjs";
 import { canZoomToLayer, zoomToLayerButton } from "./layer_controls.mjs";
+import { hiddenAt } from "./style_control.mjs";
 
 const QUERY_ROLES = new Set(["geometry", "decoration"]);
 
@@ -44,7 +45,7 @@ export class Legend {
     const styleIds = [];
     for (const [styleId, component] of this.control.owner) {
       if (!QUERY_ROLES.has(component.role) || !this.map.getLayer(styleId)) continue;
-      if (this.map.getLayoutProperty(styleId, "visibility") === "none") continue;
+      if (this.map.getLayoutProperty(styleId, "visibility") === "none" || hiddenAt(this.map, styleId)) continue;
       styleIds.push(styleId);
     }
     if (styleIds.length) {

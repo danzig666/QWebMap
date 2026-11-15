@@ -759,10 +759,12 @@ def test_screen_interval_markers_get_sub_zoom_bands_where_lines_hold_several(plu
 
 
 def test_bridge_zoom_bands_only_where_the_tiles_lack_the_data():
-    """At publication a layer's range grows by one zoom where the tiles there
-    hold none of its data (no blank map while the next zoom's tiles load),
-    never where they do (shared dataset, fractional limit, last zoom's
-    enlarged tiles), and keeps the range it draws its data in for the viewer."""
+    """At publication a layer's range grows by one zoom: past its end where
+    the next zoom's tiles hold none of its data (no blank map while they
+    load), never where they do (shared dataset, fractional limit, last
+    zoom's enlarged tiles); below its start only where the tiles of the zoom
+    below hold its data (stand-ins, see the next test), and it keeps the
+    range it draws its data in for the viewer."""
     from q2vt_plugin.src.core.fidelity.zoom import note_tile_zooms  # pylint: disable=import-error
     from q2vt_plugin.src.publishing.zoom_bridge import bridge_zoom_bands  # pylint: disable=import-error
     layer = lambda name, low, high, source="q2vt_tiles": {  # noqa: E731
@@ -776,9 +778,55 @@ def test_bridge_zoom_bands_only_where_the_tiles_lack_the_data():
     bridge_zoom_bands(style)
     got = {l["id"]: (l["minzoom"], l["maxzoom"]) for l in style["layers"]}
     assert exported["a"] == (10, 15)                          # the export keeps QGIS's ranges
-    assert got["a"] == (9, 16) and got["b"] == (14, 19)      # b: zoom 19+ draws zoom 18's tiles
-    assert got["shared"] == (11, 15)                          # zoom 15's tiles hold its data
+    # Below the start: the tiles of zoom 9 / 14 / 11 hold no data of theirs.
+    assert got["a"] == (10, 16) and got["b"] == (15, 19)     # b: zoom 19+ draws zoom 18's tiles
+    assert got["shared"] == (12, 15)                          # zoom 15's tiles hold its data
     assert got["frac"] == (15.4, 17.3)                        # tiles 15 and 17 hold its data
-    assert got["last"] == (16, 24) and got["base"] == (5, 10) and got["top"] == (0, 16)
+    assert got["last"] == (17, 24) and got["base"] == (5, 10) and got["top"] == (0, 16)
     assert style["layers"][0]["metadata"]["q2vt:zooms"] == [10, 15]
     assert "q2vt:zooms" not in style["layers"][3]["metadata"]
+    assert not any("q2vt:hidden-below" in l.get("metadata", {}) for l in style["layers"])
+
+
+def test_stand_ins_draw_a_layer_from_the_zoom_below_only_from_its_own_zoom():
+    """A layer first appearing at zoom 13 whose data is also in the tiles of
+    zoom 12: parsed from them (minzoom 12), invisible below 13 (opacities
+    stepped there, zoom curves kept above), its labels taking no room in
+    them (ignore-placement in the tiles of 12); layers the viewer places or
+    animates itself, and opacities that cannot be stepped, keep their range."""
+    from q2vt_plugin.src.core.fidelity.zoom import note_tile_zooms  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.zoom_bridge import bridge_zoom_bands  # pylint: disable=import-error
+
+    def layer(name, kind, **extra):
+        return {"id": name, "type": kind, "source": "q2vt_tiles", "source-layer": name,
+                "minzoom": 13, "maxzoom": 18, **extra}
+    style = {"layers": [
+        layer("fill", "fill", paint={"fill-color": "#f00", "fill-opacity": 0.5}),
+        layer("line", "line", paint={"line-opacity": ["interpolate", ["linear"], ["zoom"], 12, 0.2, 14, 1]}),
+        layer("circle", "circle", paint={"circle-opacity": ["get", "a"]}),
+        layer("label", "symbol", layout={"text-field": "x"}, paint={"text-opacity": ["step", ["zoom"], 0.3, 12.5, 0.6, 15, 1]}),
+        layer("placed", "symbol", layout={"text-field": "x"}, metadata={"q2vt:visible-polygons": "p"}),
+        layer("legacy", "line", paint={"line-opacity": {"stops": [[12, 0], [14, 1]]}}),
+        {**layer("frac", "fill"), "minzoom": 13.6}]}
+    note_tile_zooms(style, {name: (12, 18) for name in
+                            ("fill", "line", "circle", "label", "placed", "legacy", "frac")}, "q2vt_tiles")
+    bridge_zoom_bands(style)
+    by = {l["id"]: l for l in style["layers"]}
+    for name in ("fill", "line", "circle", "label"):
+        assert by[name]["minzoom"] == 12 and by[name]["metadata"]["q2vt:hidden-below"] == 13, name
+        assert by[name]["metadata"]["q2vt:zooms"] == [13, 18]
+    assert by["fill"]["paint"]["fill-opacity"] == ["step", ["zoom"], 0, 13, 0.5]
+    line = by["line"]["paint"]["line-opacity"]
+    assert line[:5] == ["interpolate", ["linear"], ["zoom"], 12.999, 0] and line[5] == 13
+    assert abs(line[6] - 0.6) < 1e-9 and line[7:] == [14, 1]     # its value at 13, then its curve
+    assert by["circle"]["paint"]["circle-opacity"] == ["step", ["zoom"], 0, 13, ["get", "a"]]
+    assert by["circle"]["paint"]["circle-stroke-opacity"] == ["step", ["zoom"], 0, 13, 1]
+    assert by["label"]["paint"]["text-opacity"] == ["step", ["zoom"], 0, 13, 0.6, 15, 1]
+    assert by["label"]["paint"]["icon-opacity"] == ["step", ["zoom"], 0, 13, 1]
+    assert by["label"]["layout"]["text-ignore-placement"] == ["step", ["zoom"], True, 13, False]
+    assert by["placed"]["minzoom"] == 13 and by["legacy"]["minzoom"] == 13
+    # A fractional start: the tiles of 13 hold its data, those of 12 the stand-ins.
+    assert by["frac"]["minzoom"] == 12 and by["frac"]["paint"]["fill-opacity"] == ["step", ["zoom"], 0, 13.6, 1]
+    # A valid MapLibre style (validated in the browser tests); interpolate stops ascend.
+    stops = by["line"]["paint"]["line-opacity"][3::2]
+    assert stops == sorted(stops)

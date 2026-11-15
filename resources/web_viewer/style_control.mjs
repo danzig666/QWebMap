@@ -25,6 +25,14 @@ export function styleLayers(map) {
   return map.getLayersOrder().map((id) => map.getLayer(id)).filter((layer) => layer && layer.type !== "custom");
 }
 
+// A layer parsed from the zoom below its own (stand-in data, see
+// zoom_bridge.py) but invisible there: its features are not "on the map"
+// (clicks, legend, snapping) below the zoom it is drawn from.
+export function hiddenAt(map, styleId, zoom) {
+  const below = map.getLayer(styleId)?.metadata?.["q2vt:hidden-below"];
+  return typeof below === "number" && (zoom ?? map.getZoom()) < below;
+}
+
 export function scaleValue(value, factor) {
   if (factor === 1) return value;
   if (value === undefined || value === null) return factor;
