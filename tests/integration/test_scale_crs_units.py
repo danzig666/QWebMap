@@ -229,7 +229,9 @@ def test_reference_scale_sizes_follow_the_map(plugin, tmp_path):
             assert radius + 0.5 == pytest.approx(1.5 * 96 / 25.4 * factor, rel=0.01)
         else:  # 3 mm at 1:20000 is 60 m: past 128 px the marker is its shape
             assert any(l["minzoom"] <= zoom for l in _data_layers(style, "line") if "m04" in l["id"])
-        size = _curve_at(_data_layers(style, "symbol")[0]["layout"]["text-size"], zoom)
+        # (The label, not its point symbol's obstacle copy, see test_label_obstacles.)
+        label = next(l for l in _data_layers(style, "symbol") if "text-field" in l["layout"])
+        size = _curve_at(label["layout"]["text-size"], zoom)
         assert size == pytest.approx(10 * 96 / 72 * factor, rel=0.01)
     # The project's own symbols are untouched.
     assert line.renderer().symbol().symbolLayer(0).widthUnit() == Qgis.RenderUnit.Millimeters

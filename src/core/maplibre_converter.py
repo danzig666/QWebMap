@@ -2172,6 +2172,10 @@ class QgisMapLibreStyleExporter:
     being emitted as a plausible-looking default.
     """
 
+    # (Class defaults: tests build exporters without __init__; read-only.)
+    label_obstacles: Dict[str, str] = {}   # point-symbol style -> layer id (obstacles)
+    label_owners: Dict[str, str] = {}      # label style -> layer id
+
     def __init__(
         self,
         output_dir: str,
