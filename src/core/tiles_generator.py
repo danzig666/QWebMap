@@ -402,22 +402,26 @@ class GDALTilesGenerator:
     # --- VRT construction ---
 
     def _build_vrt(self, vrt_path: str, layers: Optional[List[QgsVectorLayer]] = None,
-                   min_size: float = 0.0):
+                   min_size: float = 0.0, copies: Optional[Dict[str, str]] = None):
         """Write an OGR VRT containing one entry per layer with per-zoom
         configuration; with ``min_size`` (metres) only the features whose
-        bounding box is that wide or high."""
+        bounding box is that wide or high. ``copies`` ({dataset: GeoPackage}):
+        datasets read from a copy instead (already limited: joined lines)."""
         root = ET.Element("OGRVRTDataSource")
+        copies = copies or {}
         for layer in self.layers if layers is None else layers:
             name = self._layer_name(layer)
             node = ET.SubElement(root, "OGRVRTLayer", name=name)
             source = layer.source().split("|layername=")[0]
-            ET.SubElement(node, "SrcDataSource").text = source
             # The table inside the file: a dataset reused from the export cache
             # keeps the name it was first written under (another rule's name
             # when only the rule's zoom range changed); without SrcLayer OGR
             # looks for a table named like the tile layer and writes nothing.
             table = self._table_of(source)
-            column = self._geometry_column(source) if min_size > 0 else None
+            if name in copies:
+                source = copies[name]  # (the copy keeps the table's name)
+            ET.SubElement(node, "SrcDataSource").text = source
+            column = self._geometry_column(source) if min_size > 0 and name not in copies else None
             if table and column:
                 ET.SubElement(node, "SrcSQL").text = (
                     f"SELECT * FROM {_quoted(table)} WHERE {self._size_sql(column)} >= {min_size!r}")
@@ -938,15 +942,18 @@ class GDALTilesGenerator:
         jobs = []
         by_name = {self._layer_name(m): m for m in members}
         zooms = sorted({z for low, last, _ in cuts.values() for z in range(low, last + 1)})
+        joined = self._joined_lines(target, by_name, cuts)
         for zoom in zooms:
             limit = self._min_size(zoom)
             part = [by_name[name] for name, (low, last, largest) in cuts.items()
-                    if low <= zoom <= last and largest >= limit]
+                    if low <= zoom <= last and (zoom in joined[name] if name in joined
+                                                else largest >= limit)]
             if not part:
                 continue  # every feature under the limit: none in these tiles
             piece = f"{target[:-8]}_z{zoom:02d}.mbtiles"
             piece_vrt, piece_conf = piece[:-8] + ".vrt", piece[:-8] + ".json"
-            self._build_vrt(piece_vrt, part, min_size=limit)
+            self._build_vrt(piece_vrt, part, min_size=limit,
+                            copies={name: paths[zoom] for name, paths in joined.items() if zoom in paths})
             with open(piece_conf, "w", encoding="utf-8") as handle:
                 json.dump({self._layer_name(m): {"minzoom": zoom, "maxzoom": zoom} for m in part}, handle)
             command = self._ogr2ogr_command(piece_vrt, piece, zoom, zoom, piece_conf,
@@ -957,6 +964,59 @@ class GDALTilesGenerator:
         return jobs
 
     _DATASET = re.compile(r"t(\d+)d\d+r\d+g(\d+)c(\d+)")  # (2 digits, more when needed)
+
+    def _joinable(self, name: str) -> bool:
+        """Whether a line dataset may be tiled from joined pieces (join_lines)
+        where small features are left out: a renderer's lines (not polygon
+        outlines, labels or exact datasets), drawn only as lines that look
+        the same whichever way a piece runs (no line pattern, gradient or
+        offset to one side) and reading no id, key or label field."""
+        from .fidelity.dependencies import layer_field_dependencies  # pylint: disable=import-outside-toplevel
+        match = self._DATASET.search(name)
+        if not match or name.endswith(("_vp", "_vl")) or name in self.exact_datasets:
+            return False
+        kind, geometry, target = (int(match.group(i)) for i in (1, 2, 3))
+        if kind != 0 or geometry != 1 or target != 1:
+            return False
+        style = self.style if isinstance(self.style, dict) else {}
+        layers = [layer for layer in style.get("layers", []) if layer.get("source-layer") == name]
+        if not layers:
+            return False
+        for layer in layers:
+            paint = layer.get("paint") or {}
+            if layer.get("type") != "line" or "line-pattern" in paint or "line-gradient" in paint \
+                    or paint.get("line-offset", 0) not in (0, 0.0, None):
+                return False
+            for field in layer_field_dependencies(layer):
+                lower = field.lower()
+                if lower != _JOIN_ORDER and (lower in _MERGE_IDS
+                                             or lower.startswith(("q2vt_label", "q2vt_vertex"))):
+                    return False
+        return True
+
+    def _joined_lines(self, target: str, by_name: Dict[str, QgsVectorLayer],
+                      cuts: Dict[str, Tuple[int, int, float]]) -> Dict[str, Dict[int, str]]:
+        """{dataset: {zoom: joined copy}} of the joinable line datasets of
+        ``cuts``, for the zooms whose copy has features (join_lines)."""
+        out: Dict[str, Dict[int, str]] = {}
+        counts = []
+        for number, (name, (low, last, _largest)) in enumerate(sorted(cuts.items())):
+            if not self._joinable(name):
+                continue
+            source = by_name[name].source().split("|layername=")[0]
+            outputs = {z: (f"{target[:-8]}_j{number:02d}_z{z:02d}.gpkg", self._min_size(z))
+                       for z in range(low, last + 1)}
+            try:
+                written = join_lines(source, self._table_of(source), outputs,
+                                     cancelled=lambda: self.feedback is not None and self.feedback.isCanceled())
+            except RuntimeError:  # unreadable (GDAL exceptions on): filtered as it is
+                continue
+            out[name] = {z: outputs[z][0] for z, count in written.items() if count}
+            counts.append(f"{name} ({written.get(last, 0)} lines at zoom {last})")
+        if counts and self.feedback is not None:
+            self.feedback.pushInfo("   Line pieces joined where small features are left out: "
+                                   + ", ".join(counts))
+        return out
 
     def _merged_members(self, owner: str, members: List[QgsVectorLayer]) -> Dict[str, Tuple[int, int, bool]]:
         """{dataset: (first, last merged zoom, outline)} of a merged layer's
@@ -1611,6 +1671,162 @@ def grid_cut_lines(path: str, table: Optional[str], output: str, zoom: int,
                 written += 1
     out.CommitTransaction()
     target = None
+    return written
+
+
+# --- joined lines zoomed out ----------------------------------------------
+# A network stored as many short pieces (a river of a thousand reaches, roads
+# cut at every junction) lost most of its pieces where the tiles leave out
+# features under ``min_feature_px`` (_small_cuts): each piece alone is under
+# half a pixel, the river is not. At those zooms the line datasets drawn
+# alike in both directions are tiled from a copy whose pieces of one style
+# (equal values in every field the tiles keep, but for ids and keys) are
+# joined end to end where exactly two of them meet (GEOS LineMerge), the
+# small-feature limit applied to the joined lines. Each joined line is then
+# cut along the tile grid as the long lines are (its box spanning a whole
+# network would cost the writer every tile of it).
+_JOIN_KEY = "q2vt_feature_key"
+_JOIN_ORDER = "q2vt_orig_id"
+_JOIN_DIGITS = 3  # endpoints matched to the millimetre (EPSG:3857 metres)
+
+
+def _line_parts(geometry) -> List[List[Tuple[float, float]]]:
+    """A (multi)line's parts as lists of 2D points (others: none)."""
+    if geometry is None:
+        return []
+    flat = ogr.GT_Flatten(geometry.GetGeometryType())
+    parts = [geometry] if flat == ogr.wkbLineString else \
+        [geometry.GetGeometryRef(i) for i in range(geometry.GetGeometryCount())] \
+        if flat == ogr.wkbMultiLineString else []
+    out = []
+    for part in parts:
+        points = [(x, y) for x, y, *_ in part.GetPoints() or []]
+        if len(points) > 1:
+            out.append(points)
+    return out
+
+
+def chain_lines(parts: List[List[Tuple[float, float]]]) -> List[Tuple[List[Tuple[float, float]], List[int]]]:
+    """``parts`` joined end to end where exactly two ends meet (LineMerge):
+    [(points, indexes of the parts joined)]. A part may be reversed; one
+    that closes on itself, or ends where three or more meet, ends a line."""
+    def node(point):
+        return round(point[0], _JOIN_DIGITS), round(point[1], _JOIN_DIGITS)
+
+    ends: Dict[tuple, List[Tuple[int, int]]] = collections.defaultdict(list)
+    for index, points in enumerate(parts):
+        ends[node(points[0])].append((index, 0))
+        ends[node(points[-1])].append((index, 1))
+
+    def onward(point, index):
+        here = ends[node(point)]
+        if len(here) != 2 or here[0][0] == here[1][0]:
+            return None
+        return here[1] if here[0][0] == index else here[0]
+
+    used = [False] * len(parts)
+    chains = []
+    for start, first in enumerate(parts):
+        if used[start]:
+            continue
+        used[start] = True
+        line = collections.deque(first)
+        members = [start]
+        for forward in (True, False):
+            index, tip = start, (line[-1] if forward else line[0])
+            while True:
+                step = onward(tip, index)
+                if step is None or used[step[0]]:
+                    break
+                index, end = step
+                used[index] = True
+                members.append(index)
+                points = parts[index] if end == 0 else parts[index][::-1]  # from the tip on
+                if forward:
+                    line.extend(points[1:])
+                else:
+                    line.extendleft(points[1:])  # (reversed: the far end leftmost)
+                tip = points[-1]
+        chains.append((list(line), members))
+    return chains
+
+
+@gdal_guard.shared_section
+def join_lines(path: str, table: Optional[str], outputs: Dict[int, Tuple[str, float]],
+               cancelled=None) -> Dict[int, int]:
+    """Write, for each zoom of ``outputs`` ({zoom: (GeoPackage path, min
+    size in metres)}), the lines of ``path`` with their pieces of one style
+    joined (chain_lines), those whose box is under the min size left out,
+    cut along the tile grid as grid_cut_lines cuts. A joined line keeps the
+    feature key its pieces share (none when they are of several features:
+    such a line opens no popup, as merged fills) and the lowest feature
+    order. Returns {zoom: pieces written}."""
+    source = _open_gpkg(path)
+    layer = source.GetLayerByName(table) if table else source.GetLayer(0)
+    definition = layer.GetLayerDefn()
+    keep = _merge_key_fields(definition)
+    names = {definition.GetFieldDefn(i).GetName().lower(): i for i in range(definition.GetFieldCount())}
+    key_index, order_index = names.get(_JOIN_KEY), names.get(_JOIN_ORDER)
+    groups: Dict[tuple, list] = collections.defaultdict(list)  # [(points, key, order)]
+    for count, feature in enumerate(layer):
+        if cancelled is not None and count % 2000 == 0 and cancelled():
+            raise TilesGenerationCancelled("Tile generation cancelled")
+        parts = _line_parts(feature.GetGeometryRef())
+        if not parts:
+            continue
+        group = tuple(feature.GetField(i) for i in keep)
+        key = feature.GetField(key_index) if key_index is not None else None
+        order = feature.GetField(order_index) if order_index is not None else count
+        groups[group].extend((points, key, order) for points in parts)
+    lines = []  # (order, group, key, points)
+    for group, members in groups.items():
+        for points, indexes in chain_lines([m[0] for m in members]):
+            keys = {members[i][1] for i in indexes}
+            orders = [members[i][2] for i in indexes if members[i][2] is not None]
+            lines.append((min(orders) if orders else 0, group, keys.pop() if len(keys) == 1 else None,
+                          points))
+    lines.sort(key=lambda line: line[0])  # QGIS draws in feature order
+    extras = [index for index in (key_index, order_index) if index is not None]
+    written = {}
+    driver = ogr.GetDriverByName("GPKG")
+    for zoom, (output, min_size) in outputs.items():
+        if cancelled is not None and cancelled():
+            raise TilesGenerationCancelled("Tile generation cancelled")
+        size = _tile_size(max(0, zoom - _LONG_LINE_GRID_UP))
+        if os.path.exists(output):
+            driver.DeleteDataSource(output)
+        target = driver.CreateDataSource(output)
+        out = target.CreateLayer(table or layer.GetName(), layer.GetSpatialRef(), ogr.wkbLineString,
+                                 ["SPATIAL_INDEX=NO"])
+        for index in keep + extras:
+            out.CreateField(definition.GetFieldDefn(index))
+        out_definition = out.GetLayerDefn()
+        number = 0
+        out.StartTransaction()
+        for order, group, key, points in lines:
+            if min_size > 0:
+                xs, ys = [p[0] for p in points], [p[1] for p in points]
+                if max(max(xs) - min(xs), max(ys) - min(ys)) < min_size:
+                    continue
+            values = list(group)
+            if key_index is not None:
+                values.append(key)
+            if order_index is not None:
+                values.append(order)
+            for piece in _cut_on_grid(points, size):
+                line = ogr.Geometry(ogr.wkbLineString)
+                for x, y in piece:
+                    line.AddPoint_2D(x, y)
+                copy = ogr.Feature(out_definition)
+                for position, value in enumerate(values):
+                    if value is not None:
+                        copy.SetField(position, value)
+                copy.SetGeometry(line)
+                out.CreateFeature(copy)
+                number += 1
+        out.CommitTransaction()
+        target = None
+        written[zoom] = number
     return written
 
 
