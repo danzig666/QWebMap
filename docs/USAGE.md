@@ -27,6 +27,7 @@ QWebMap publishes a QGIS project as a fast, accurate web map: vector tiles in on
 - **Minimum tile zoom** — Lowest zoom (0–22) that gets tiles. Default 0.
 - **Maximum tile zoom** — Highest zoom (0–22) that gets tiles. Default 16. Beyond it, the viewer enlarges (overzooms) the last tiles.
 - **Maximum browser zoom (overzoom)** — How far visitors can zoom in (0–24). Default 22.
+- **Use web zoom scales in QGIS…** — Sets the project's scale list (QGIS's scale box, and the scale limits of rules and labels) to the scales of web zooms 0–22, for this project's CRS and the published area. A scale limit picked from this list starts or ends exactly at a zoom level. Asks before replacing a scale list the project already has. For Web Mercator (EPSG:3857) projects the same list is in `resources/web_zoom_scales.xml` (QGIS: Settings → Options → Map Tools → Predefined scales → Import).
 - **Extent** — The area to publish. **Current map view (at each export)** (the default): whatever the QGIS map shows when you export. **Extent of a layer**: follows the chosen layer when its data changes. **Fixed area (drawn or frozen)**: a fixed rectangle.
 - **Show on map** — Briefly outlines the area that will be published on the QGIS map.
 - **(choose a layer)** — The layer whose extent is published. Available only in the "Extent of a layer" mode.

@@ -16,8 +16,10 @@ S3-compatible object storage provider (boto3/botocore).
   and credential errors are not retried.
 """
 
+import gzip
 import json
 import os
+import re
 import random
 import sys
 import threading
@@ -26,6 +28,22 @@ from typing import Callable, List, Optional, Tuple
 
 from ..errors import Cancelled, PublishingError
 from .base import Credentials, Provider, ProviderError
+
+# Label fonts (glyph ranges, each 30-100 KB of protobuf that compresses to a
+# fifth) are stored gzip-compressed with Content-Encoding: gzip: storage
+# services and CDNs do not reliably compress application/x-protobuf, and a
+# map's first view loads a dozen of them. Never the archives (PMTiles are
+# read by byte ranges, which an outer encoding breaks).
+_COMPRESSED = re.compile(r"(?:^|/)glyphs/[^/]+/[^/]+\.pbf$")
+
+
+def stored_compressed(relative: str) -> bool:
+    """Whether ``relative`` is uploaded gzip-compressed (Content-Encoding)."""
+    return bool(_COMPRESSED.search(relative))
+
+
+def _gzip(data: bytes) -> bytes:
+    return gzip.compress(data, compresslevel=9, mtime=0)  # (the same bytes every time)
 
 VENDOR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vendor", "s3")
 MIN_PART = 5 * 1024 * 1024
@@ -194,12 +212,16 @@ class S3Provider(Provider):
                 return None
             raise
         return {"size": response.get("ContentLength"), "etag": response.get("ETag"),
-                "metadata": response.get("Metadata") or {}, "contentType": response.get("ContentType")}
+                "metadata": response.get("Metadata") or {}, "contentType": response.get("ContentType"),
+                "contentEncoding": response.get("ContentEncoding") or ""}
 
     def put_bytes(self, relative: str, data: bytes, content_type: str, cache_control: str,
-                  if_match: Optional[str] = None, if_none_match: bool = False, sha256: str = "") -> str:
+                  if_match: Optional[str] = None, if_none_match: bool = False, sha256: str = "",
+                  content_encoding: str = "") -> str:
         params = {"Bucket": self.bucket, "Key": self.key(relative), "Body": data,
                   "ContentType": content_type, "CacheControl": cache_control}
+        if content_encoding:
+            params["ContentEncoding"] = content_encoding
         if sha256:
             params["Metadata"] = {"sha256": sha256}
         if if_match and self.conditional_writes:
@@ -262,13 +284,20 @@ class S3Provider(Provider):
 
     def put_file(self, relative: str, path: str, content_type: str, cache_control: str,
                  sha256: str, progress=None, journal=None) -> str:
-        size = os.path.getsize(path)
+        compressed = None
+        if stored_compressed(relative):  # (sha256: of the file itself, as in release.json)
+            with open(path, "rb") as handle:
+                compressed = _gzip(handle.read())
+        size = len(compressed) if compressed is not None else os.path.getsize(path)
         existing = self.head(relative)
         if existing and existing["metadata"].get("sha256") == sha256 and existing["size"] == size:
             return existing["etag"]  # already uploaded (retry/resume)
         if existing:
             raise ProviderError("Q2VT_PUB_UPLOAD", f"{relative} already exists with other content; "
                                 "release objects are immutable.")
+        if compressed is not None:
+            return self.put_bytes(relative, compressed, content_type, cache_control,
+                                  if_none_match=True, sha256=sha256, content_encoding="gzip")
         if size <= self.part_size:
             with open(path, "rb") as handle:
                 data = handle.read()
@@ -285,11 +314,19 @@ class S3Provider(Provider):
         if existing:
             raise ProviderError("Q2VT_PUB_UPLOAD", f"{relative} already exists with other content; "
                                 "release objects are immutable.")
+        extra = {}
+        if stored_compressed(relative):
+            # Copied only from a compressed copy (releases before 4.59 stored
+            # the fonts as they are): else None, and it is uploaded.
+            source = self.head(source_relative)
+            if not source or source.get("contentEncoding") != "gzip":
+                return None
+            extra["ContentEncoding"] = "gzip"
         response = self._call(
             "copy_object", Bucket=self.bucket, Key=self.key(relative),
             CopySource={"Bucket": self.bucket, "Key": self.key(source_relative)},
             MetadataDirective="REPLACE", ContentType=content_type, CacheControl=cache_control,
-            Metadata={"sha256": sha256})
+            Metadata={"sha256": sha256}, **extra)
         return (response.get("CopyObjectResult") or {}).get("ETag", "")
 
     def _multipart(self, relative, path, size, content_type, cache_control, sha256, progress, journal):
