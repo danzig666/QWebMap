@@ -2400,3 +2400,26 @@ Each item reimplements an idea seen in the October–November 2026 versions of t
   recipes (rules_exporter, rules_flattener, materializer, zoom_load keys); `marker_points` reads it
   with `QgsCoordinateReferenceSystem(str)` (tests/integration/test_expression_semantics.py,
   QGIS 3.44+: 3.34 does not read a WKT in `transform()`).
+
+## 4.59.0 — ideas from GallPeters/QGIS2VectorTiles (November 2026)
+
+Reimplemented, no code copied.
+
+* GDAL tools (upstream: tools found next to QGIS, checked): `utils/gdal_tools.py` (candidates, `--version`,
+  `tool_env`), used by tiles_generator (tests/integration/test_gdal_tools.py).
+* Glyphs gzip-encoded on R2/S3 (`providers/s3.py`; inventory of the uncompressed file); `fadeDuration` 100.
+* Web zoom scales (upstream: a scales file): `zoom.zoom_scales`, `resources/web_zoom_scales.xml`, Map tab
+  button; scales within 0.5 of a zoom's scale read as that zoom.
+* Label backgrounds by their fill symbol, wide buffers as a rounded background (upstream a0d2be6, ad7c0fd):
+  `_background_fill_symbol`, `_frame_from_symbol`, `_wide_buffer_background`
+  (tests/integration/test_label_backgrounds_buffers.py).
+* Point symbols as label obstacles (upstream e7c5571): invisible `<id>_obstacle` copies
+  (`q2vt:obstacle-of`), `point_symbols_block_labels`; obstacle-only labeling no longer drawn
+  (tests/integration/test_label_obstacles.py, tests/browser/test_label_obstacles.py).
+* Joined line pieces at the small-feature zooms (upstream 307def2): tiles_generator chain joining
+  (tests/integration/test_export_speed.py).
+* HTML label runs with colour, weight, style, family, size (upstream 9e492a5…): `fidelity/html_labels.py`,
+  `_html_run_formats` (tests/unit/test_html_labels.py, tests/integration/test_html_label_runs.py).
+* Fast-zoom stand-ins (upstream cf7a88a): `zoom.stand_in_zooms`, `zoom_bridge.stand_in` (opacity stepped,
+  `q2vt:hidden-below`), the old minzoom widening removed (tests/integration/test_stand_ins.py,
+  tests/browser/test_web_viewer_stand_ins.py).

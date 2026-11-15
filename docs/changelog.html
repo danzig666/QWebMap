@@ -448,6 +448,23 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 
   <div class="cl-entry featured latest">
     <div class="cl-header">
+      <div class="cl-version">v4.59.0</div>
+      <div class="cl-date">16 Nov 2026</div>
+    </div>
+    <div class="cl-body">
+      <div class="cl-item"><div class="cl-item-dot"></div><span>QGIS's own ogr2ogr is used (checked before use, GDAL and PROJ data passed on); the export log names it.</span></div>
+      <div class="cl-item"><div class="cl-item-dot"></div><span>Faster first view: label fonts uploaded compressed to R2/S3; labels fade in over 100 ms.</span></div>
+      <div class="cl-item"><div class="cl-item-dot"></div><span>“Use web zoom scales in QGIS…”: the project's scale list matched to the web map's zooms.</span></div>
+      <div class="cl-item"><div class="cl-item-dot"></div><span>Label backgrounds drawn with their whole fill symbol; wide text buffers drawn as a rounded box, as in QGIS.</span></div>
+      <div class="cl-item"><div class="cl-item-dot"></div><span>Point symbols keep other layers' labels off them (“Features act as obstacles”).</span></div>
+      <div class="cl-item"><div class="cl-item-dot"></div><span>Line pieces joined when zoomed out: rivers and roads made of many short pieces no longer break up.</span></div>
+      <div class="cl-item"><div class="cl-item-dot"></div><span>HTML labels keep each part's colour, bold, italic, font and size.</span></div>
+      <div class="cl-item"><div class="cl-item-dot"></div><span>No blank map on a fast zoom-in: layers starting at a zoom are also in the tiles one zoom lower, hidden until their own zoom.</span></div>
+    </div>
+  </div>
+
+  <div class="cl-entry">
+    <div class="cl-header">
       <div class="cl-version">v4.58.11</div>
       <div class="cl-date">8 Nov 2026</div>
     </div>
