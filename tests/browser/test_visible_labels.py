@@ -1745,3 +1745,25 @@ console.log(JSON.stringify({{ decoded: once, same: runs.every((r) => r === fresh
     assert result["decoded"] == {"1": 1, "2": 1, "3": 1, "4": 1}  # 3 crosses the screen edge: decoded once too
     assert result["same"]
     assert {1, 3, 4} <= set(result["labelled"])
+
+
+def test_point_symbol_obstacles_are_avoided_by_every_label_group():
+    """Point symbols that are label obstacles in QGIS (their invisible
+    obstacle copies, q2vt:obstacle-of): boxes of the icon at its size, moved
+    by icon-translate; every group keeps clear of them, plain ones too."""
+    expr = """(() => {
+      const star = {id: 'pois_obstacle', type: 'symbol', metadata: {'q2vt:obstacle-of': 'pois'},
+                    layout: {'icon-image': 'm1', 'icon-size': 0.5}, paint: {'icon-translate': [10, 0]}};
+      const map = {...stub([star]),
+        style: {getImage: (name) => name === 'm1' ? {data: {width: 40, height: 20}, pixelRatio: 2} : null},
+        queryRenderedFeatures: () => [{layer: star, properties: {}, geometry: {type: 'Point', coordinates: [0.5, 0.5]}}]};
+      const maplibregl = {MercatorCoordinate: {fromLngLat: ([x, y]) => ({x, y})}};
+      const boxes = m.renderedObstacleBoxes(map, maplibregl, 15, 0.001);
+      const inOthers = m.renderedLabelBoxes(map, maplibregl, new Map(), 15, 0.001);
+      const plain = m.avoidFor({}, [[1, 1, 2, 2]], () => [], () => boxes);
+      return [boxes, inOthers, plain];
+    })()"""
+    boxes, in_others, plain = _js(expr)
+    # 40 x 20 image at pixel ratio 2, size 0.5: 10 x 5 CSS px; 10 px to the right.
+    assert boxes == [pytest.approx([0.505, 0.4975, 0.515, 0.5025])]
+    assert in_others == boxes and plain == [[1, 1, 2, 2]] + boxes

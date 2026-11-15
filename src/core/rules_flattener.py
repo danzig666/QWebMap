@@ -1331,7 +1331,11 @@ class RulesFlattener:
     def _rule_has_payload(rule) -> bool:
         if hasattr(rule, "symbol"):
             return rule.symbol() is not None
-        return rule.settings() is not None
+        # "Blocking" labels (Draw labels off): obstacles only, nothing drawn
+        # (their features keep other labels off, see
+        # maplibre_converter.point_symbols_block_labels).
+        settings = rule.settings()
+        return settings is not None and bool(getattr(settings, "drawLabels", True))
 
     def _process_rule(
         self,
@@ -1353,6 +1357,8 @@ class RulesFlattener:
         # symbols) BEFORE applying NOT-children — descendants must not see the
         # output-only exclusion (otherwise C inherits "... AND NOT C" from B*).
         inheritance_source = inherited_rule.clone()
+        if rule_type == 1 and not self._rule_has_payload(inherited_rule):
+            return inheritance_source  # obstacle-only ("blocking") labels: nothing drawn
         if rule_type == 1:
             # After the snapshot: a label's Show condition and its settings'
             # scale visibility must not restrict the labels of child rules.

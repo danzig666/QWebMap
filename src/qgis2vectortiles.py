@@ -63,7 +63,7 @@ from .core.rules_exporter import RulesExporter
 from .core.tiles_generator import GDALTilesGenerator
 from .core import export_cache
 from .core.tiles_styler import TilesStyler
-from .core.maplibre_converter import QgisMapLibreStyleExporter
+from .core.maplibre_converter import QgisMapLibreStyleExporter, point_symbols_block_labels
 from .core.server_initializer import ServerInitializer
 from .core.fidelity import FIDELITY_SCHEMA_VERSION
 from .core.fidelity.bindings import bindings_report
@@ -859,6 +859,11 @@ class QGIS2VectorTiles:
             z_orders={rule.rule.description(): rule.z_order
                       for rule in rules or [] if getattr(rule, "z_order", None)},
             buffer_only={rule.rule.description() for rule in rules or [] if getattr(rule, "buffer_only", False)},
+            # Point symbols QGIS keeps other labels off (their layer's labeling).
+            label_obstacles={rule.rule.description(): rule.layer.id() for rule in rules or []
+                             if rule.get_attr("t") == 0 and point_symbols_block_labels(rule.layer)},
+            label_owners={rule.rule.description(): rule.layer.id() for rule in rules or []
+                          if rule.get_attr("t") == 1 and rule.layer is not None},
             displacement_labels={rule.rule.description(): rule.displacement_label for rule in rules or []
                                  if getattr(rule, "displacement_label", None)},
             feature_filters={rule.rule.description(): rule.feature_filter

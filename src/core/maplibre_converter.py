@@ -86,6 +86,52 @@ def _label_enum(settings, name: str, default=None):
         return default
 
 
+def _label_settings_of(layer) -> list:
+    """The QgsPalLayerSettings of a layer's labeling (simple: one; rule-based:
+    those of its active rules); [] without labels."""
+    try:
+        if not layer.labelsEnabled() or layer.labeling() is None:
+            return []
+        labeling = layer.labeling()
+    except (AttributeError, RuntimeError):
+        return []
+    if hasattr(labeling, "rootRule"):
+        return [rule.settings() for rule in labeling.rootRule().descendants()
+                if rule.active() and rule.settings() is not None]
+    try:
+        return [labeling.settings()]
+    except (AttributeError, RuntimeError, TypeError):
+        return []
+
+
+def point_symbols_block_labels(layer) -> bool:
+    """Whether a point layer's symbols keep other labels off them, as QGIS
+    does: its labeling (labels, or obstacle-only "blocking" labeling)
+    has "Features act as obstacles" on, the QGIS default. A layer whose
+    own labels sit over their point (Placement "Offset from point") is
+    left out: the web map cannot exempt a feature's own label from its
+    symbol, as QGIS does, and would hide those labels."""
+    point = getattr(getattr(Qgis, "GeometryType", None), "Point", 0)
+    try:
+        if layer is None or not hasattr(layer, "geometryType") or \
+                _enum_int(layer.geometryType()) != _enum_int(point):
+            return False
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    settings = _label_settings_of(layer)
+    over_point = _enum_int(getattr(Qgis.LabelPlacement, "OverPoint", 1))
+    blocks = False
+    for item in settings:
+        try:
+            obstacle = item.obstacleSettings().isObstacle()
+        except (AttributeError, RuntimeError):
+            obstacle = bool(getattr(item, "obstacle", False))
+        blocks = blocks or obstacle
+        if getattr(item, "drawLabels", True) and _label_enum(item, "placement") == over_point:
+            return False
+    return blocks
+
+
 def _argb_hex(value) -> str:
     """Generated colour fields store '#RRGGBBAA'; QGIS parses '#AARRGGBB'."""
     text = str(value or "")
@@ -2156,6 +2202,8 @@ class QgisMapLibreStyleExporter:
         layer_zooms: Optional[Dict[str, Tuple[int, int]]] = None,
         diagrams: Optional[Dict[str, dict]] = None,
         label_modes: Optional[Dict[str, dict]] = None,
+        label_obstacles: Optional[Dict[str, str]] = None,
+        label_owners: Optional[Dict[str, str]] = None,
     ):
         """Initialise the exporter.
 
@@ -2203,6 +2251,12 @@ class QgisMapLibreStyleExporter:
         self.z_orders = z_orders or {}
         # Style names of rules drawing only a marker symbol's buffer.
         self.buffer_only = buffer_only or set()
+        # {style name: QGIS layer id} of point symbols that keep other labels
+        # off them (point_symbols_block_labels), and of the label rules
+        # (label_owners): invisible copies of the symbols are placed before
+        # the labels, after their own layer's (_add_label_obstacles).
+        self.label_obstacles = dict(label_obstacles or {})
+        self.label_owners = dict(label_owners or {})
         # Point displacement labels: {style name: label settings}.
         self.displacement_labels = displacement_labels or {}
         # Style name -> filter of its feature-order stratum (fidelity.feature_order).
@@ -2348,6 +2402,7 @@ class QgisMapLibreStyleExporter:
 
         fidelity_zoom.note_tile_zooms(self.style, self.layer_zooms, self.source_name)
         self.style["layers"] = layer_merge.join_zoom_split_layers(self.style["layers"])
+        self._add_label_obstacles()
         self.save_to_file()
         return self.style
 
@@ -4538,10 +4593,127 @@ class QgisMapLibreStyleExporter:
                     props.property(P.PropertyStrokeColor), "color"),
                 "circle-stroke-opacity": opacity,
             })
+        self._mark_label_obstacle(layer_def, style_name)
         self.style["layers"].append(layer_def)
         return True
 
     CIRCLE_EDGE_PX = 0.5
+
+    # --- point symbols as label obstacles ------------------------------------
+    # The obstacle a little smaller than the symbol: a label QGIS puts right
+    # next to its own symbol (around the point, distance 0) touches the
+    # symbol's box, and must not be taken as overlapping it.
+    OBSTACLE_SCALE = 0.8
+    OBSTACLE_SPRITE_PX = 16.0
+    _OBSTACLE_LAYOUT = ("icon-image", "icon-size", "icon-rotate", "icon-anchor", "icon-offset",
+                        "icon-rotation-alignment", "icon-pitch-alignment", "icon-keep-upright",
+                        "symbol-placement", "visibility")
+
+    def _mark_label_obstacle(self, layer_def: dict, style_name: str) -> None:
+        """Note a point symbol's style layer whose features are label
+        obstacles in QGIS (point_symbols_block_labels)."""
+        if self._style_base(style_name) not in self.label_obstacles:
+            return
+        if layer_def.get("type") == "symbol" and \
+                layer_def.get("layout", {}).get("symbol-placement", "point") != "point":
+            return
+        layer_def.setdefault("metadata", {})["q2vt:label-obstacle"] = True
+
+    def _obstacle_image(self) -> str:
+        """A transparent square sprite (OBSTACLE_SPRITE_PX CSS px), the image
+        of a circle layer's obstacle copy."""
+        name = self.__dict__.get("_obstacle_sprite")
+        if name is None:
+            from qgis.core import QgsMarkerSymbol  # pylint: disable=import-outside-toplevel
+            marker = QgsMarkerSymbol.createSimple({
+                "name": "square", "color": "0,0,0,0", "outline_style": "no",
+                "size": str(self.OBSTACLE_SPRITE_PX), "size_unit": "Pixel"})
+            icon_size, map_units_per_pixel, oversampling = IconPropertyExtractor.marker_scale(
+                marker, marker.symbolLayer(0))
+            name = self._next_name("marker")
+            self.marker_symbols[name] = SpriteRequest(marker, bake_rotation=False,
+                                                      map_units_per_pixel=map_units_per_pixel,
+                                                      oversampling=oversampling)
+            name = self._shared_sprite(name)
+            self._obstacle_sprite = name
+            self._obstacle_sprite_size = icon_size
+        return name
+
+    def _add_label_obstacles(self) -> None:
+        """Point symbols QGIS keeps labels off: an invisible copy of each
+        (no opacity, the symbol's image, size and anchor; a circle: a clear
+        square of its diameter), always shown and taking its place. MapLibre
+        places symbol layers top down, so a copy keeps clear the labels of
+        the style layers under it. QGIS never makes a feature an obstacle
+        to its own label: each layer's copies go right under its own labels
+        (placed first), above those of the layers after it in the style (a
+        layer without drawn labels: above all labels)."""
+        copies = {}  # QGIS layer id -> obstacle copies
+        for layer_def in self.style["layers"]:
+            metadata = layer_def.get("metadata") or {}
+            if not metadata.get("q2vt:label-obstacle") or metadata.get("q2vt:frame"):
+                continue  # (an animated marker: its frames share the first's place)
+            layout = layer_def.get("layout") or {}
+            paint = layer_def.get("paint") or {}
+            if layer_def.get("type") == "symbol" and layout.get("icon-image") is not None:
+                obstacle_layout = {k: copy.deepcopy(layout[k]) for k in self._OBSTACLE_LAYOUT if k in layout}
+                obstacle_layout["icon-size"] = self._scaled_size(layout.get("icon-size", 1),
+                                                                 self.OBSTACLE_SCALE)
+                translate = paint.get("icon-translate")
+            elif layer_def.get("type") == "circle":
+                image = self._obstacle_image()
+                # Diameter (fill and the stroke outside it) over the image's size.
+                outer = ex.add(paint.get("circle-radius", 5), paint.get("circle-stroke-width", 0))
+                obstacle_layout = {
+                    "icon-image": image,
+                    "icon-size": self._scaled_size(outer, 2.0 * self.OBSTACLE_SCALE / self.OBSTACLE_SPRITE_PX
+                                                   * self._obstacle_sprite_size),
+                    "icon-pitch-alignment": "map", "visibility": layout.get("visibility", "visible")}
+                translate = paint.get("circle-translate")
+            else:
+                continue
+            obstacle_layout.update({"icon-allow-overlap": True, "icon-ignore-placement": False,
+                                    "icon-padding": 0, "icon-optional": False})
+            obstacle = {key: copy.deepcopy(layer_def[key])
+                        for key in ("source", "source-layer", "minzoom", "maxzoom", "filter")
+                        if key in layer_def}
+            obstacle.update({
+                "id": f"{layer_def['id']}_obstacle", "type": "symbol", "layout": obstacle_layout,
+                "paint": {"icon-opacity": 0, **({"icon-translate": translate} if translate else {})},
+                "metadata": {**{k: v for k, v in metadata.items() if k != "q2vt:label-obstacle"},
+                             "q2vt:obstacle-of": layer_def["id"]}})
+            owner = self.label_obstacles.get(self._owning_style(layer_def["id"], self.label_obstacles), "")
+            copies.setdefault(owner, []).append(obstacle)
+        layers = self.style["layers"]
+        for owner, items in copies.items():
+            own = [index for index, other in enumerate(layers)
+                   if other.get("type") == "symbol" and "text-field" in (other.get("layout") or {})
+                   and owner and self.label_owners.get(self._owning_style(other["id"], self.label_owners)) == owner]
+            at = min(own) if own else len(layers)
+            layers[at:at] = items
+
+    @staticmethod
+    def _owning_style(style_layer_id: str, names) -> Optional[str]:
+        """The style name (rule) of a style layer: equal to it, or a prefix
+        followed by "_" (zoom splits, copies); the longest wins."""
+        best = None
+        for name in names:
+            if (style_layer_id == name or style_layer_id.startswith(name + "_")) and \
+                    (best is None or len(name) > len(best)):
+                best = name
+        return best
+
+    @staticmethod
+    def _scaled_size(value, factor: float):
+        """``value`` × ``factor``; a zoom curve (MapLibre wants it outermost)
+        has its outputs scaled."""
+        if isinstance(value, list) and len(value) > 3 and value[0] == "interpolate"                 and value[2] == ["zoom"]:
+            return value[:3] + [item if index % 2 == 0 else ex.mul(item, factor)
+                                for index, item in enumerate(value[3:])]
+        if isinstance(value, list) and len(value) > 2 and value[0] == "step" and value[1] == ["zoom"]:
+            return value[:2] + [ex.mul(item, factor) if index % 2 == 0 else item
+                                for index, item in enumerate(value[2:])]
+        return ex.mul(value, factor)
 
     # Map-unit sprites: one image per integer zoom, drawn at that zoom's size
     # with this oversampling, so MapLibre scales it by 1/1.5 .. 2/1.5 (the
@@ -4722,8 +4894,10 @@ class QgisMapLibreStyleExporter:
             "icon-pitch-alignment": IconPropertyExtractor.get_icon_pitch_alignment(),
             "icon-anchor": IconPropertyExtractor.get_icon_anchor(),
             "icon-allow-overlap": IconPropertyExtractor.get_icon_allow_overlap(True),
-            # Map symbols never hide labels in QGIS (only a labelled layer's
-            # own obstacle settings do): they must not block labels here.
+            # Placed after the labels (layers are placed top down), the symbol
+            # itself never moves a label: a point layer whose features are
+            # label obstacles in QGIS gets an invisible copy above the labels
+            # instead (_add_label_obstacles).
             "icon-ignore-placement": True,
             "icon-optional": IconPropertyExtractor.get_icon_optional(),
             "icon-keep-upright": IconPropertyExtractor.get_icon_keep_upright(),
@@ -4743,6 +4917,7 @@ class QgisMapLibreStyleExporter:
             "icon-translate-anchor": IconPropertyExtractor.get_icon_translate_anchor(),
         })
 
+        self._mark_label_obstacle(layer_def, style_name)
         self.style["layers"].append(layer_def)
         if animation is not None:
             self._animation_frames(layer_def, marker_name, animation)
