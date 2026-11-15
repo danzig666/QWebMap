@@ -63,7 +63,7 @@ from .core.rules_exporter import RulesExporter
 from .core.tiles_generator import GDALTilesGenerator
 from .core import export_cache
 from .core.tiles_styler import TilesStyler
-from .core.maplibre_converter import QgisMapLibreStyleExporter
+from .core.maplibre_converter import QgisMapLibreStyleExporter, point_symbols_block_labels
 from .core.server_initializer import ServerInitializer
 from .core.fidelity import FIDELITY_SCHEMA_VERSION
 from .core.fidelity.bindings import bindings_report
@@ -738,8 +738,7 @@ class QGIS2VectorTiles:
     def _has_features(self, layers: List[QgsVectorLayer]) -> bool:
         return any(layer.featureCount() > 0 for layer in layers)
 
-    @staticmethod
-    def _layer_zooms(rules: List[FlattenedRule]) -> Dict[str, Tuple[int, int]]:
+    def _layer_zooms(self, rules: List[FlattenedRule]) -> Dict[str, Tuple[int, int]]:
         """Explicit tile zoom range per output dataset (union over its rules)."""
         zooms: Dict[str, Tuple[int, int]] = {}
         for rule in rules:
@@ -754,7 +753,21 @@ class QGIS2VectorTiles:
             for name in ([polygons] if isinstance(polygons, str) else polygons or []):
                 old_low, old_high = zooms.get(name, (low, high))
                 zooms[name] = (min(low, old_low), max(high, old_high))
-        return zooms
+        # A layer first appearing at a zoom: its data also in the tiles of
+        # the zoom below (no blank map on a fast zoom-in, zoom_bridge).
+        roles: Dict[str, set] = {}
+        excluded = set()
+        # (A layer drawn as images zoomed out: its features are left out of
+        # the lower tiles on purpose.)
+        images = {lid for lid, (mode, _) in getattr(self, "zoomed_out", {}).items() if mode == "image"}
+        for rule in rules:
+            if rule.layer is not None:
+                roles.setdefault(rule.output_dataset, set()).add((rule.layer.id(), rule.get_attr("t")))
+            if rule.point_group or rule.displacement_label or rule.heatmap or rule.diagram \
+                    or getattr(rule, "visible_polygons", None) \
+                    or (rule.layer is not None and rule.layer.id() in images):
+                excluded.add(rule.output_dataset)
+        return fidelity_zoom.stand_in_zooms(zooms, roles, excluded)
 
     def _tiles_generator(self, layers: List[QgsVectorLayer], temp_dir: str, style: dict,
                          rules: Optional[List[FlattenedRule]] = None) -> GDALTilesGenerator:
@@ -859,6 +872,11 @@ class QGIS2VectorTiles:
             z_orders={rule.rule.description(): rule.z_order
                       for rule in rules or [] if getattr(rule, "z_order", None)},
             buffer_only={rule.rule.description() for rule in rules or [] if getattr(rule, "buffer_only", False)},
+            # Point symbols QGIS keeps other labels off (their layer's labeling).
+            label_obstacles={rule.rule.description(): rule.layer.id() for rule in rules or []
+                             if rule.get_attr("t") == 0 and point_symbols_block_labels(rule.layer)},
+            label_owners={rule.rule.description(): rule.layer.id() for rule in rules or []
+                          if rule.get_attr("t") == 1 and rule.layer is not None},
             displacement_labels={rule.rule.description(): rule.displacement_label for rule in rules or []
                                  if getattr(rule, "displacement_label", None)},
             feature_filters={rule.rule.description(): rule.feature_filter

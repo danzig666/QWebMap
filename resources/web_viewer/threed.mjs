@@ -55,7 +55,9 @@ export function extrusionLayers(style, manifest) {
                    "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.92 },
           metadata: { "q2vt:3d-of": id } };
         if (fill.filter) extrusion.filter = fill.filter;
-        if (fill.minzoom !== undefined) extrusion.minzoom = fill.minzoom;
+        // (Not from a fill's invisible stand-in data below its own zoom.)
+        const from = fill.metadata?.["q2vt:hidden-below"] ?? fill.minzoom;
+        if (from !== undefined) extrusion.minzoom = from;
         if (fill.maxzoom !== undefined) extrusion.maxzoom = fill.maxzoom;
         out.push(extrusion);
       }

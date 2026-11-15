@@ -69,15 +69,34 @@ def scale_to_zoom(scale: float) -> float:
     return math.log2(TOP_SCALE / scale)
 
 
+def zoom_scales(top_scale: Optional[float] = None, max_zoom: int = MAX_TILE_ZOOM) -> list:
+    """QGIS scale denominators of the web zooms 0..``max_zoom`` (whole
+    numbers, as a QGIS scale list holds them) for a project whose zoom 0
+    is at ``top_scale`` (default: this export's)."""
+    top = TOP_SCALE if top_scale is None else float(top_scale)
+    return [max(1, round(top / 2.0 ** z)) for z in range(max_zoom + 1)]
+
+
+def _scale_zoom(scale: float) -> float:
+    """scale_to_zoom, a zoom's scale rounded to a whole number (a QGIS
+    scale list, zoom_scales) read as that zoom: 1:1066 is zoom 19 exactly,
+    not 19.0004 (which tiled zoom 19 for a layer hidden from it on)."""
+    zoom = scale_to_zoom(scale)
+    nearest = round(zoom)
+    if abs(zoom_to_scale(nearest) - scale) <= 0.5 + 1e-9:
+        return float(nearest)
+    return zoom
+
+
 def interval_from_scales(minimum_scale: float, maximum_scale: float,
                          floor_zoom: float = 0.0) -> ZoomInterval:
     """Visibility interval of a QGIS scale range (0 = unbounded)."""
     low = floor_zoom
     if minimum_scale and minimum_scale > 0:
-        low = max(floor_zoom, scale_to_zoom(minimum_scale))
+        low = max(floor_zoom, _scale_zoom(minimum_scale))
     high: Optional[float] = None
     if maximum_scale and maximum_scale > 0:
-        high = scale_to_zoom(maximum_scale)
+        high = _scale_zoom(maximum_scale)
     interval = ZoomInterval(_snap(low), None if high is None else _snap(high))
     return interval
 
@@ -128,3 +147,33 @@ def note_tile_zooms(style: dict, layer_zooms: Dict[str, Tuple[int, int]], source
         if layer_def.get("source") == source_name and zooms is not None:
             layer_def.setdefault("metadata", {})["q2vt:tiles"] = [int(zooms[0]), int(zooms[1])]
     style.setdefault("metadata", {})["q2vt:tiles-max-zoom"] = max(high for _, high in layer_zooms.values())
+
+
+def stand_in_zooms(zooms: Dict[str, Tuple[int, int]], roles: Dict[str, set],
+                   excluded: set) -> Dict[str, Tuple[int, int]]:
+    """``zooms`` (dataset -> inclusive tile zooms) with the datasets that
+    first appear at a zoom N also written into the tiles of N - 1: their
+    stand-in data, drawn while the tiles of N load after a fast zoom-in
+    (publishing.zoom_bridge hides it below N).
+
+    ``roles``: dataset -> its (QGIS layer, rule type) pairs. A dataset taking
+    over from another of the same role that ends at N - 1 (a rule of the
+    next scale range, a symbol's per-zoom copy) gets none: that one is drawn
+    on from its own tiles meanwhile (it would be drawn twice). Not before
+    the archive's first zoom, nor for ``excluded`` datasets (point clusters
+    and displacement, grouped per zoom; labels the viewer places itself)."""
+    if not zooms:
+        return dict(zooms)
+    first = min(low for low, _ in zooms.values())
+    ends = {}
+    for name, (_, high) in zooms.items():
+        for role in roles.get(name, ()):
+            ends.setdefault(role, set()).add(high)
+    out = dict(zooms)
+    for name, (low, high) in zooms.items():
+        if low <= first or name in excluded or not roles.get(name):
+            continue
+        if any(low - 1 in ends.get(role, ()) for role in roles[name]):
+            continue
+        out[name] = (low - 1, high)
+    return out

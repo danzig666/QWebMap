@@ -88,7 +88,8 @@ class FakeS3Client:
             handle.write(data)
         etag = '"' + hashlib.md5(data).hexdigest() + '"'  # noqa: S324 - S3 ETag semantics
         self.meta[Key] = {"ETag": etag, "ContentType": params.get("ContentType"),
-                          "CacheControl": params.get("CacheControl"), "Metadata": params.get("Metadata", {})}
+                          "CacheControl": params.get("CacheControl"), "Metadata": params.get("Metadata", {}),
+                          **({"ContentEncoding": params["ContentEncoding"]} if params.get("ContentEncoding") else {})}
         return {"ETag": etag}
 
     def put_object(self, **params):

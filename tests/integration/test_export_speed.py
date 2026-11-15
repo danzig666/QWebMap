@@ -517,3 +517,132 @@ def test_merged_zoomed_out_tiles_join_features_of_one_style_per_tile(plugin, tmp
             assert area(mine[fill], zone) == pytest.approx(area(theirs[fill], zone), rel=0.02, abs=50), (address, zone)
         # Outlines: the merged shapes' boundaries, not every parcel's.
         assert len(mine[outline]["features"]) < len(theirs[outline]["features"]) / 10
+
+
+def _river(folder, name, pieces=1500, step=40.0):
+    """A meandering river of ``pieces`` short lines (separate features with
+    keys and orders of their own, one style, stored in either direction),
+    from west to east; returns the dataset and the river's length."""
+    import math as _math  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core.datasets import ExportedDataset  # pylint: disable=import-error
+    fields = QgsFields()
+    fields.append(QgsField("q2vt_orig_id", QVariant.Int))
+    fields.append(QgsField("q2vt_feature_key", QVariant.String))
+    fields.append(QgsField("q2vt_property_kind", QVariant.String))
+    path = os.path.join(folder, f"{name}.gpkg")
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "GPKG"
+    writer = QgsVectorFileWriter.create(path, fields, QgsWkbTypes.LineString,
+                                        QgsCoordinateReferenceSystem("EPSG:3857"),
+                                        QgsCoordinateTransformContext(), options)
+    # Nine pieces of ``step`` metres, then one of 15 times that (a reach
+    # drawn alone at zooms where the short ones are left out).
+    xs = [0.0]
+    for i in range(pieces):
+        xs.append(xs[-1] + (15 * step if i % 10 == 9 else step))
+    points = [(2110000 + x, 6020000 + 3000 * _math.sin(x / 3600)) for x in xs]
+    features, length = [], 0.0
+    for number in range(pieces):
+        (x0, y0), (x1, y1) = points[number], points[number + 1]
+        if number % 2:
+            (x0, y0), (x1, y1) = (x1, y1), (x0, y0)
+        length += _math.hypot(x1 - x0, y1 - y0)
+        feature = QgsFeature(fields)
+        feature.setAttributes([number, f"k{number}", "river"])
+        feature.setGeometry(QgsGeometry.fromWkt(f"LINESTRING({x0} {y0}, {x1} {y1})"))
+        features.append(feature)
+    writer.addFeatures(features)
+    del writer
+    return ExportedDataset(path, name, pieces, None), length
+
+
+def test_chain_lines_joins_where_two_ends_meet(plugin):
+    """LineMerge: pieces in either direction joined where exactly two ends
+    meet; a junction of three ends three lines; a ring closes."""
+    from q2vt_plugin.src.core.tiles_generator import chain_lines  # pylint: disable=import-error
+    chains = chain_lines([[(1, 0), (2, 0)], [(0, 0), (1, 0)], [(3, 0), (2, 0)]])
+    assert len(chains) == 1 and chains[0][0] in ([(0, 0), (1, 0), (2, 0), (3, 0)],
+                                                  [(3, 0), (2, 0), (1, 0), (0, 0)])
+    assert sorted(chains[0][1]) == [0, 1, 2]
+    assert len(chain_lines([[(0, 0), (1, 0)], [(1, 0), (2, 0)], [(1, 0), (1, 1)]])) == 3
+    ring = chain_lines([[(0, 0), (1, 0)], [(1, 0), (1, 1)], [(1, 1), (0, 0)]])
+    assert len(ring) == 1 and len(ring[0][0]) == 4 and ring[0][0][0] == ring[0][0][-1]
+
+
+def test_short_line_pieces_are_joined_where_small_features_are_left_out(plugin, tmp_path, monkeypatch):
+    """A river of 1500 pieces of 40 m: where pieces under half a pixel are
+    left out (min_feature_px), each piece alone was, and the river broke up
+    or vanished; its pieces joined first, the river is whole in those
+    tiles, in far fewer features and bytes. At the last zoom every piece is
+    as it was, with its key; a joined line of several features has none."""
+    from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core import tiles_generator  # pylint: disable=import-error
+    from publishing import mvt  # pylint: disable=import-outside-toplevel
+    name = "l00t00d01r00g01c01o03i13s00"
+    style = {"layers": [{"id": "r", "type": "line", "source": "t", "source-layer": name,
+                         "paint": {"line-width": 1.2, "line-color": "#3366cc"}}]}
+
+    def tiles(folder, join):
+        os.makedirs(folder, exist_ok=True)
+        dataset, length = _river(folder, name)
+        if not join:
+            monkeypatch.setattr(tiles_generator.GDALTilesGenerator, "_joinable", lambda self, n: False)
+        generator = tiles_generator.GDALTilesGenerator(
+            [dataset], style, folder, QgsRectangle(2100000, 6010000, 2290000, 6030000), 100, None,
+            layer_zooms={name: (3, 13)}, layer_groups={"river": [name]},
+            min_feature_px=0.5, small_datasets={name})
+        generator.generate()
+        monkeypatch.undo()
+        out, size = {}, 0
+        with sqlite3.connect(os.path.join(folder, "tiles.mbtiles")) as conn:
+            for z, _x, _y, data in conn.execute("SELECT * FROM tiles"):
+                size += len(data)
+                entry = out.setdefault(z, {"features": 0, "length": 0.0, "keys": set(), "bytes": 0})
+                entry["bytes"] += len(data)
+                for layer in mvt.decode(data, geometry=True).values():
+                    scale = tiles_generator._tile_size(z) / layer["extent"]  # pylint: disable=protected-access
+                    for feature in layer["features"]:
+                        entry["features"] += 1
+                        entry["length"] += _inside_length(mvt.lines(feature["geometry"]), layer["extent"]) * scale
+                        entry["keys"].add(feature["properties"].get("q2vt_feature_key"))
+        return out, length, size
+
+    plain, length, plain_bytes = tiles(str(tmp_path / "plain"), False)
+    joined, _, joined_bytes = tiles(str(tmp_path / "joined"), True)
+    print("MEASURE river", round(length), "m; zoom: (features, metres drawn, bytes) plain -> joined")
+    for z in sorted(set(plain) | set(joined)):
+        a, b = plain.get(z, {}), joined.get(z, {})
+        print("MEASURE", z, (a.get("features", 0), round(a.get("length", 0)), a.get("bytes", 0)), "->",
+              (b.get("features", 0), round(b.get("length", 0)), b.get("bytes", 0)))
+    print("MEASURE archive bytes", plain_bytes, "->", joined_bytes)
+    # The last zoom: every piece, as before (with its own key).
+    assert joined[13]["features"] == plain[13]["features"] and joined[13]["keys"] == plain[13]["keys"]
+    broken = [z for z in range(3, 13) if plain.get(z, {}).get("length", 0.0) < 0.9 * length]
+    assert broken  # (the case: the plain river breaks up zoomed out)
+    dashed = [z for z in broken if plain.get(z, {}).get("features")]
+    assert dashed  # the long reaches alone
+    for zoom in broken:  # the whole river, in fewer features than the plain one's reaches
+        assert joined[zoom]["length"] == pytest.approx(length, rel=0.03), zoom
+        if zoom in dashed:
+            assert joined[zoom]["features"] < plain[zoom]["features"] / 5, zoom
+    assert joined[3]["keys"] == {None} and joined[3]["features"] < 20
+
+
+def test_lines_drawn_by_direction_are_not_joined(plugin, tmp_path):
+    """A line offset to one side (or a pattern along it) depends on which
+    way each piece runs: such datasets are tiled as they are; so are
+    polygon outlines and labels."""
+    from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core import tiles_generator  # pylint: disable=import-error
+    name = "l00t00d01r00g01c01o03i13s00"
+
+    def joinable(paint, dataset=name):
+        style = {"layers": [{"id": "r", "type": "line", "source": "t", "source-layer": dataset, "paint": paint}]}
+        generator = tiles_generator.GDALTilesGenerator([], style, str(tmp_path), QgsRectangle(0, 0, 1, 1), 100, None)
+        return generator._joinable(dataset)  # pylint: disable=protected-access
+    assert not joinable({"line-width": 1, "line-offset": 2})
+    assert not joinable({"line-width": 1, "line-pattern": "x"})
+    assert not joinable({"line-width": 1, "line-color": ["get", "q2vt_feature_key"]})
+    assert joinable({"line-width": 1, "line-dasharray": [2, 1]})
+    assert not joinable({"line-width": 1}, "l00t00d01r00g02c01o03i13s00")  # a polygon outline
+    assert not joinable({"line-width": 1}, "l00t01d01r00g01c01o03i13s00")  # a label

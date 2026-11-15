@@ -6,6 +6,7 @@
 // cuts are not real edges: only each tile's own square counts (its buffer
 // belongs to the neighbouring tile), so the corners and edges made by
 // cutting a polygon at a tile edge are never snapped to.
+import { hiddenAt } from "./style_control.mjs";
 
 const SNAP_TYPES = new Set(["fill", "line", "circle"]);
 
@@ -84,7 +85,8 @@ export class Snapper {
     const box = [[point[0] - radius, point[1] - radius], [point[0] + radius, point[1] + radius]];
     let features;
     try {
-      features = this.map.queryRenderedFeatures(box, { layers: this.styleLayers.filter((id) => this.map.getLayer(id)) });
+      features = this.map.queryRenderedFeatures(box, {
+        layers: this.styleLayers.filter((id) => this.map.getLayer(id) && !hiddenAt(this.map, id)) });
     } catch {
       return null;
     }

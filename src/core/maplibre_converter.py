@@ -86,6 +86,52 @@ def _label_enum(settings, name: str, default=None):
         return default
 
 
+def _label_settings_of(layer) -> list:
+    """The QgsPalLayerSettings of a layer's labeling (simple: one; rule-based:
+    those of its active rules); [] without labels."""
+    try:
+        if not layer.labelsEnabled() or layer.labeling() is None:
+            return []
+        labeling = layer.labeling()
+    except (AttributeError, RuntimeError):
+        return []
+    if hasattr(labeling, "rootRule"):
+        return [rule.settings() for rule in labeling.rootRule().descendants()
+                if rule.active() and rule.settings() is not None]
+    try:
+        return [labeling.settings()]
+    except (AttributeError, RuntimeError, TypeError):
+        return []
+
+
+def point_symbols_block_labels(layer) -> bool:
+    """Whether a point layer's symbols keep other labels off them, as QGIS
+    does: its labeling (labels, or obstacle-only "blocking" labeling)
+    has "Features act as obstacles" on, the QGIS default. A layer whose
+    own labels sit over their point (Placement "Offset from point") is
+    left out: the web map cannot exempt a feature's own label from its
+    symbol, as QGIS does, and would hide those labels."""
+    point = getattr(getattr(Qgis, "GeometryType", None), "Point", 0)
+    try:
+        if layer is None or not hasattr(layer, "geometryType") or \
+                _enum_int(layer.geometryType()) != _enum_int(point):
+            return False
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    settings = _label_settings_of(layer)
+    over_point = _enum_int(getattr(Qgis.LabelPlacement, "OverPoint", 1))
+    blocks = False
+    for item in settings:
+        try:
+            obstacle = item.obstacleSettings().isObstacle()
+        except (AttributeError, RuntimeError):
+            obstacle = bool(getattr(item, "obstacle", False))
+        blocks = blocks or obstacle
+        if getattr(item, "drawLabels", True) and _label_enum(item, "placement") == over_point:
+            return False
+    return blocks
+
+
 def _argb_hex(value) -> str:
     """Generated colour fields store '#RRGGBBAA'; QGIS parses '#AARRGGBB'."""
     text = str(value or "")
@@ -2126,6 +2172,10 @@ class QgisMapLibreStyleExporter:
     being emitted as a plausible-looking default.
     """
 
+    # (Class defaults: tests build exporters without __init__; read-only.)
+    label_obstacles: Dict[str, str] = {}   # point-symbol style -> layer id (obstacles)
+    label_owners: Dict[str, str] = {}      # label style -> layer id
+
     def __init__(
         self,
         output_dir: str,
@@ -2156,6 +2206,8 @@ class QgisMapLibreStyleExporter:
         layer_zooms: Optional[Dict[str, Tuple[int, int]]] = None,
         diagrams: Optional[Dict[str, dict]] = None,
         label_modes: Optional[Dict[str, dict]] = None,
+        label_obstacles: Optional[Dict[str, str]] = None,
+        label_owners: Optional[Dict[str, str]] = None,
     ):
         """Initialise the exporter.
 
@@ -2203,6 +2255,12 @@ class QgisMapLibreStyleExporter:
         self.z_orders = z_orders or {}
         # Style names of rules drawing only a marker symbol's buffer.
         self.buffer_only = buffer_only or set()
+        # {style name: QGIS layer id} of point symbols that keep other labels
+        # off them (point_symbols_block_labels), and of the label rules
+        # (label_owners): invisible copies of the symbols are placed before
+        # the labels, after their own layer's (_add_label_obstacles).
+        self.label_obstacles = dict(label_obstacles or {})
+        self.label_owners = dict(label_owners or {})
         # Point displacement labels: {style name: label settings}.
         self.displacement_labels = displacement_labels or {}
         # Style name -> filter of its feature-order stratum (fidelity.feature_order).
@@ -2348,6 +2406,7 @@ class QgisMapLibreStyleExporter:
 
         fidelity_zoom.note_tile_zooms(self.style, self.layer_zooms, self.source_name)
         self.style["layers"] = layer_merge.join_zoom_split_layers(self.style["layers"])
+        self._add_label_obstacles()
         self.save_to_file()
         return self.style
 
@@ -3434,6 +3493,124 @@ class QgisMapLibreStyleExporter:
         if not cases:
             return None
         return ["match", ["to-string", ["get", fields[0]]], *cases, ["literal", [font]]]
+
+    def _html_run_formats(self, layer_def: dict, text_format, source_layer: str, dataset: str) -> None:
+        """An HTML label's sections (``fidelity.html_labels``) with each run's
+        colour and font: ``text-color`` from its colour field (the label's
+        colour without one), ``text-font`` from its font key (family, bold,
+        italic: the font stack QGIS draws, its glyphs built too). Runs with a
+        background colour are drawn without it (reported)."""
+        layout = layer_def.get("layout") or {}
+        field = layout.get("text-field")
+        if not (isinstance(field, list) and field and field[0] == "format"):
+            return
+        found = self._html_run_values(source_layer)
+        if found is None:
+            return
+        colors, keys, flags = found
+        fonts = None
+        if keys:
+            default = layout.get("text-font")
+            if isinstance(default, list) and default and all(isinstance(f, str) for f in default):
+                default = ["literal", default]
+            cases = []
+            for key in keys:
+                name = self._html_run_font(text_format, key)
+                if name and ["literal", [name]] != default:
+                    self.glyphs.setdefault(name, [])
+                    if dataset not in self.glyphs[name]:
+                        self.glyphs[name].append(dataset)
+                    cases += [key, ["literal", [name]]]
+            if cases:
+                fonts = cases + [default]
+        color = None
+        if colors:
+            color = (layer_def.get("paint") or {}).get("text-color")
+            if color is None or '"zoom"' in json.dumps(color):
+                # (a section's options are per feature, not per zoom)
+                rgba = text_format.color()
+                color = f"rgba({rgba.red()}, {rgba.green()}, {rgba.blue()}, {round(rgba.alphaF(), 3)})"
+        if color is not None or fonts:
+            layout["text-field"] = html_labels.format_expression(color, fonts)
+        if flags & html_labels.FLAG_BACKGROUND:
+            self.context.report(
+                "Q2VT_LABEL_APPROXIMATE",
+                "HTML label text with a background colour: drawn without the background.")
+        if flags & html_labels.FLAG_TRUNCATED:
+            self.context.report(
+                "Q2VT_LABEL_APPROXIMATE",
+                f"HTML label with more than {html_labels.MAX_SECTIONS} differently formatted "
+                "pieces: the rest of its text takes the last piece's formatting.")
+
+    def _html_run_values(self, source_layer: str):
+        """(any run colour, distinct run font keys, OR of the label flags) of
+        an exported dataset; None when it cannot be read."""
+        from osgeo import ogr  # pylint: disable=import-outside-toplevel
+        dataset = ogr.Open(join(self.utils_dir, f"{source_layer}.gpkg"))
+        if dataset is None:
+            return None
+        layer = dataset.GetLayer(0)
+        names = {layer.GetLayerDefn().GetFieldDefn(i).GetName()
+                 for i in range(layer.GetLayerDefn().GetFieldCount())}
+        table = layer.GetName().replace('"', '""')
+        sections = range(html_labels.MAX_SECTIONS)
+        color_fields = [f for f in (html_labels.COLOR_FIELD.format(i) for i in sections) if f in names]
+        font_fields = [f for f in (html_labels.FONT_FIELD.format(i) for i in sections) if f in names]
+
+        def query(sql):
+            result = dataset.ExecuteSQL(sql)
+            if result is None:
+                return []
+            try:
+                return [feature.GetField(0) for feature in result]
+            finally:
+                dataset.ReleaseResultSet(result)
+        colors = bool(color_fields) and bool(query(
+            f'SELECT 1 FROM "{table}" WHERE ' +
+            " OR ".join(f'"{f}" IS NOT NULL' for f in color_fields) + " LIMIT 1"))
+        keys = []
+        if font_fields:
+            union = " UNION ".join(f'SELECT "{f}" AS k FROM "{table}" WHERE "{f}" IS NOT NULL'
+                                   for f in font_fields)
+            keys = sorted({str(k) for k in query(f"SELECT DISTINCT k FROM ({union}) LIMIT "
+                                                 f"{self.MAX_VARIANTS + 1}") if k})
+            if len(keys) > self.MAX_VARIANTS:
+                self.context.report(
+                    "Q2VT_LABEL_APPROXIMATE",
+                    f"HTML labels with more than {self.MAX_VARIANTS} fonts: their text uses the "
+                    "label's font.")
+                keys = []
+        flags = 0
+        if html_labels.FLAGS_FIELD in names:
+            for value in query(f'SELECT DISTINCT "{html_labels.FLAGS_FIELD}" FROM "{table}" '
+                               f'WHERE "{html_labels.FLAGS_FIELD}" IS NOT NULL'):
+                flags |= int(value or 0)
+        return colors, keys, flags
+
+    @staticmethod
+    def _html_run_font(text_format, key: str) -> Optional[str]:
+        """The font stack of an HTML run: the label's font with the run's
+        family (if installed, else the label's, as Qt falls back), bold and
+        italic."""
+        from qgis.core import QgsFontUtils  # pylint: disable=import-outside-toplevel
+        family, bold, italic = html_labels.font_key_parts(key)
+        changed = QgsTextFormat(text_format)
+        qfont = QFont(changed.font())
+        if family and QgsFontUtils.fontFamilyOnSystem(family):
+            qfont.setFamily(family)
+            qfont.setStyleName("")
+        if bold is not None or italic is not None:
+            qfont.setStyleName("")  # the weight / slant chosen, not a named face
+        if bold is not None:
+            qfont.setBold(bold)
+            if hasattr(changed, "setForcedBold"):
+                changed.setForcedBold(bold)
+        if italic is not None:
+            qfont.setItalic(italic)
+            if hasattr(changed, "setForcedItalic"):
+                changed.setForcedItalic(italic)
+        changed.setFont(qfont)
+        return TextPropertyExtractor.get_text_font(changed)
 
     @staticmethod
     def _style_base(style_name: str) -> str:
@@ -4538,10 +4715,127 @@ class QgisMapLibreStyleExporter:
                     props.property(P.PropertyStrokeColor), "color"),
                 "circle-stroke-opacity": opacity,
             })
+        self._mark_label_obstacle(layer_def, style_name)
         self.style["layers"].append(layer_def)
         return True
 
     CIRCLE_EDGE_PX = 0.5
+
+    # --- point symbols as label obstacles ------------------------------------
+    # The obstacle a little smaller than the symbol: a label QGIS puts right
+    # next to its own symbol (around the point, distance 0) touches the
+    # symbol's box, and must not be taken as overlapping it.
+    OBSTACLE_SCALE = 0.8
+    OBSTACLE_SPRITE_PX = 16.0
+    _OBSTACLE_LAYOUT = ("icon-image", "icon-size", "icon-rotate", "icon-anchor", "icon-offset",
+                        "icon-rotation-alignment", "icon-pitch-alignment", "icon-keep-upright",
+                        "symbol-placement", "visibility")
+
+    def _mark_label_obstacle(self, layer_def: dict, style_name: str) -> None:
+        """Note a point symbol's style layer whose features are label
+        obstacles in QGIS (point_symbols_block_labels)."""
+        if self._style_base(style_name) not in self.label_obstacles:
+            return
+        if layer_def.get("type") == "symbol" and \
+                layer_def.get("layout", {}).get("symbol-placement", "point") != "point":
+            return
+        layer_def.setdefault("metadata", {})["q2vt:label-obstacle"] = True
+
+    def _obstacle_image(self) -> str:
+        """A transparent square sprite (OBSTACLE_SPRITE_PX CSS px), the image
+        of a circle layer's obstacle copy."""
+        name = self.__dict__.get("_obstacle_sprite")
+        if name is None:
+            from qgis.core import QgsMarkerSymbol  # pylint: disable=import-outside-toplevel
+            marker = QgsMarkerSymbol.createSimple({
+                "name": "square", "color": "0,0,0,0", "outline_style": "no",
+                "size": str(self.OBSTACLE_SPRITE_PX), "size_unit": "Pixel"})
+            icon_size, map_units_per_pixel, oversampling = IconPropertyExtractor.marker_scale(
+                marker, marker.symbolLayer(0))
+            name = self._next_name("marker")
+            self.marker_symbols[name] = SpriteRequest(marker, bake_rotation=False,
+                                                      map_units_per_pixel=map_units_per_pixel,
+                                                      oversampling=oversampling)
+            name = self._shared_sprite(name)
+            self._obstacle_sprite = name
+            self._obstacle_sprite_size = icon_size
+        return name
+
+    def _add_label_obstacles(self) -> None:
+        """Point symbols QGIS keeps labels off: an invisible copy of each
+        (no opacity, the symbol's image, size and anchor; a circle: a clear
+        square of its diameter), always shown and taking its place. MapLibre
+        places symbol layers top down, so a copy keeps clear the labels of
+        the style layers under it. QGIS never makes a feature an obstacle
+        to its own label: each layer's copies go right under its own labels
+        (placed first), above those of the layers after it in the style (a
+        layer without drawn labels: above all labels)."""
+        copies = {}  # QGIS layer id -> obstacle copies
+        for layer_def in self.style["layers"]:
+            metadata = layer_def.get("metadata") or {}
+            if not metadata.get("q2vt:label-obstacle") or metadata.get("q2vt:frame"):
+                continue  # (an animated marker: its frames share the first's place)
+            layout = layer_def.get("layout") or {}
+            paint = layer_def.get("paint") or {}
+            if layer_def.get("type") == "symbol" and layout.get("icon-image") is not None:
+                obstacle_layout = {k: copy.deepcopy(layout[k]) for k in self._OBSTACLE_LAYOUT if k in layout}
+                obstacle_layout["icon-size"] = self._scaled_size(layout.get("icon-size", 1),
+                                                                 self.OBSTACLE_SCALE)
+                translate = paint.get("icon-translate")
+            elif layer_def.get("type") == "circle":
+                image = self._obstacle_image()
+                # Diameter (fill and the stroke outside it) over the image's size.
+                outer = ex.add(paint.get("circle-radius", 5), paint.get("circle-stroke-width", 0))
+                obstacle_layout = {
+                    "icon-image": image,
+                    "icon-size": self._scaled_size(outer, 2.0 * self.OBSTACLE_SCALE / self.OBSTACLE_SPRITE_PX
+                                                   * self._obstacle_sprite_size),
+                    "icon-pitch-alignment": "map", "visibility": layout.get("visibility", "visible")}
+                translate = paint.get("circle-translate")
+            else:
+                continue
+            obstacle_layout.update({"icon-allow-overlap": True, "icon-ignore-placement": False,
+                                    "icon-padding": 0, "icon-optional": False})
+            obstacle = {key: copy.deepcopy(layer_def[key])
+                        for key in ("source", "source-layer", "minzoom", "maxzoom", "filter")
+                        if key in layer_def}
+            obstacle.update({
+                "id": f"{layer_def['id']}_obstacle", "type": "symbol", "layout": obstacle_layout,
+                "paint": {"icon-opacity": 0, **({"icon-translate": translate} if translate else {})},
+                "metadata": {**{k: v for k, v in metadata.items() if k != "q2vt:label-obstacle"},
+                             "q2vt:obstacle-of": layer_def["id"]}})
+            owner = self.label_obstacles.get(self._owning_style(layer_def["id"], self.label_obstacles), "")
+            copies.setdefault(owner, []).append(obstacle)
+        layers = self.style["layers"]
+        for owner, items in copies.items():
+            own = [index for index, other in enumerate(layers)
+                   if other.get("type") == "symbol" and "text-field" in (other.get("layout") or {})
+                   and owner and self.label_owners.get(self._owning_style(other["id"], self.label_owners)) == owner]
+            at = min(own) if own else len(layers)
+            layers[at:at] = items
+
+    @staticmethod
+    def _owning_style(style_layer_id: str, names) -> Optional[str]:
+        """The style name (rule) of a style layer: equal to it, or a prefix
+        followed by "_" (zoom splits, copies); the longest wins."""
+        best = None
+        for name in names:
+            if (style_layer_id == name or style_layer_id.startswith(name + "_")) and \
+                    (best is None or len(name) > len(best)):
+                best = name
+        return best
+
+    @staticmethod
+    def _scaled_size(value, factor: float):
+        """``value`` × ``factor``; a zoom curve (MapLibre wants it outermost)
+        has its outputs scaled."""
+        if isinstance(value, list) and len(value) > 3 and value[0] == "interpolate"                 and value[2] == ["zoom"]:
+            return value[:3] + [item if index % 2 == 0 else ex.mul(item, factor)
+                                for index, item in enumerate(value[3:])]
+        if isinstance(value, list) and len(value) > 2 and value[0] == "step" and value[1] == ["zoom"]:
+            return value[:2] + [ex.mul(item, factor) if index % 2 == 0 else item
+                                for index, item in enumerate(value[2:])]
+        return ex.mul(value, factor)
 
     # Map-unit sprites: one image per integer zoom, drawn at that zoom's size
     # with this oversampling, so MapLibre scales it by 1/1.5 .. 2/1.5 (the
@@ -4722,8 +5016,10 @@ class QgisMapLibreStyleExporter:
             "icon-pitch-alignment": IconPropertyExtractor.get_icon_pitch_alignment(),
             "icon-anchor": IconPropertyExtractor.get_icon_anchor(),
             "icon-allow-overlap": IconPropertyExtractor.get_icon_allow_overlap(True),
-            # Map symbols never hide labels in QGIS (only a labelled layer's
-            # own obstacle settings do): they must not block labels here.
+            # Placed after the labels (layers are placed top down), the symbol
+            # itself never moves a label: a point layer whose features are
+            # label obstacles in QGIS gets an invisible copy above the labels
+            # instead (_add_label_obstacles).
             "icon-ignore-placement": True,
             "icon-optional": IconPropertyExtractor.get_icon_optional(),
             "icon-keep-upright": IconPropertyExtractor.get_icon_keep_upright(),
@@ -4743,6 +5039,7 @@ class QgisMapLibreStyleExporter:
             "icon-translate-anchor": IconPropertyExtractor.get_icon_translate_anchor(),
         })
 
+        self._mark_label_obstacle(layer_def, style_name)
         self.style["layers"].append(layer_def)
         if animation is not None:
             self._animation_frames(layer_def, marker_name, animation)
@@ -5756,6 +6053,7 @@ class QgisMapLibreStyleExporter:
             "text-translate": translate or TextPropertyExtractor.get_text_translate(),
             "text-translate-anchor": TextPropertyExtractor.get_text_translate_anchor(),
         })
+        self._html_run_formats(layer_def, text_format, source_layer_name, dataset)
         self._apply_label_mask(layer_def, text_format, label_settings)
 
         # Deep-copy label settings to avoid mutating the caller's object.
@@ -5766,6 +6064,16 @@ class QgisMapLibreStyleExporter:
             background.setMarkerSymbol(background.markerSymbol().clone())
         label_format.setBackground(background)
         label_settings.setFormat(label_format)
+        framed = background.enabled()
+        wide = self._wide_buffer_background(label_format, label_settings, layer_def["layout"])
+        if wide is not None:
+            # A wide buffer as QGIS draws it: a rounded box behind the text
+            # (a halo this wide fills each glyph's box).
+            background = wide
+            label_format.setBackground(wide)
+            label_settings.setFormat(label_format)
+            layer_def["paint"]["text-halo-width"] = 0
+            layer_def.setdefault("metadata", {})["q2vt:wide-buffer"] = True
 
         if background.enabled():
             self._apply_icon_from_background(layer_def, background, style_name, label_settings)
@@ -5784,8 +6092,7 @@ class QgisMapLibreStyleExporter:
                         total, layer_def["layout"].get("icon-size", 1)))
         else:
             self._apply_default_icon_props(layer_def)
-        self._apply_point_callout(layer_def, label_settings, style_name, em_size, pinned,
-                                  background.enabled())
+        self._apply_point_callout(layer_def, label_settings, style_name, em_size, pinned, framed)
 
         if not pinned and TextPropertyExtractor.overlap_if_required(label_settings):
             # Avoids other labels; the viewer still draws it where it cannot
@@ -6360,9 +6667,79 @@ class QgisMapLibreStyleExporter:
         rgba = lambda c: (c.red(), c.green(), c.blue(), c.alpha())  # noqa: E731
         one, meta = frame_image(kind, rgba(fill), rgba(stroke), stroke_px, radius_px, density, fixed)
         two, _ = frame_image(kind, rgba(fill), rgba(stroke), stroke_px, radius_px, 2 * density, fixed)
+        symbol = self._background_fill_symbol(background, stroke_px)
+        if symbol is not None and not isinstance(stroke_px, (tuple, list)):
+            # QGIS draws the shape with the background's whole fill symbol
+            # (all its layers: a second outline, a pattern...), not only the
+            # first layer's colours: drawn by QGIS in the same frame image.
+            drawn = [self._frame_from_symbol(symbol, kind, image.size, ratio, stroke_px, radius_px)
+                     for image, ratio in ((one, density), (two, 2 * density))]
+            if all(image is not None for image in drawn):
+                one, two = drawn
         name = self._next_name("frame")
         self.pattern_images[name] = PatternImages(one, two, meta, density)
         return name
+
+    @staticmethod
+    def _background_fill_symbol(background, stroke_px):
+        """The background's fill symbol when it is more than one plain fill
+        (its colours alone are drawn exactly by frame_image), its first
+        layer's outline set to ``stroke_px`` (a per-zoom frame's own width);
+        None otherwise."""
+        from qgis.core import QgsSimpleFillSymbolLayer  # pylint: disable=import-outside-toplevel
+        try:
+            symbol = background.fillSymbol()
+        except AttributeError:
+            return None
+        if symbol is None or symbol.symbolLayerCount() == 0:
+            return None
+        first = symbol.symbolLayer(0)
+        plain = (symbol.symbolLayerCount() == 1 and isinstance(first, QgsSimpleFillSymbolLayer)
+                 and _enum_int(first.brushStyle(), 1) in (0, 1) and _enum_int(first.strokeStyle(), 1) in (0, 1)
+                 and (first.paintEffect() is None or not first.paintEffect().enabled())
+                 and not first.dataDefinedProperties().hasActiveProperties()
+                 and symbol.opacity() >= 1.0)
+        if plain:
+            return None
+        symbol = symbol.clone()
+        first = symbol.symbolLayer(0)
+        if isinstance(first, QgsSimpleFillSymbolLayer) and not isinstance(stroke_px, (tuple, list)):
+            from .sprite_generator import _PX_PER_MM  # pylint: disable=import-outside-toplevel
+            first.setStrokeWidth(max(float(stroke_px or 0.0), 0.0) / _PX_PER_MM)
+            first.setStrokeWidthUnit(Qgis.RenderUnit.Millimeters)
+        return symbol
+
+    @staticmethod
+    def _frame_from_symbol(symbol, kind: str, size, ratio: float, stroke_px, radius_px):
+        """``symbol`` drawn in the frame shape filling an image of ``size``
+        (device px at ``ratio``), its outline centred on the shape as QGIS
+        strokes it (half the stroke inside the image edge, as frame_image
+        draws it), the corners rounded by ``radius_px`` at the outline."""
+        from .sprite_generator import render_ring  # pylint: disable=import-outside-toplevel
+        width, height = size[0] / ratio, size[1] / ratio
+        inset = max(float(stroke_px or 0.0), 0.0) / 2.0
+        x0, y0, x1, y1 = inset, inset, width - inset, height - inset
+        if x1 - x0 <= 0 or y1 - y0 <= 0:
+            return None
+        ring = []
+        if kind == "ellipse":
+            cx, cy, rx, ry = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2
+            ring = [(cx + rx * math.cos(2 * math.pi * i / 96), cy + ry * math.sin(2 * math.pi * i / 96))
+                    for i in range(96)]
+        else:
+            radius = min(max(float(radius_px or 0.0), 0.0), (x1 - x0) / 2, (y1 - y0) / 2)
+            corners = ((x1 - radius, y0 + radius, -90), (x1 - radius, y1 - radius, 0),
+                       (x0 + radius, y1 - radius, 90), (x0 + radius, y0 + radius, 180))
+            for cx, cy, start in corners:
+                steps = 12 if radius > 0 else 1
+                for i in range(steps + 1 if radius > 0 else 1):
+                    angle = math.radians(start + 90 * i / max(steps, 1))
+                    ring.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+        ring.append(ring[0])
+        image = render_ring(symbol, ring, int(round(width)), int(round(height)), ratio)
+        if image is None or image.size != tuple(size):
+            return None if image is None else image.resize(tuple(size))
+        return image
 
     def _frame_variants(self, background, label_settings, base: str, source_layer: str,
                         zoom: Optional[float] = None, stroke_px: Optional[float] = None,
@@ -6608,6 +6985,78 @@ class QgisMapLibreStyleExporter:
         layer_def["layout"].update({"icon-image": name, "icon-text-fit": "both",
                                     "icon-text-fit-padding": [0, 0, 0, 0], "icon-allow-overlap": True,
                                     "icon-ignore-placement": True, "icon-rotation-alignment": "viewport"})
+
+    # A MapLibre halo reaches at most about 1/4 em (the glyphs' SDF holds
+    # 6 px outside the letters at 24 px, glyphs_generator): wider, it fills
+    # each glyph's box (a boxy halo). From 1/5 em of reach beyond the
+    # letters a QGIS buffer is drawn as a rounded box behind the text.
+    WIDE_BUFFER_EM = 0.2
+    # QGIS's text box (ascent + descent) sits lower than the letters: the
+    # box of a wide buffer is that much shorter and moved up (measured
+    # against QGIS renders of words with and without descenders, ±2 px).
+    WIDE_BUFFER_SHORTER_EM = 0.225
+    WIDE_BUFFER_UP_EM = 0.175
+
+    def _wide_buffer_background(self, text_format, label_settings, layout: dict):
+        """A QGIS background drawing the label's buffer as the rounded box
+        QGIS's wide buffer becomes (reach = half the buffer size beyond the
+        letters, corners as round as that reach), or None: no buffer, a
+        buffer a halo draws (narrower than WIDE_BUFFER_EM), a background
+        already, data-defined buffer or text size, a shadow or callout,
+        line placement, or sizes whose ratio changes with the zoom."""
+        from qgis.core import QgsTextBackgroundSettings  # pylint: disable=import-outside-toplevel
+        from qgis.PyQt.QtCore import QPointF, QSizeF  # pylint: disable=import-outside-toplevel
+        buffer = text_format.buffer()
+        if not buffer.enabled() or text_format.background().enabled() or \
+                text_format.shadow().enabled() or layout.get("symbol-placement", "point") != "point":
+            return None
+        callout = label_settings.callout() if hasattr(label_settings, "callout") else None
+        if callout is not None and callout.enabled():
+            return None
+        props = label_settings.dataDefinedProperties()
+        for key in ("BufferSize", "BufferColor", "BufferOpacity", "BufferDraw", "BufferUnit", "Size",
+                    "FontSizeUnit", "BufferJoinStyle"):
+            prop = props.property(getattr(QgsPalLayerSettings.Property, key, None)) \
+                if getattr(QgsPalLayerSettings.Property, key, None) is not None else None
+            if prop is not None and prop.isActive():
+                return None
+        text_unit, unit = text_format.sizeUnit(), buffer.sizeUnit()
+        size = float(text_format.size() or 0.0)
+        reach = float(buffer.size() or 0.0) / 2.0
+        if size <= 0 or reach <= 0:
+            return None
+        if _enum_int(unit) == _enum_int(Qgis.RenderUnit.Percentage):
+            reach, unit = size * float(buffer.size()) / 200.0, text_unit
+        elif _enum_int(unit) != _enum_int(text_unit):
+            if _is_map_unit(unit) or _is_map_unit(text_unit):
+                return None  # the ratio changes with the zoom
+            per = PropertyExtractor.static_pixels(1.0, unit)
+            if not per:
+                return None
+            size = PropertyExtractor.static_pixels(size, text_unit) / per  # in the buffer's unit
+        if reach < self.WIDE_BUFFER_EM * size:
+            return None
+        frame = QgsTextBackgroundSettings()
+        frame.setEnabled(True)
+        frame.setType(QgsTextBackgroundSettings.ShapeType.ShapeRectangle)
+        frame.setSizeType(QgsTextBackgroundSettings.SizeType.SizeBuffer)
+        if _is_map_unit(unit):
+            # (icon-offset is a constant: no shift; the box is shortened at
+            # both ends instead.)
+            shorter, up = self.WIDE_BUFFER_SHORTER_EM + self.WIDE_BUFFER_UP_EM / 2, 0.0
+        else:
+            shorter, up = self.WIDE_BUFFER_SHORTER_EM, self.WIDE_BUFFER_UP_EM
+        frame.setSize(QSizeF(reach, max(0.0, reach - shorter * size)))
+        frame.setSizeUnit(unit)
+        frame.setRadii(QSizeF(reach, reach))
+        frame.setRadiiUnit(unit)
+        frame.setOffset(QPointF(0.0, -up * size))
+        frame.setOffsetUnit(unit)
+        frame.setFillColor(buffer.color())
+        frame.setStrokeColor(buffer.color())
+        frame.setStrokeWidth(0.0)
+        frame.setOpacity(buffer.opacity())
+        return frame
 
     def _apply_icon_from_background(self, layer_def: dict, background, style_name: str,
                                     label_settings=None):

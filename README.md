@@ -588,7 +588,12 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.58.11**. Newest first:
+This README describes QWebMap **4.59.0**. Newest first:
+
+**4.59.0** — ideas from the original plugin's November versions
+- No blank map on a fast zoom-in; line pieces joined when zoomed out; point symbols keep other labels off them.
+- HTML labels keep colours, bold, italic, fonts and sizes; label backgrounds use their whole fill symbol; wide buffers are drawn as a rounded box.
+- QGIS's own ogr2ogr; label fonts uploaded compressed; shorter label fade; “Use web zoom scales in QGIS…” in the Map tab.
 
 **4.58.11** — CRS without an EPSG code
 - Expressions (`$area`, `$x`, geometry generators, map-unit offsets) are evaluated in a layer's or the project's CRS also when it has no authority code (they were evaluated in Web Mercator).

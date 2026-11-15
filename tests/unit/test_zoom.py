@@ -63,3 +63,44 @@ def test_viewer_start_zoom_fits_the_export_extent():
     assert fit_zoom(19723, 15351, 13, 17) == 13      # never below the exported zooms
     assert fit_zoom(19723, 15351, 0, 10) == 10       # nor above
     assert fit_zoom(40075016, 40075016, 0, 17) < 1   # the whole world
+
+
+def test_web_zoom_scales_and_their_whole_number_roundings():
+    """The QGIS scales of web zooms (a project's scale list, the shipped
+    resources/web_zoom_scales.xml) start and end layers exactly at zooms."""
+    import os  # pylint: disable=import-outside-toplevel
+    import re  # pylint: disable=import-outside-toplevel
+    zm.configure(zm.WEB_MERCATOR_TOP_SCALE)
+    scales = zm.zoom_scales()
+    assert len(scales) == 23 and scales[0] == 295829355 and scales[22] == 71
+    for zoom, scale in enumerate(scales):
+        assert zm.interval_from_scales(scale, 0).min_zoom == zoom
+        assert zm.interval_from_scales(0, scale).max_zoom == zoom
+        assert zm.tile_min_zoom(scale) == zoom
+        assert zm.tile_max_zoom(scale) == max(0, zoom - 1)
+    assert zm.interval_from_scales(1100, 0).min_zoom != 19       # other scales unchanged
+    eov = zm.zoom_scales(zm.WEB_MERCATOR_TOP_SCALE * 0.68)
+    assert eov[16] == round(zm.WEB_MERCATOR_TOP_SCALE * 0.68 / 2 ** 16)
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "..", "..", "resources", "web_zoom_scales.xml"), encoding="utf-8") as handle:
+        shipped = [int(v) for v in re.findall(r'<scale value="1:(\d+)"/>', handle.read())]
+    assert shipped == scales
+
+
+def test_stand_ins_for_datasets_first_appearing_at_a_zoom():
+    """A dataset first appearing at zoom N is also written into the tiles of
+    N - 1; not one taking over from another of its layer and rule type that
+    ends at N - 1 (per-zoom copies, the next scale range: that one is drawn
+    on), not at the archive's first zoom, not excluded datasets."""
+    zooms = {"base": (10, 18), "buildings": (14, 18), "labels": (15, 18),
+             "road_z12": (12, 12), "road_z13": (13, 13), "detail": (13, 18), "clusters": (14, 18)}
+    roles = {"base": {("parcels", 0)}, "buildings": {("buildings", 0)}, "labels": {("buildings", 1)},
+             "road_z12": {("roads", 0)}, "road_z13": {("roads", 0)}, "detail": {("parcels", 0)},
+             "clusters": {("stops", 0)}}
+    got = zm.stand_in_zooms(zooms, roles, excluded={"clusters"})
+    assert got["buildings"] == (13, 18) and got["labels"] == (14, 18)
+    assert got["road_z12"] == (11, 12)       # the roads first appear at 12
+    assert got["road_z13"] == (13, 13)       # takes over from road_z12 (ends at 12)
+    assert got["detail"] == (12, 18)         # parcels' base goes on: an addition, not a takeover
+    assert got["base"] == (10, 18)           # the archive's first zoom
+    assert got["clusters"] == (14, 18)

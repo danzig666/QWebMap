@@ -1,0 +1,30 @@
+<!DOCTYPE qgsScales>
+<!-- QWebMap: the QGIS scales of web map zooms 0-22 (MapLibre, 512 px tiles,
+     96 dpi) in a Web Mercator (EPSG:3857) project. For a project in another CRS
+     (EOV...) the Publish Web Map window sets the scales of that project instead:
+     Map tab, "Use web zoom scales in QGIS". -->
+<qgsScales version="1.0">
+  <scale value="1:295829355"/>
+  <scale value="1:147914678"/>
+  <scale value="1:73957339"/>
+  <scale value="1:36978669"/>
+  <scale value="1:18489335"/>
+  <scale value="1:9244667"/>
+  <scale value="1:4622334"/>
+  <scale value="1:2311167"/>
+  <scale value="1:1155583"/>
+  <scale value="1:577792"/>
+  <scale value="1:288896"/>
+  <scale value="1:144448"/>
+  <scale value="1:72224"/>
+  <scale value="1:36112"/>
+  <scale value="1:18056"/>
+  <scale value="1:9028"/>
+  <scale value="1:4514"/>
+  <scale value="1:2257"/>
+  <scale value="1:1128"/>
+  <scale value="1:564"/>
+  <scale value="1:282"/>
+  <scale value="1:141"/>
+  <scale value="1:71"/>
+</qgsScales>
