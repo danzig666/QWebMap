@@ -312,3 +312,45 @@ def test_short_address_is_optional(env):
     result = _publish(env, _release(env))
     assert result.state == ReleaseState.PUBLISHED, result.message
     assert result.stable_url.endswith("/maps/felho/index.html")
+
+
+def test_label_fonts_are_stored_gzip_compressed(env):
+    """Glyph ranges go up gzip-compressed with Content-Encoding: gzip (a
+    fifth of the bytes; storage and CDNs do not compress protobuf), their
+    checksum the file's own; never the archive. A new release copies them
+    only from a compressed copy: an older release's plain one is uploaded."""
+    import gzip  # pylint: disable=import-outside-toplevel
+    client = env["client"]
+    release = _release(env, "a")
+    first = _publish(env, release)
+    assert first.state == ReleaseState.PUBLISHED, first.message
+    prefix = f"maps/felho/releases/{first.release_id}/"
+    glyphs = [k for k in client.meta if k.startswith(prefix + "glyphs/") and k.endswith(".pbf")]
+    assert glyphs
+    with open(os.path.join(release.release_dir, "release.json"), encoding="utf-8") as handle:
+        inventory = {f["path"]: f for f in json.load(handle)["files"]}
+    for key in glyphs:
+        assert client.meta[key].get("ContentEncoding") == "gzip"
+        with open(client._path("maps", key), "rb") as handle:  # pylint: disable=protected-access
+            stored = handle.read()
+        with open(os.path.join(release.release_dir, *key[len(prefix):].split("/")), "rb") as handle:
+            local = handle.read()
+        assert gzip.decompress(stored) == local
+        assert client.meta[key]["Metadata"]["sha256"] == inventory[key[len(prefix):]]["sha256"]
+    assert "ContentEncoding" not in client.meta[prefix + "data/map.pmtiles"]
+    # The next release: copied when compressed, uploaded when the old copy was plain.
+    plain = glyphs[0]
+    path = client._path("maps", plain)  # pylint: disable=protected-access
+    with open(path, "rb") as handle:
+        data = gzip.decompress(handle.read())
+    with open(path, "wb") as handle:
+        handle.write(data)
+    del client.meta[plain]["ContentEncoding"]
+    client.calls.clear()
+    second = _publish(env, _release(env, "b"))
+    assert second.state == ReleaseState.PUBLISHED, second.message
+    new_prefix = f"maps/felho/releases/{second.release_id}/"
+    puts = {c[1]["Key"] for c in client.calls if c[0] == "put_object"}
+    assert new_prefix + plain[len(prefix):] in puts
+    for key in glyphs:
+        assert client.meta[new_prefix + key[len(prefix):]].get("ContentEncoding") == "gzip"

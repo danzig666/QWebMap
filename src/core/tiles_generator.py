@@ -43,6 +43,7 @@ from qgis.core import QgsDataSourceUri, QgsVectorLayer, QgsProcessingFeedback, Q
 
 from ..utils import main_thread
 from ..utils import gdal_guard
+from ..utils import gdal_tools
 from ..utils.config import _EPSG_CRS, _SIMPLIFICATION, _SIMPLIFICATION_MAX_ZOOM
 from .fidelity.dependencies import prunable_fields, style_field_dependencies
 from . import export_cache
@@ -347,6 +348,9 @@ class GDALTilesGenerator:
         at a time, and merged (one ogr2ogr for everything used one core for
         most of its time); Q2VT_SINGLE_OGR2OGR=1 makes them in one run."""
         self.remove_unused_fields()
+        tool = self._ogr2ogr_executable()  # (fails here, clearly, without a working ogr2ogr)
+        if self.feedback is not None:
+            self.feedback.pushInfo(f"   ogr2ogr: {gdal_tools.describe('ogr2ogr') or tool}")
         output, uri = self._prepare_output_paths()
         vrt_path = join(QgsProcessingUtils.tempFolder(), "layers.vrt")
 
@@ -554,8 +558,9 @@ class GDALTilesGenerator:
 
     @staticmethod
     def _ogr2ogr_executable() -> str:
-        """ogr2ogr from the QGIS/GDAL environment (PATH as set up by QGIS)."""
-        return shutil.which("ogr2ogr") or "ogr2ogr"
+        """QGIS's own ogr2ogr (next to QGIS first, then PATH; checked once it
+        runs, see utils.gdal_tools)."""
+        return gdal_tools.find_tool("ogr2ogr")
 
     def _cpu_num(self) -> int:
         return max(1, int((cpu_count() or 1) * self.cpu_percent / 100))
@@ -659,7 +664,7 @@ class GDALTilesGenerator:
     def _run_ogr2ogr(self, vrt_path: str, output: str, min_zoom: int, max_zoom: int,
                      conf_path: Optional[str] = None):
         """Execute ogr2ogr to convert the VRT to MBTiles."""
-        env = os.environ.copy()
+        env = gdal_tools.tool_env()
         env["GDAL_NUM_THREADS"] = str(self._cpu_num())
         cmd = self._ogr2ogr_command(vrt_path, output, min_zoom, max_zoom, conf_path,
                                     buffer=self._buffer())
@@ -1213,7 +1218,7 @@ class GDALTilesGenerator:
         tracker = TileProgress(costs, reporting=True)
         cpu = self._cpu_num()
         slots = max(1, min(len(commands), cpu))
-        env = os.environ.copy()
+        env = gdal_tools.tool_env()
         env["GDAL_NUM_THREADS"] = str(max(1, cpu // slots))
         waiting = sorted(range(len(commands)), key=lambda j: -costs[j])
         running: Dict[int, Tuple[subprocess.Popen, _OutputReader, _OutputReader]] = {}

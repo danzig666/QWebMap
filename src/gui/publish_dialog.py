@@ -480,6 +480,14 @@ class PublishDialog(QDialog):
         form.addRow(tr("Minimum tile zoom"), self.e_min_zoom)
         form.addRow(tr("Maximum tile zoom"), self.e_max_zoom)
         form.addRow(tr("Maximum browser zoom (overzoom)"), self.e_max_view)
+        scales = QPushButton(tr("Use web zoom scales in QGIS…"))
+        scales.setToolTip(tr(
+            "Sets this project's scale list (the scale box, and the scale limits of rules and labels) "
+            "to the scales of the web map's zoom levels: a scale limit picked from it starts or ends "
+            "exactly at a zoom level."))
+        scales.clicked.connect(self.use_web_zoom_scales)
+        self.e_zoom_scales = scales
+        form.addRow("", scales)
         self.e_limit_extent = QCheckBox(tr("Keep the web map on the extent (no panning or zooming away)"))
         # Extent: the map view at each export (asked before it), a layer's
         # extent (follows the layer) or a fixed area (drawn, or the view
@@ -1329,6 +1337,42 @@ class PublishDialog(QDialog):
         if box.isEmpty():
             return self.profile.view.extent
         return [box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum()]
+
+    def web_zoom_scales(self) -> list:
+        """The QGIS scale denominators of web zooms 0-22 for this project
+        (its CRS and the published area's latitude, as the export converts)."""
+        from ..core.fidelity.zoom import zoom_scales  # pylint: disable=import-outside-toplevel
+        from ..publishing.zoom_load import zoom_scale_factor  # pylint: disable=import-outside-toplevel
+        try:
+            extent = self._current_extent_3857()
+        except Exception:  # noqa: BLE001 - no map view
+            extent = None
+        box = QgsRectangle(*extent) if extent else QgsRectangle(0, 0, 0, 0)
+        return zoom_scales(zoom_scale_factor(self.project, box))
+
+    def use_web_zoom_scales(self, _checked=False, ask: bool = True) -> bool:
+        """The project's scale list set to the web zooms' scales (asks before
+        replacing a scale list of the project's own)."""
+        values = self.web_zoom_scales()
+        settings = self.project.viewSettings()
+        own = [float(v) for v in settings.mapScales()] if settings.useProjectScales() else []
+        if ask and own and sorted(own) != sorted(float(v) for v in values):
+            answer = QMessageBox.question(
+                self, tr("Web zoom scales"),
+                tr("This project has its own scale list ({} scales). Replace it with the scales of the "
+                   "web map's zoom levels?").format(len(own)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+        settings.setMapScales([float(v) for v in values])
+        settings.setUseProjectScales(True)
+        self.project.setDirty(True)
+        crs = self.project.crs()
+        self.status.setText(tr("The project's scales are now those of web zooms 0–22 (1:{} … 1:{}){}.").format(
+            f"{values[0]:,}".replace(",", "\u202f"), f"{values[-1]:,}".replace(",", "\u202f"),
+            "" if crs.authid() in ("EPSG:3857", "EPSG:900913") else
+            tr(", for the published area's latitude in this project's CRS")))
+        return True
 
     def _extent_layer(self):
         """The layer whose extent is published, if that mode is set and the layer exists."""

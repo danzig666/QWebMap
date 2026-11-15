@@ -143,6 +143,8 @@ mark { background: #f6e27a; color: #1d2418; }
 </li><li>
 <strong>Maximum browser zoom (overzoom)</strong> — How far visitors can zoom in (0–24). Default 22.
 </li><li>
+<strong>Use web zoom scales in QGIS…</strong> — Sets the project's scale list (QGIS's scale box, and the scale limits of rules and labels) to the scales of web zooms 0–22, for this project's CRS and the published area. A scale limit picked from this list starts or ends exactly at a zoom level. Asks before replacing a scale list the project already has. For Web Mercator (EPSG:3857) projects the same list is in <code>resources/web_zoom_scales.xml</code> (QGIS: Settings → Options → Map Tools → Predefined scales → Import).
+</li><li>
 <strong>Extent</strong> — The area to publish. <strong>Current map view (at each export)</strong> (the default): whatever the QGIS map shows when you export. <strong>Extent of a layer</strong>: follows the chosen layer when its data changes. <strong>Fixed area (drawn or frozen)</strong>: a fixed rectangle.
 </li><li>
 <strong>Show on map</strong> — Briefly outlines the area that will be published on the QGIS map.

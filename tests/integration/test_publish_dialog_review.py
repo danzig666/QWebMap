@@ -7,7 +7,7 @@ map view (and asks before the export like it)."""
 import json
 import time
 
-from qgis.core import QgsProject
+from qgis.core import QgsProject, QgsRectangle
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtWidgets import QMessageBox
 
@@ -165,4 +165,37 @@ def test_local_only_shows_no_upload_fields_cost_or_approval(plugin, monkeypatch,
     dialog.refresh_review()
     text = dialog.review.toPlainText()
     assert "Cost:" not in text and "no approval is needed" in text and dialog.approve.isHidden()
+    dialog.close()
+
+
+def test_web_zoom_scales_become_the_projects_scale_list(plugin, monkeypatch, tmp_path):
+    """The button sets the project's scales to the web zooms' (for its CRS:
+    an EOV project gets other numbers than Web Mercator), asking before it
+    replaces a list of the project's own; each is read back as its zoom."""
+    from qgis.core import QgsCoordinateReferenceSystem  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core.fidelity import zoom as zm  # pylint: disable=import-error,import-outside-toplevel
+    from q2vt_plugin.src.publishing.zoom_load import zoom_scale_factor  # pylint: disable=import-error,import-outside-toplevel
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    project = QgsProject.instance()
+    project.setCrs(QgsCoordinateReferenceSystem("EPSG:23700"))
+    dialog.profile.view.extent_mode, dialog.profile.view.extent = "fixed", [2119000, 6019000, 2123000, 6023000]
+    settings = project.viewSettings()
+    settings.setMapScales([1000.0, 5000.0])
+    settings.setUseProjectScales(True)
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: asked.append(a[2]) or QMessageBox.StandardButton.No)
+    assert not dialog.use_web_zoom_scales()
+    assert asked and sorted(settings.mapScales()) == [1000.0, 5000.0]
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    assert dialog.use_web_zoom_scales() and settings.useProjectScales()
+    scales = sorted(settings.mapScales(), reverse=True)
+    assert len(scales) == 23
+    factor = zoom_scale_factor(project, QgsRectangle(*dialog.profile.view.extent))
+    assert abs(scales[0] - factor) <= 0.5 and scales[0] < zm.WEB_MERCATOR_TOP_SCALE  # EOV at ~47.5°
+    zm.configure(factor)
+    try:
+        assert [zm.interval_from_scales(s, 0).min_zoom for s in scales] == list(range(23))
+    finally:
+        zm.configure(zm.WEB_MERCATOR_TOP_SCALE)
     dialog.close()

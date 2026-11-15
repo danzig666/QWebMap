@@ -69,15 +69,34 @@ def scale_to_zoom(scale: float) -> float:
     return math.log2(TOP_SCALE / scale)
 
 
+def zoom_scales(top_scale: Optional[float] = None, max_zoom: int = MAX_TILE_ZOOM) -> list:
+    """QGIS scale denominators of the web zooms 0..``max_zoom`` (whole
+    numbers, as a QGIS scale list holds them) for a project whose zoom 0
+    is at ``top_scale`` (default: this export's)."""
+    top = TOP_SCALE if top_scale is None else float(top_scale)
+    return [max(1, round(top / 2.0 ** z)) for z in range(max_zoom + 1)]
+
+
+def _scale_zoom(scale: float) -> float:
+    """scale_to_zoom, a zoom's scale rounded to a whole number (a QGIS
+    scale list, zoom_scales) read as that zoom: 1:1066 is zoom 19 exactly,
+    not 19.0004 (which tiled zoom 19 for a layer hidden from it on)."""
+    zoom = scale_to_zoom(scale)
+    nearest = round(zoom)
+    if abs(zoom_to_scale(nearest) - scale) <= 0.5 + 1e-9:
+        return float(nearest)
+    return zoom
+
+
 def interval_from_scales(minimum_scale: float, maximum_scale: float,
                          floor_zoom: float = 0.0) -> ZoomInterval:
     """Visibility interval of a QGIS scale range (0 = unbounded)."""
     low = floor_zoom
     if minimum_scale and minimum_scale > 0:
-        low = max(floor_zoom, scale_to_zoom(minimum_scale))
+        low = max(floor_zoom, _scale_zoom(minimum_scale))
     high: Optional[float] = None
     if maximum_scale and maximum_scale > 0:
-        high = scale_to_zoom(maximum_scale)
+        high = _scale_zoom(maximum_scale)
     interval = ZoomInterval(_snap(low), None if high is None else _snap(high))
     return interval
 
