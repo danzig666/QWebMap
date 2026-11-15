@@ -3435,6 +3435,124 @@ class QgisMapLibreStyleExporter:
             return None
         return ["match", ["to-string", ["get", fields[0]]], *cases, ["literal", [font]]]
 
+    def _html_run_formats(self, layer_def: dict, text_format, source_layer: str, dataset: str) -> None:
+        """An HTML label's sections (``fidelity.html_labels``) with each run's
+        colour and font: ``text-color`` from its colour field (the label's
+        colour without one), ``text-font`` from its font key (family, bold,
+        italic: the font stack QGIS draws, its glyphs built too). Runs with a
+        background colour are drawn without it (reported)."""
+        layout = layer_def.get("layout") or {}
+        field = layout.get("text-field")
+        if not (isinstance(field, list) and field and field[0] == "format"):
+            return
+        found = self._html_run_values(source_layer)
+        if found is None:
+            return
+        colors, keys, flags = found
+        fonts = None
+        if keys:
+            default = layout.get("text-font")
+            if isinstance(default, list) and default and all(isinstance(f, str) for f in default):
+                default = ["literal", default]
+            cases = []
+            for key in keys:
+                name = self._html_run_font(text_format, key)
+                if name and ["literal", [name]] != default:
+                    self.glyphs.setdefault(name, [])
+                    if dataset not in self.glyphs[name]:
+                        self.glyphs[name].append(dataset)
+                    cases += [key, ["literal", [name]]]
+            if cases:
+                fonts = cases + [default]
+        color = None
+        if colors:
+            color = (layer_def.get("paint") or {}).get("text-color")
+            if color is None or '"zoom"' in json.dumps(color):
+                # (a section's options are per feature, not per zoom)
+                rgba = text_format.color()
+                color = f"rgba({rgba.red()}, {rgba.green()}, {rgba.blue()}, {round(rgba.alphaF(), 3)})"
+        if color is not None or fonts:
+            layout["text-field"] = html_labels.format_expression(color, fonts)
+        if flags & html_labels.FLAG_BACKGROUND:
+            self.context.report(
+                "Q2VT_LABEL_APPROXIMATE",
+                "HTML label text with a background colour: drawn without the background.")
+        if flags & html_labels.FLAG_TRUNCATED:
+            self.context.report(
+                "Q2VT_LABEL_APPROXIMATE",
+                f"HTML label with more than {html_labels.MAX_SECTIONS} differently formatted "
+                "pieces: the rest of its text takes the last piece's formatting.")
+
+    def _html_run_values(self, source_layer: str):
+        """(any run colour, distinct run font keys, OR of the label flags) of
+        an exported dataset; None when it cannot be read."""
+        from osgeo import ogr  # pylint: disable=import-outside-toplevel
+        dataset = ogr.Open(join(self.utils_dir, f"{source_layer}.gpkg"))
+        if dataset is None:
+            return None
+        layer = dataset.GetLayer(0)
+        names = {layer.GetLayerDefn().GetFieldDefn(i).GetName()
+                 for i in range(layer.GetLayerDefn().GetFieldCount())}
+        table = layer.GetName().replace('"', '""')
+        sections = range(html_labels.MAX_SECTIONS)
+        color_fields = [f for f in (html_labels.COLOR_FIELD.format(i) for i in sections) if f in names]
+        font_fields = [f for f in (html_labels.FONT_FIELD.format(i) for i in sections) if f in names]
+
+        def query(sql):
+            result = dataset.ExecuteSQL(sql)
+            if result is None:
+                return []
+            try:
+                return [feature.GetField(0) for feature in result]
+            finally:
+                dataset.ReleaseResultSet(result)
+        colors = bool(color_fields) and bool(query(
+            f'SELECT 1 FROM "{table}" WHERE ' +
+            " OR ".join(f'"{f}" IS NOT NULL' for f in color_fields) + " LIMIT 1"))
+        keys = []
+        if font_fields:
+            union = " UNION ".join(f'SELECT "{f}" AS k FROM "{table}" WHERE "{f}" IS NOT NULL'
+                                   for f in font_fields)
+            keys = sorted({str(k) for k in query(f"SELECT DISTINCT k FROM ({union}) LIMIT "
+                                                 f"{self.MAX_VARIANTS + 1}") if k})
+            if len(keys) > self.MAX_VARIANTS:
+                self.context.report(
+                    "Q2VT_LABEL_APPROXIMATE",
+                    f"HTML labels with more than {self.MAX_VARIANTS} fonts: their text uses the "
+                    "label's font.")
+                keys = []
+        flags = 0
+        if html_labels.FLAGS_FIELD in names:
+            for value in query(f'SELECT DISTINCT "{html_labels.FLAGS_FIELD}" FROM "{table}" '
+                               f'WHERE "{html_labels.FLAGS_FIELD}" IS NOT NULL'):
+                flags |= int(value or 0)
+        return colors, keys, flags
+
+    @staticmethod
+    def _html_run_font(text_format, key: str) -> Optional[str]:
+        """The font stack of an HTML run: the label's font with the run's
+        family (if installed, else the label's, as Qt falls back), bold and
+        italic."""
+        from qgis.core import QgsFontUtils  # pylint: disable=import-outside-toplevel
+        family, bold, italic = html_labels.font_key_parts(key)
+        changed = QgsTextFormat(text_format)
+        qfont = QFont(changed.font())
+        if family and QgsFontUtils.fontFamilyOnSystem(family):
+            qfont.setFamily(family)
+            qfont.setStyleName("")
+        if bold is not None or italic is not None:
+            qfont.setStyleName("")  # the weight / slant chosen, not a named face
+        if bold is not None:
+            qfont.setBold(bold)
+            if hasattr(changed, "setForcedBold"):
+                changed.setForcedBold(bold)
+        if italic is not None:
+            qfont.setItalic(italic)
+            if hasattr(changed, "setForcedItalic"):
+                changed.setForcedItalic(italic)
+        changed.setFont(qfont)
+        return TextPropertyExtractor.get_text_font(changed)
+
     @staticmethod
     def _style_base(style_name: str) -> str:
         """A rule's style name without the zoom band suffix of its sprites."""
@@ -5756,6 +5874,7 @@ class QgisMapLibreStyleExporter:
             "text-translate": translate or TextPropertyExtractor.get_text_translate(),
             "text-translate-anchor": TextPropertyExtractor.get_text_translate_anchor(),
         })
+        self._html_run_formats(layer_def, text_format, source_layer_name, dataset)
         self._apply_label_mask(layer_def, text_format, label_settings)
 
         # Deep-copy label settings to avoid mutating the caller's object.

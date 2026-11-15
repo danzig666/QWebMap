@@ -4811,13 +4811,21 @@ class RulesExporter:
             filter_exp = label_case.edge_spaces_kept(filter_exp)
         fields.append((10, filter_exp, field_name))
         if settings.format().allowHtmlFormatting():
-            # MapLibre has no markup: text sections with their own scale.
+            # MapLibre has no markup: text sections (runs of one formatting)
+            # with their own scale, colour and font.
             html_labels.register_expression_functions()
+            base = _format_points(settings.format())
+            base = repr(base) if base else "NULL"
             for index in range(html_labels.MAX_SECTIONS):
                 fields.append((10, f"q2vt_html_text({filter_exp}, {index})",
                                html_labels.TEXT_FIELD.format(index)))
-                fields.append((6, f"q2vt_html_scale({filter_exp}, {index})",
+                fields.append((6, f"q2vt_html_scale({filter_exp}, {index}, {base})",
                                html_labels.SCALE_FIELD.format(index)))
+                fields.append((10, f"q2vt_html_color({filter_exp}, {index})",
+                               html_labels.COLOR_FIELD.format(index)))
+                fields.append((10, f"q2vt_html_font({filter_exp}, {index})",
+                               html_labels.FONT_FIELD.format(index)))
+            fields.append((2, f"q2vt_html_flags({filter_exp})", html_labels.FLAGS_FIELD))
         settings.isExpression = False
         settings.fieldName = field_name
         return fields
@@ -5559,6 +5567,19 @@ def vertex_characters(text, html: bool = False) -> List[str]:
 
 
 _VERTEX_FUNCTIONS: list = []
+
+
+def _format_points(text_format) -> Optional[float]:
+    """The label's size in points (an HTML run's ``font-size`` is absolute:
+    its scale is relative to this); None for map units."""
+    try:
+        size, unit = float(text_format.size()), text_format.sizeUnit()
+    except (AttributeError, TypeError, ValueError):
+        return None
+    name = getattr(unit, "name", None) or {0: "Millimeters", 1: "MapUnits", 2: "Pixels",
+                                            4: "Points", 5: "Inches"}.get(int(unit), "")
+    factor = {"Points": 1.0, "Millimeters": 72.0 / 25.4, "Pixels": 0.75, "Inches": 72.0}.get(name)
+    return size * factor if factor and size > 0 else None
 
 
 def _register_vertex_functions() -> None:
