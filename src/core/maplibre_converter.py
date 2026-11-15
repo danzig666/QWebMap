@@ -5766,6 +5766,16 @@ class QgisMapLibreStyleExporter:
             background.setMarkerSymbol(background.markerSymbol().clone())
         label_format.setBackground(background)
         label_settings.setFormat(label_format)
+        framed = background.enabled()
+        wide = self._wide_buffer_background(label_format, label_settings, layer_def["layout"])
+        if wide is not None:
+            # A wide buffer as QGIS draws it: a rounded box behind the text
+            # (a halo this wide fills each glyph's box).
+            background = wide
+            label_format.setBackground(wide)
+            label_settings.setFormat(label_format)
+            layer_def["paint"]["text-halo-width"] = 0
+            layer_def.setdefault("metadata", {})["q2vt:wide-buffer"] = True
 
         if background.enabled():
             self._apply_icon_from_background(layer_def, background, style_name, label_settings)
@@ -5784,8 +5794,7 @@ class QgisMapLibreStyleExporter:
                         total, layer_def["layout"].get("icon-size", 1)))
         else:
             self._apply_default_icon_props(layer_def)
-        self._apply_point_callout(layer_def, label_settings, style_name, em_size, pinned,
-                                  background.enabled())
+        self._apply_point_callout(layer_def, label_settings, style_name, em_size, pinned, framed)
 
         if not pinned and TextPropertyExtractor.overlap_if_required(label_settings):
             # Avoids other labels; the viewer still draws it where it cannot
@@ -6360,9 +6369,79 @@ class QgisMapLibreStyleExporter:
         rgba = lambda c: (c.red(), c.green(), c.blue(), c.alpha())  # noqa: E731
         one, meta = frame_image(kind, rgba(fill), rgba(stroke), stroke_px, radius_px, density, fixed)
         two, _ = frame_image(kind, rgba(fill), rgba(stroke), stroke_px, radius_px, 2 * density, fixed)
+        symbol = self._background_fill_symbol(background, stroke_px)
+        if symbol is not None and not isinstance(stroke_px, (tuple, list)):
+            # QGIS draws the shape with the background's whole fill symbol
+            # (all its layers: a second outline, a pattern...), not only the
+            # first layer's colours: drawn by QGIS in the same frame image.
+            drawn = [self._frame_from_symbol(symbol, kind, image.size, ratio, stroke_px, radius_px)
+                     for image, ratio in ((one, density), (two, 2 * density))]
+            if all(image is not None for image in drawn):
+                one, two = drawn
         name = self._next_name("frame")
         self.pattern_images[name] = PatternImages(one, two, meta, density)
         return name
+
+    @staticmethod
+    def _background_fill_symbol(background, stroke_px):
+        """The background's fill symbol when it is more than one plain fill
+        (its colours alone are drawn exactly by frame_image), its first
+        layer's outline set to ``stroke_px`` (a per-zoom frame's own width);
+        None otherwise."""
+        from qgis.core import QgsSimpleFillSymbolLayer  # pylint: disable=import-outside-toplevel
+        try:
+            symbol = background.fillSymbol()
+        except AttributeError:
+            return None
+        if symbol is None or symbol.symbolLayerCount() == 0:
+            return None
+        first = symbol.symbolLayer(0)
+        plain = (symbol.symbolLayerCount() == 1 and isinstance(first, QgsSimpleFillSymbolLayer)
+                 and _enum_int(first.brushStyle(), 1) in (0, 1) and _enum_int(first.strokeStyle(), 1) in (0, 1)
+                 and (first.paintEffect() is None or not first.paintEffect().enabled())
+                 and not first.dataDefinedProperties().hasActiveProperties()
+                 and symbol.opacity() >= 1.0)
+        if plain:
+            return None
+        symbol = symbol.clone()
+        first = symbol.symbolLayer(0)
+        if isinstance(first, QgsSimpleFillSymbolLayer) and not isinstance(stroke_px, (tuple, list)):
+            from .sprite_generator import _PX_PER_MM  # pylint: disable=import-outside-toplevel
+            first.setStrokeWidth(max(float(stroke_px or 0.0), 0.0) / _PX_PER_MM)
+            first.setStrokeWidthUnit(Qgis.RenderUnit.Millimeters)
+        return symbol
+
+    @staticmethod
+    def _frame_from_symbol(symbol, kind: str, size, ratio: float, stroke_px, radius_px):
+        """``symbol`` drawn in the frame shape filling an image of ``size``
+        (device px at ``ratio``), its outline centred on the shape as QGIS
+        strokes it (half the stroke inside the image edge, as frame_image
+        draws it), the corners rounded by ``radius_px`` at the outline."""
+        from .sprite_generator import render_ring  # pylint: disable=import-outside-toplevel
+        width, height = size[0] / ratio, size[1] / ratio
+        inset = max(float(stroke_px or 0.0), 0.0) / 2.0
+        x0, y0, x1, y1 = inset, inset, width - inset, height - inset
+        if x1 - x0 <= 0 or y1 - y0 <= 0:
+            return None
+        ring = []
+        if kind == "ellipse":
+            cx, cy, rx, ry = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2
+            ring = [(cx + rx * math.cos(2 * math.pi * i / 96), cy + ry * math.sin(2 * math.pi * i / 96))
+                    for i in range(96)]
+        else:
+            radius = min(max(float(radius_px or 0.0), 0.0), (x1 - x0) / 2, (y1 - y0) / 2)
+            corners = ((x1 - radius, y0 + radius, -90), (x1 - radius, y1 - radius, 0),
+                       (x0 + radius, y1 - radius, 90), (x0 + radius, y0 + radius, 180))
+            for cx, cy, start in corners:
+                steps = 12 if radius > 0 else 1
+                for i in range(steps + 1 if radius > 0 else 1):
+                    angle = math.radians(start + 90 * i / max(steps, 1))
+                    ring.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+        ring.append(ring[0])
+        image = render_ring(symbol, ring, int(round(width)), int(round(height)), ratio)
+        if image is None or image.size != tuple(size):
+            return None if image is None else image.resize(tuple(size))
+        return image
 
     def _frame_variants(self, background, label_settings, base: str, source_layer: str,
                         zoom: Optional[float] = None, stroke_px: Optional[float] = None,
@@ -6608,6 +6687,78 @@ class QgisMapLibreStyleExporter:
         layer_def["layout"].update({"icon-image": name, "icon-text-fit": "both",
                                     "icon-text-fit-padding": [0, 0, 0, 0], "icon-allow-overlap": True,
                                     "icon-ignore-placement": True, "icon-rotation-alignment": "viewport"})
+
+    # A MapLibre halo reaches at most about 1/4 em (the glyphs' SDF holds
+    # 6 px outside the letters at 24 px, glyphs_generator): wider, it fills
+    # each glyph's box (a boxy halo). From 1/5 em of reach beyond the
+    # letters a QGIS buffer is drawn as a rounded box behind the text.
+    WIDE_BUFFER_EM = 0.2
+    # QGIS's text box (ascent + descent) sits lower than the letters: the
+    # box of a wide buffer is that much shorter and moved up (measured
+    # against QGIS renders of words with and without descenders, ±2 px).
+    WIDE_BUFFER_SHORTER_EM = 0.225
+    WIDE_BUFFER_UP_EM = 0.175
+
+    def _wide_buffer_background(self, text_format, label_settings, layout: dict):
+        """A QGIS background drawing the label's buffer as the rounded box
+        QGIS's wide buffer becomes (reach = half the buffer size beyond the
+        letters, corners as round as that reach), or None: no buffer, a
+        buffer a halo draws (narrower than WIDE_BUFFER_EM), a background
+        already, data-defined buffer or text size, a shadow or callout,
+        line placement, or sizes whose ratio changes with the zoom."""
+        from qgis.core import QgsTextBackgroundSettings  # pylint: disable=import-outside-toplevel
+        from qgis.PyQt.QtCore import QPointF, QSizeF  # pylint: disable=import-outside-toplevel
+        buffer = text_format.buffer()
+        if not buffer.enabled() or text_format.background().enabled() or \
+                text_format.shadow().enabled() or layout.get("symbol-placement", "point") != "point":
+            return None
+        callout = label_settings.callout() if hasattr(label_settings, "callout") else None
+        if callout is not None and callout.enabled():
+            return None
+        props = label_settings.dataDefinedProperties()
+        for key in ("BufferSize", "BufferColor", "BufferOpacity", "BufferDraw", "BufferUnit", "Size",
+                    "FontSizeUnit", "BufferJoinStyle"):
+            prop = props.property(getattr(QgsPalLayerSettings.Property, key, None)) \
+                if getattr(QgsPalLayerSettings.Property, key, None) is not None else None
+            if prop is not None and prop.isActive():
+                return None
+        text_unit, unit = text_format.sizeUnit(), buffer.sizeUnit()
+        size = float(text_format.size() or 0.0)
+        reach = float(buffer.size() or 0.0) / 2.0
+        if size <= 0 or reach <= 0:
+            return None
+        if _enum_int(unit) == _enum_int(Qgis.RenderUnit.Percentage):
+            reach, unit = size * float(buffer.size()) / 200.0, text_unit
+        elif _enum_int(unit) != _enum_int(text_unit):
+            if _is_map_unit(unit) or _is_map_unit(text_unit):
+                return None  # the ratio changes with the zoom
+            per = PropertyExtractor.static_pixels(1.0, unit)
+            if not per:
+                return None
+            size = PropertyExtractor.static_pixels(size, text_unit) / per  # in the buffer's unit
+        if reach < self.WIDE_BUFFER_EM * size:
+            return None
+        frame = QgsTextBackgroundSettings()
+        frame.setEnabled(True)
+        frame.setType(QgsTextBackgroundSettings.ShapeType.ShapeRectangle)
+        frame.setSizeType(QgsTextBackgroundSettings.SizeType.SizeBuffer)
+        if _is_map_unit(unit):
+            # (icon-offset is a constant: no shift; the box is shortened at
+            # both ends instead.)
+            shorter, up = self.WIDE_BUFFER_SHORTER_EM + self.WIDE_BUFFER_UP_EM / 2, 0.0
+        else:
+            shorter, up = self.WIDE_BUFFER_SHORTER_EM, self.WIDE_BUFFER_UP_EM
+        frame.setSize(QSizeF(reach, max(0.0, reach - shorter * size)))
+        frame.setSizeUnit(unit)
+        frame.setRadii(QSizeF(reach, reach))
+        frame.setRadiiUnit(unit)
+        frame.setOffset(QPointF(0.0, -up * size))
+        frame.setOffsetUnit(unit)
+        frame.setFillColor(buffer.color())
+        frame.setStrokeColor(buffer.color())
+        frame.setStrokeWidth(0.0)
+        frame.setOpacity(buffer.opacity())
+        return frame
 
     def _apply_icon_from_background(self, layer_def: dict, background, style_name: str,
                                     label_settings=None):
