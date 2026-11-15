@@ -362,6 +362,9 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
     // when such a group needs them.
     let otherBoxes = null;
     const others = () => (otherBoxes ??= renderedLabelBoxes(map, maplibregl, groups, zoom, perPx, fonts));
+    // Point symbols that are label obstacles in QGIS: every group avoids them.
+    let obstacleList = null;
+    const obstacles = () => (obstacleList ??= renderedObstacleBoxes(map, maplibregl, zoom, perPx));
     const zoom = map.getZoom();
     for (const [polygons, group] of ranked) {
       if (!states.has(polygons)) states.set(polygons, newLabelState());
@@ -389,7 +392,7 @@ export function enableVisibleLabels(map, maplibregl, sourceId = "q2vt_tiles", op
         // Line, "around point" and "pole" labels keep clear of the point
         // labels MapLibre draws itself (a town name): drawn with text-overlap
         // "always", they would otherwise sit on top of them.
-        avoid: avoidFor(group, placed, others),
+        avoid: avoidFor(group, placed, others, obstacles),
         kind: group.kind || "polygon", orient: group.orient || "horizontal",
         degraded: Boolean(group.degraded), overlap: group.overlap || null, perPart: Boolean(group.perPart),
         level: Boolean(group.level),
@@ -3046,9 +3049,26 @@ function textSections(field, zoom, properties) {
 // The boxes a group's labels keep clear of: those placed before them and,
 // for line, "around point" and "pole" (Horizontal / Free) labels, the point
 // labels MapLibre draws (a park's name keeps clear of a place name in it).
-export function avoidFor(group, placed, others) {
+// Every group keeps clear of the point symbols that are label obstacles in
+// QGIS (``obstacles``; ``others`` holds them too).
+export function avoidFor(group, placed, others, obstacles = () => []) {
   return group.kind === "line" || group.around || group.anchor === "pole"
-    ? placed.concat(others()) : placed.slice();
+    ? placed.concat(others()) : placed.concat(obstacles());
+}
+
+// World boxes of the point symbols that keep labels off them (their
+// invisible obstacle copies, metadata q2vt:obstacle-of).
+export function renderedObstacleBoxes(map, maplibregl, zoom, perPx) {
+  const layers = styleLayers(map).filter((l) => l.type === "symbol"
+    && (l.metadata || {})["q2vt:obstacle-of"]).map((l) => l.id);
+  if (!layers.length) return [];
+  const boxes = [];
+  for (const f of map.queryRenderedFeatures({ layers })) {
+    if (f.geometry.type !== "Point") continue;
+    const box = obstacleBox(map, maplibregl, f, zoom, perPx);
+    if (box) boxes.push(box);
+  }
+  return boxes;
 }
 
 // World boxes of the point labels MapLibre draws from the other symbol
@@ -3059,13 +3079,22 @@ export function renderedLabelBoxes(map, maplibregl, groups, zoom, perPx, fonts) 
   for (const group of groups.values()) {
     for (const { def } of group.layers) ours.add(def.id).add(def.id + OVERLAP_SUFFIX);
   }
+  // Point symbols that keep labels off them (QGIS "Features act as
+  // obstacles"): the invisible obstacle copies of their icons (metadata
+  // q2vt:obstacle-of), boxes of the icon's image at its size.
+  const isObstacle = (l) => Boolean((l.metadata || {})["q2vt:obstacle-of"]);
   const defs = new Map(styleLayers(map).filter((l) => l.type === "symbol" && !ours.has(l.id)
-    && map.getLayoutProperty(l.id, "text-field") !== undefined).map((l) => [l.id, l]));
+    && (isObstacle(l) || map.getLayoutProperty(l.id, "text-field") !== undefined)).map((l) => [l.id, l]));
   const layers = [...defs.keys()];
   if (!layers.length) return [];
   const boxes = [];
   for (const f of map.queryRenderedFeatures({ layers })) {
     if (f.geometry.type !== "Point") continue;  // labels along lines: their position is unknown here
+    if (isObstacle(defs.get(f.layer.id) || f.layer)) {
+      const box = obstacleBox(map, maplibregl, f, zoom, perPx);
+      if (box) boxes.push(box);
+      continue;
+    }
     // A rendered feature's ``layer.layout`` is MapLibre's evaluation for
     // that feature (its own text, size and offset, whatever the expression:
     // case, format...): each label is measured on its own. The metadata
@@ -3090,6 +3119,29 @@ export function renderedLabelBoxes(map, maplibregl, groups, zoom, perPx, fonts) 
     boxes.push([p.x + dx - half[0], p.y + dy - half[1], p.x + dx + half[0], p.y + dy + half[1]]);
   }
   return boxes;
+}
+
+// World box of a point symbol's obstacle icon (its image at icon-size,
+// centred on the point, moved by icon-translate); null without the image.
+export function obstacleBox(map, maplibregl, f, zoom, perPx) {
+  const layout = f.layer.layout || {};
+  const value = layout["icon-image"];
+  const name = typeof value === "string" ? value : value && value.name;
+  const image = name ? (map.style && map.style.getImage ? map.style.getImage(name) : null)
+    || (map.getImage ? map.getImage(name) : null) : null;
+  const data = image && image.data;
+  if (!data || !data.width) return null;
+  const ratio = Number(image.pixelRatio) || 1;
+  const size = Number(evaluate(layout["icon-size"] ?? 1, zoom, f.properties)) || 1;
+  const hx = (data.width / ratio) * size / 2 * perPx, hy = (data.height / ratio) * size / 2 * perPx;
+  const p = maplibregl.MercatorCoordinate.fromLngLat(f.geometry.coordinates);
+  let dx = 0, dy = 0;
+  const translate = evaluate((f.layer.paint || {})["icon-translate"], zoom, f.properties);
+  if (Array.isArray(translate)) {
+    dx = (Number(translate[0]) || 0) * perPx;
+    dy = (Number(translate[1]) || 0) * perPx;
+  }
+  return [p.x + dx - hx, p.y + dy - hy, p.x + dx + hx, p.y + dy + hy];
 }
 
 function grow([x0, y0, x1, y1], dx, dy) {
