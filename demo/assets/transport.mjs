@@ -1,0 +1,191 @@
+// Transport binding for published QWebMap maps.
+//
+// The manifest is the authority: the style file on disk carries the vector
+// source without tile URLs; here each manifest source is bound to an
+// absolute URL (PMTiles archive through the official pmtiles protocol, or
+// an XYZ MVT template), stale tiles/url entries are removed, and relative
+// sprite/glyph URLs are resolved against the style URL without losing
+// {placeholders}. Only vector sources are accepted.
+
+export const MVT_TILE_TYPE = 1; // pmtiles TileType.Mvt
+export const RASTER_TILE_TYPES = ["png", "jpeg", "webp"];
+const IMAGE_TILE_TYPE = { png: 2, jpeg: 3, webp: 4 }; // pmtiles TileType
+
+const NON_VECTOR = new Set(["raster", "raster-dem", "image", "video", "canvas"]);
+
+export class ViewerError extends Error {
+  constructor(code, message, detail = "") {
+    super(message);
+    this.code = code;
+    this.detail = detail;
+  }
+}
+
+export function resolveUrl(relative, base) {
+  return new URL(relative, base).href;
+}
+
+// Resolve a URL template ("glyphs/{fontstack}/{range}.pbf",
+// "data/tiles/{z}/{x}/{y}.pbf") against base, keeping the placeholders
+// literal (new URL() would percent-encode the braces).
+export function resolveTemplate(template, base) {
+  const brace = template.indexOf("{");
+  if (brace < 0) return resolveUrl(template, base);
+  const slash = template.lastIndexOf("/", brace);
+  const head = slash < 0 ? "./" : template.slice(0, slash + 1);
+  return resolveUrl(head, base) + template.slice(slash + 1);
+}
+
+export function checkRelative(path, what) {
+  if (typeof path !== "string" || !path || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("/")
+      || path.split("/").includes("..") || path.includes("\\")) {
+    throw new ViewerError("Q2VT_PUB_PATH_UNSAFE", `${what}: unsafe path ${String(path).slice(0, 80)}`);
+  }
+  return path;
+}
+
+let protocol = null;
+
+// Register the pmtiles:// protocol once (before the map is created).
+export function registerPmtiles(maplibregl) {
+  if (protocol) return protocol;
+  const pm = globalThis.pmtiles;
+  if (!pm || !pm.Protocol) {
+    throw new ViewerError("Q2VT_PUB_DEPENDENCY", "The PMTiles reader (assets/vendor/pmtiles.js) did not load.");
+  }
+  protocol = new pm.Protocol({ metadata: true });
+  maplibregl.addProtocol("pmtiles", protocol.tile);
+  return protocol;
+}
+
+// Open each PMTiles archive once, share it with the protocol and check its
+// header: MVT tiles, readable over HTTP ranges.
+export async function openArchives(manifest, manifestUrl, maplibregl) {
+  const archives = {};
+  // Every archive's header requested at once (one round trip, not one per
+  // archive); checked in the manifest's order, so the first problem is reported.
+  const opened = manifest.sources.filter((source) => source.kind === "pmtiles").map((source) => {
+    const url = resolveUrl(checkRelative(source.href, "source"), manifestUrl);
+    const archive = new globalThis.pmtiles.PMTiles(url);
+    const header = archive.getHeader();
+    header.catch(() => {});  // reported below, in order
+    return { source, url, archive, header };
+  });
+  for (const { source, url, archive, header: pending } of opened) {
+    const proto = registerPmtiles(maplibregl);
+    let header;
+    try {
+      header = await pending;
+    } catch (error) {
+      const text = String(error && error.message || error);
+      if (/byte serving|content-length|range/i.test(text)) {
+        throw new ViewerError("Q2VT_PUB_RANGE_UNSUPPORTED", "The web server does not support HTTP range requests needed for the map data.", text);
+      }
+      if (/magic|version|invalid/i.test(text)) {
+        throw new ViewerError("Q2VT_PUB_PMTILES_INVALID", "The map data archive is damaged or not a PMTiles v3 file.", text);
+      }
+      throw new ViewerError("Q2VT_PUB_FETCH", "The map data could not be loaded (network, CORS or missing file).", text);
+    }
+    const expected = source.role === "raster" ? IMAGE_TILE_TYPE[source.tileType] : MVT_TILE_TYPE;
+    if (header.tileType !== expected) {
+      throw new ViewerError("Q2VT_PUB_NOT_MVT", source.role === "raster"
+        ? `The raster layer archive ${source.id} does not hold ${source.tileType} images.`
+        : "The map data archive does not contain vector tiles.", `tileType ${header.tileType}`);
+    }
+    proto.add(archive);
+    archives[source.id] = { archive, header, url };
+  }
+  // Terrain-RGB heights (manifest.terrain): PNG tiles, added by threed.mjs.
+  const terrain = manifest.terrain;
+  if (terrain && terrain.kind === "pmtiles") {
+    const proto = registerPmtiles(maplibregl);
+    const url = resolveUrl(checkRelative(terrain.href, "terrain"), manifestUrl);
+    const archive = new globalThis.pmtiles.PMTiles(url);
+    // Optional: a missing or unreadable terrain leaves the map without relief
+    // (controls.mjs says so), never without the map.
+    try {
+      const header = await archive.getHeader();
+      if (header.tileType !== IMAGE_TILE_TYPE.png) throw new Error(`tileType ${header.tileType}, not PNG heights`);
+      proto.add(archive);
+      archives.__terrain = { archive, header, url };
+    } catch (error) {
+      manifest.terrain = null;
+      manifest.terrainError = String((error && error.message) || error);
+    }
+  }
+  return archives;
+}
+
+// The tile size a raster archive's source declares to MapLibre: it only
+// picks which tile zoom is loaded (round(zoom + log2(512 / tileSize))), the
+// tiles are drawn on their own area. Smaller by the screen's pixel ratio and
+// by ~1.4 (just under half a zoom level), the loaded tiles are never
+// enlarged: never coarser than the screen's pixels between zoom levels and on
+// scaled screens, where QGIS draws the image at the screen's resolution
+// (at most two times finer, shrunk).
+export function sharpTileSize(tileSize, pixelRatio) {
+  const ratio = Math.max(1, Number(pixelRatio) || 1);
+  return Math.max(32, Math.floor((tileSize || 256) / (ratio * 1.4)));
+}
+
+// Bind the manifest's sources into the style object (in place) and resolve
+// sprite/glyph URLs. Returns the style. ``pixelRatio``: the map's (see
+// sharpTileSize).
+export function bindStyle(style, manifest, manifestUrl, styleUrl, { pixelRatio = 1 } = {}) {
+  if (!style || style.version !== 8 || typeof style.sources !== "object") {
+    throw new ViewerError("Q2VT_PUB_STYLE", "The map style is not a valid MapLibre style.");
+  }
+  // Raster sources only for the QGIS raster layers' own image archives.
+  const rasterIds = new Set(manifest.sources.filter((s) => s.role === "raster").map((s) => s.id));
+  for (const live of manifest.liveRasters || []) rasterIds.add(live.id);
+  for (const [id, source] of Object.entries(style.sources)) {
+    if (source.type === "raster" && rasterIds.has(id)) continue;
+    if (NON_VECTOR.has(source.type) || source.type === "geojson") {
+      throw new ViewerError("Q2VT_PUB_RASTER_SOURCE", `Source "${id}" is not a vector tile source; this viewer only draws vector tiles.`);
+    }
+  }
+  for (const binding of manifest.sources) {
+    const source = style.sources[binding.id];
+    const type = binding.role === "raster" ? "raster" : "vector";
+    if (!source || source.type !== type) {
+      throw new ViewerError("Q2VT_PUB_STYLE", `The style has no ${type} source "${binding.id}".`);
+    }
+    delete source.tiles;
+    delete source.url;
+    const href = checkRelative(binding.href, "source");
+    if (binding.kind === "pmtiles") {
+      source.url = "pmtiles://" + resolveUrl(href, manifestUrl);
+    } else if (binding.kind === "xyz") {
+      source.tiles = [resolveTemplate(href, manifestUrl)];
+    } else {
+      throw new ViewerError("Q2VT_PUB_STYLE", `Unknown source kind "${binding.kind}".`);
+    }
+    source.minzoom = binding.minTileZoom;
+    source.maxzoom = binding.maxTileZoom;
+    if (binding.bounds) source.bounds = binding.bounds;
+    if (type === "raster") source.tileSize = sharpTileSize(source.tileSize, pixelRatio);
+  }
+  // Raster layers loaded live from their own tile / WMS server.
+  for (const live of manifest.liveRasters || []) {
+    const source = style.sources[live.id];
+    if (!source || source.type !== "raster") {
+      throw new ViewerError("Q2VT_PUB_STYLE", `The style has no raster source "${live.id}".`);
+    }
+    delete source.url;
+    source.tiles = live.tiles.filter((u) => typeof u === "string" && u.startsWith("https://"));
+    source.scheme = live.scheme === "tms" ? "tms" : "xyz";
+    source.tileSize = live.tileSize || 256;
+    source.minzoom = live.minTileZoom;
+    source.maxzoom = live.maxTileZoom;
+    if (live.bounds) source.bounds = live.bounds;
+  }
+  if (typeof style.sprite === "string" && !/^[a-z]+:/i.test(style.sprite)) {
+    style.sprite = resolveUrl(checkRelative(style.sprite, "sprite"), styleUrl);
+  } else if (Array.isArray(style.sprite)) {
+    style.sprite = style.sprite.map((s) => ({ ...s, url: /^[a-z]+:/i.test(s.url) ? s.url : resolveUrl(checkRelative(s.url, "sprite"), styleUrl) }));
+  }
+  if (typeof style.glyphs === "string" && !/^[a-z]+:/i.test(style.glyphs)) {
+    style.glyphs = resolveTemplate(checkRelative(style.glyphs, "glyphs"), styleUrl);
+  }
+  return style;
+}
