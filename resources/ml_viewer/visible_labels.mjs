@@ -3059,8 +3059,10 @@ export function renderedLabelBoxes(map, maplibregl, groups, zoom, perPx, fonts) 
   for (const group of groups.values()) {
     for (const { def } of group.layers) ours.add(def.id).add(def.id + OVERLAP_SUFFIX);
   }
+  // (Not a label's invisible stand-in below its own zoom: q2vt:hidden-below.)
   const defs = new Map(styleLayers(map).filter((l) => l.type === "symbol" && !ours.has(l.id)
-    && map.getLayoutProperty(l.id, "text-field") !== undefined).map((l) => [l.id, l]));
+    && map.getLayoutProperty(l.id, "text-field") !== undefined
+    && !(zoom < (l.metadata?.["q2vt:hidden-below"] ?? -Infinity))).map((l) => [l.id, l]));
   const layers = [...defs.keys()];
   if (!layers.length) return [];
   const boxes = [];

@@ -63,3 +63,22 @@ def test_viewer_start_zoom_fits_the_export_extent():
     assert fit_zoom(19723, 15351, 13, 17) == 13      # never below the exported zooms
     assert fit_zoom(19723, 15351, 0, 10) == 10       # nor above
     assert fit_zoom(40075016, 40075016, 0, 17) < 1   # the whole world
+
+
+def test_stand_ins_for_datasets_first_appearing_at_a_zoom():
+    """A dataset first appearing at zoom N is also written into the tiles of
+    N - 1; not one taking over from another of its layer and rule type that
+    ends at N - 1 (per-zoom copies, the next scale range: that one is drawn
+    on), not at the archive's first zoom, not excluded datasets."""
+    zooms = {"base": (10, 18), "buildings": (14, 18), "labels": (15, 18),
+             "road_z12": (12, 12), "road_z13": (13, 13), "detail": (13, 18), "clusters": (14, 18)}
+    roles = {"base": {("parcels", 0)}, "buildings": {("buildings", 0)}, "labels": {("buildings", 1)},
+             "road_z12": {("roads", 0)}, "road_z13": {("roads", 0)}, "detail": {("parcels", 0)},
+             "clusters": {("stops", 0)}}
+    got = zm.stand_in_zooms(zooms, roles, excluded={"clusters"})
+    assert got["buildings"] == (13, 18) and got["labels"] == (14, 18)
+    assert got["road_z12"] == (11, 12)       # the roads first appear at 12
+    assert got["road_z13"] == (13, 13)       # takes over from road_z12 (ends at 12)
+    assert got["detail"] == (12, 18)         # parcels' base goes on: an addition, not a takeover
+    assert got["base"] == (10, 18)           # the archive's first zoom
+    assert got["clusters"] == (14, 18)

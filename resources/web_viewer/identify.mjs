@@ -10,7 +10,7 @@
 // the base symbols.
 import { BackEntry } from "./backstack.mjs";
 import { t, formatNumber } from "./i18n.mjs";
-import { matchesFilters } from "./style_control.mjs";
+import { hiddenAt, matchesFilters } from "./style_control.mjs";
 import { WmsInfo } from "./wms_info.mjs";
 import { notice } from "./diagnostics.mjs";
 
@@ -83,7 +83,8 @@ export class Identify {
     const ids = [];
     for (const [styleId, component] of this.control.owner) {
       if (!component.interactive && component.role !== "label") continue;
-      if (this.map.getLayer(styleId) && this.map.getLayoutProperty(styleId, "visibility") !== "none") ids.push(styleId);
+      if (this.map.getLayer(styleId) && this.map.getLayoutProperty(styleId, "visibility") !== "none"
+          && !hiddenAt(this.map, styleId)) ids.push(styleId);
     }
     return ids;
   }

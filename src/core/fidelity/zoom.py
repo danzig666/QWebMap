@@ -128,3 +128,33 @@ def note_tile_zooms(style: dict, layer_zooms: Dict[str, Tuple[int, int]], source
         if layer_def.get("source") == source_name and zooms is not None:
             layer_def.setdefault("metadata", {})["q2vt:tiles"] = [int(zooms[0]), int(zooms[1])]
     style.setdefault("metadata", {})["q2vt:tiles-max-zoom"] = max(high for _, high in layer_zooms.values())
+
+
+def stand_in_zooms(zooms: Dict[str, Tuple[int, int]], roles: Dict[str, set],
+                   excluded: set) -> Dict[str, Tuple[int, int]]:
+    """``zooms`` (dataset -> inclusive tile zooms) with the datasets that
+    first appear at a zoom N also written into the tiles of N - 1: their
+    stand-in data, drawn while the tiles of N load after a fast zoom-in
+    (publishing.zoom_bridge hides it below N).
+
+    ``roles``: dataset -> its (QGIS layer, rule type) pairs. A dataset taking
+    over from another of the same role that ends at N - 1 (a rule of the
+    next scale range, a symbol's per-zoom copy) gets none: that one is drawn
+    on from its own tiles meanwhile (it would be drawn twice). Not before
+    the archive's first zoom, nor for ``excluded`` datasets (point clusters
+    and displacement, grouped per zoom; labels the viewer places itself)."""
+    if not zooms:
+        return dict(zooms)
+    first = min(low for low, _ in zooms.values())
+    ends = {}
+    for name, (_, high) in zooms.items():
+        for role in roles.get(name, ()):
+            ends.setdefault(role, set()).add(high)
+    out = dict(zooms)
+    for name, (low, high) in zooms.items():
+        if low <= first or name in excluded or not roles.get(name):
+            continue
+        if any(low - 1 in ends.get(role, ()) for role in roles[name]):
+            continue
+        out[name] = (low - 1, high)
+    return out
