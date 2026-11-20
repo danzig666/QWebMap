@@ -20,14 +20,17 @@ servers are not enough. This server:
   leading out) and never serves directory listings;
 * answers only requests addressed to it (Host 127.0.0.1 / localhost) and
   sends no CORS headers unless asked, so other web pages cannot read it;
-* records requests (path, status, bytes sent) for tests and diagnostics.
+* records the last requests (path, status, bytes sent) for tests and
+  diagnostics.
 
 ``PreviewServer`` runs in a daemon thread; ``stop()`` (or plugin unload via
 ``stop_all()``) closes the socket.
 """
 
+import collections
 import os
 import re
+import socket
 import threading
 import urllib.parse
 from email.utils import formatdate
@@ -212,6 +215,15 @@ class _Server(ThreadingHTTPServer):
     request_queue_size = 64
 
 
+class _Server6(_Server):
+    address_family = socket.AF_INET6
+
+
+# The request log is bounded: a preview tab left open for hours fetches
+# tiles without end.
+REQUEST_LOG = 10000
+
+
 class PreviewServer:
     """``with PreviewServer(folder) as server: open(server.url("index.html"))``."""
 
@@ -230,11 +242,11 @@ class PreviewServer:
     def start(self) -> "PreviewServer":
         # A deeper accept queue than socketserver's 5: tiles are fetched in
         # bursts (zoom animations abort and reopen connections).
-        httpd = _Server((self.host, self.port), _Handler)
+        httpd = (_Server6 if self.host == "::1" else _Server)((self.host, self.port), _Handler)
         httpd.daemon_threads = True
         httpd.root = self.root  # type: ignore[attr-defined]
         httpd.cors = self.cors  # type: ignore[attr-defined]
-        httpd.requests = []  # type: ignore[attr-defined]
+        httpd.requests = collections.deque(maxlen=REQUEST_LOG)  # type: ignore[attr-defined]
         httpd.lock = threading.Lock()  # type: ignore[attr-defined]
         self.httpd = httpd
         self.port = httpd.server_address[1]
@@ -245,7 +257,8 @@ class PreviewServer:
 
     def url(self, path: str = "") -> str:
         quoted = "/".join(urllib.parse.quote(part) for part in path.split("/"))
-        return f"http://{self.host}:{self.port}/{quoted}"
+        host = f"[{self.host}]" if ":" in self.host else self.host
+        return f"http://{host}:{self.port}/{quoted}"
 
     @property
     def requests(self) -> List[dict]:

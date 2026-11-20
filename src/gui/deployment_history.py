@@ -80,7 +80,11 @@ class DeploymentHistoryDialog(QDialog):
         self.refresh()
 
     def retention(self):
-        plan = retention_plan(self.provider, self.profile.destination.retention)
+        try:
+            plan = retention_plan(self.provider, self.profile.destination.retention)
+        except PublishingError as error:  # network or permissions: said, not a Python error
+            QMessageBox.warning(self, tr("Retention"), error.message)
+            return
         if not plan:
             QMessageBox.information(self, tr("Retention"), tr("Nothing to delete."))
             return

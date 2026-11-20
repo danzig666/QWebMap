@@ -1,9 +1,11 @@
 """
 S3-compatible object storage provider (boto3/botocore).
 
-* SDK: the QGIS Python's own boto3 when installed, else the pinned vendored
-  copy (src/publishing/vendor/s3, appended at the *end* of sys.path so other
-  plugins' packages keep precedence). Explicit credentials only: the SDK
+* SDK: the QGIS Python's own boto3 when installed and new enough for
+  conditional writes, else the pinned vendored copy (src/publishing/vendor/s3:
+  boto3/botocore/s3transfer from there as a whole; its other packages are
+  appended at the *end* of sys.path so other plugins' packages keep
+  precedence). Explicit credentials only: the SDK
   never falls back to ambient credentials (environment, ~/.aws, instance
   roles). TLS certificates are always verified.
 * Immutable release objects are created with ``If-None-Match: *`` where the
@@ -17,6 +19,7 @@ S3-compatible object storage provider (boto3/botocore).
 """
 
 import gzip
+import importlib.machinery
 import json
 import os
 import re
@@ -52,37 +55,99 @@ MAX_PARTS = 10000
 _SDK_LOCK = threading.Lock()
 
 
+_SDK = None
+_SDK_PACKAGES = ("boto3", "botocore", "s3transfer")
+
+
+def _from_vendor(module) -> bool:
+    path = getattr(module, "__file__", None) or ""
+    return os.path.realpath(path).startswith(os.path.realpath(VENDOR) + os.sep)
+
+
+def _has_conditional_writes() -> bool:
+    """Whether the importable botocore knows If-Match/If-None-Match on
+    PutObject and CompleteMultipartUpload (late 2024, botocore 1.35.x): an
+    older one rejects them client-side, and every release write fails."""
+    try:
+        from botocore.loaders import create_loader  # pylint: disable=import-outside-toplevel
+        shapes = create_loader().load_service_model("s3", "service-2")["shapes"]
+        return {"IfMatch", "IfNoneMatch"} <= set(shapes["PutObjectRequest"]["members"]) \
+            and "IfNoneMatch" in shapes["CompleteMultipartUploadRequest"]["members"]
+    except Exception:  # noqa: BLE001 - any doubt: the vendored copy
+        return False
+
+
+class _VendorFinder:
+    """Finds boto3/botocore/s3transfer in the vendored copy only (their
+    submodules follow the package); every other package (urllib3, dateutil,
+    ...) still comes from the system first."""
+    q2vt_vendor = VENDOR
+
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if path is None and name in _SDK_PACKAGES:
+            return importlib.machinery.PathFinder.find_spec(name, [VENDOR])
+        return None
+
+
+def _load_sdk():
+    try:
+        import boto3  # pylint: disable=import-outside-toplevel
+        import botocore  # noqa: F401  pylint: disable=import-outside-toplevel,unused-import
+        # Both: a VENDOR left on sys.path (an in-session upgrade) can give
+        # the vendored boto3 over a system botocore.
+        if (_from_vendor(boto3) and _from_vendor(botocore)) or _has_conditional_writes():
+            return boto3
+    except Exception:  # noqa: BLE001 - a mixed pair can fail with any error (AttributeError)
+        pass
+    # Missing, partial (a system botocore without boto3) or too old: the
+    # vendored SDK as a whole, never its boto3 over another botocore. This
+    # swaps the SDK for the whole QGIS process: a plugin that already holds
+    # the old modules keeps them, but its later imports (and the ClientError
+    # they raise) are the vendored ones. No private copy is possible: boto3
+    # imports itself and botocore by absolute name.
+    for name in [n for n in sys.modules if n.split(".")[0] in _SDK_PACKAGES]:
+        if not _from_vendor(sys.modules[name]):
+            del sys.modules[name]
+    if not any(getattr(f, "q2vt_vendor", None) == VENDOR for f in sys.meta_path):
+        sys.meta_path.insert(0, _VendorFinder())
+    if VENDOR not in sys.path:
+        sys.path.append(VENDOR)  # its dependencies, when the system has none
+    try:
+        import boto3  # pylint: disable=import-outside-toplevel,redefined-outer-name
+    except ImportError as error:
+        raise PublishingError("Q2VT_PUB_DEPENDENCY",
+                              f"The S3 library could not be loaded: {error}") from error
+    return boto3
+
+
 def sdk():
-    """(boto3, botocore.config.Config, botocore.exceptions) — system first."""
+    """(boto3, botocore.config.Config, botocore.exceptions): the system SDK
+    when it can do conditional writes, else the vendored one."""
+    global _SDK  # pylint: disable=global-statement
     with _SDK_LOCK:
-        try:
-            import boto3  # pylint: disable=import-outside-toplevel
-        except ImportError:
-            if VENDOR not in sys.path:
-                sys.path.append(VENDOR)
-            try:
-                import boto3  # pylint: disable=import-outside-toplevel
-            except ImportError as error:
-                raise PublishingError("Q2VT_PUB_DEPENDENCY",
-                                      f"The S3 library could not be loaded: {error}") from error
-        from botocore.config import Config  # pylint: disable=import-outside-toplevel
-        from botocore import exceptions  # pylint: disable=import-outside-toplevel
-        return boto3, Config, exceptions
+        if _SDK is None:
+            boto3 = _load_sdk()
+            from botocore.config import Config  # pylint: disable=import-outside-toplevel
+            from botocore import exceptions  # pylint: disable=import-outside-toplevel
+            _SDK = boto3, Config, exceptions
+        return _SDK
 
 
 def sdk_versions() -> dict:
     boto3, _, _ = sdk()
     import botocore  # pylint: disable=import-outside-toplevel
     return {"boto3": boto3.__version__, "botocore": botocore.__version__,
-            "vendored": os.path.dirname(os.path.dirname(boto3.__file__)) == VENDOR}
+            "vendored": _from_vendor(boto3)}
 
 
-RETRYABLE_CODES = {"RequestTimeout", "RequestTimeTooSkewed", "SlowDown", "Throttling",
+RETRYABLE_CODES = {"RequestTimeout", "SlowDown", "Throttling", "OperationAborted",
                    "ThrottlingException", "InternalError", "ServiceUnavailable",
                    "TooManyRequests", "503", "500", "502", "504", "429"}
 CREDENTIAL_CODES = {"AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch",
                     "ExpiredToken", "InvalidToken", "Unauthorized", "403", "401"}
-CONFLICT_CODES = {"PreconditionFailed", "412", "ConditionalRequestConflict", "409"}
+# Not a bare 409: OperationAborted (409) is a transient clash, not a publisher.
+CONFLICT_CODES = {"PreconditionFailed", "412", "ConditionalRequestConflict"}
 
 
 class S3Provider(Provider):
@@ -112,8 +177,16 @@ class S3Provider(Provider):
 
     # -- client ------------------------------------------------------------------------
     def client_config(self, Config):  # noqa: N803 - botocore class
-        return Config(signature_version="s3v4", retries={"max_attempts": 1, "mode": "standard"},
-                      connect_timeout=20, read_timeout=120, s3={"addressing_style": "path"})
+        base = dict(signature_version="s3v4", retries={"max_attempts": 1, "mode": "standard"},
+                    connect_timeout=20, read_timeout=120, s3={"addressing_style": "path"})
+        # botocore 1.36+ sends a CRC32 (aws-chunked) on every upload by
+        # default; many S3-compatible services (R2, older MinIO/Ceph, B2,
+        # Wasabi, ...) reject it. Only where an operation requires one.
+        try:
+            return Config(**base, request_checksum_calculation="when_required",
+                          response_checksum_validation="when_required")
+        except TypeError:  # older botocore without these options (and without the default)
+            return Config(**base)
 
     @property
     def client(self):
@@ -144,9 +217,15 @@ class S3Provider(Provider):
         code, status = self._code(error)
         name = type(error).__name__
         text = self._redact(f"{name}: {code or ''} {status or ''} {error}")
-        if code in CONFLICT_CODES or str(status) in CONFLICT_CODES:
+        # The error code first: a status is ambiguous (RequestTimeTooSkewed
+        # comes as 403, OperationAborted as 409).
+        if code == "RequestTimeTooSkewed":
+            return ProviderError("Q2VT_PUB_UPLOAD", "The storage refused the request because this "
+                                 "computer's clock is wrong; set the date and time (automatically) "
+                                 "and try again.", detail=text)
+        if code in CONFLICT_CODES or (not code and status == 412):
             return ProviderError("Q2VT_PUB_ACTIVATION_CONFLICT", "The object changed meanwhile.", detail=text)
-        if code in CREDENTIAL_CODES or str(status) in CREDENTIAL_CODES:
+        if code in CREDENTIAL_CODES or (code not in RETRYABLE_CODES and status in (401, 403)):
             return ProviderError("Q2VT_PUB_CREDENTIALS", "The storage refused the credentials or "
                                  "the key has no permission for this bucket/prefix.", detail=text)
         if code in ("NoSuchBucket",):
@@ -237,11 +316,13 @@ class S3Provider(Provider):
             return same
         return response.get("ETag", "")
 
-    def _already_there(self, error, relative: str, sha256: str, size: int) -> Optional[str]:
-        """After a precondition failure on a create: the object's ETag when it
-        is this very content (a retry of a write whose answer was lost: the
-        first attempt stored it), else None."""
-        if error.code != "Q2VT_PUB_ACTIVATION_CONFLICT" or not sha256:
+    def _already_there(self, error, relative: str, sha256: str, size: int,
+                       gone: bool = False) -> Optional[str]:
+        """After a precondition failure on a create (or ``gone``: a completed
+        multipart upload no longer found): the object's ETag when it is this
+        very content (a retry of a write whose answer was lost: the first
+        attempt stored it), else None."""
+        if (error.code != "Q2VT_PUB_ACTIVATION_CONFLICT" and not gone) or not sha256:
             return None
         existing = self.head(relative)
         if existing and (existing.get("metadata") or {}).get("sha256") == sha256 \
@@ -373,7 +454,10 @@ class S3Provider(Provider):
         try:
             response = self._call("complete_multipart_upload", **params)
         except PublishingError as error:
-            same = self._already_there(error, relative, sha256, size)
+            # A retried completion whose first answer was lost: 412 (the
+            # object exists) or NoSuchUpload (the upload id is used up).
+            gone = self._code(error.__cause__)[0] == "NoSuchUpload"
+            same = self._already_there(error, relative, sha256, size, gone)
             if same is None:
                 raise
             response = {"ETag": same}
