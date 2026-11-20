@@ -440,7 +440,7 @@ def test_nested_rules_get_unique_ids(flattener):
     with quality classes 1-8 under each use) had the same rule number at
     their depth: one id and one dataset for several rules, and duplicate
     style layer ids that stopped the web map from loading."""
-    from qgis.core import QgsFillSymbol, QgsRuleBasedRenderer, QgsSymbol
+    from qgis.core import QgsFillSymbol, QgsRuleBasedRenderer
     root = QgsRuleBasedRenderer.Rule(None)
     for zone, colour in (("K1", "255,0,0"), ("K2", "0,255,0")):
         parent = QgsRuleBasedRenderer.Rule(QgsFillSymbol.createSimple({"color": colour}),
@@ -867,6 +867,31 @@ def test_zoom_level_variables_are_the_zoom_of_the_map_scale(flattener):
         assert drawn == colors, zoom
 
 
+@pytest.mark.parametrize("filter_text", ["level_1 <= @zoom_level", '"level_1" <= @zoom_level',
+                                         '"rank" -5 <= @zoom_level'])
+def test_a_field_compared_with_the_zoom_level_switches_at_its_value(flattener, filter_text):
+    """level_1 = 10 (rank = 15): QGIS draws the feature from zoom level 10.
+    The digits of an unquoted field or a signed operand were read as a
+    scale threshold: one piece with @zoom_level bound near 1, never drawn."""
+    from qgis.core import QgsFeature, QgsFillSymbol, QgsGeometry, QgsRuleBasedRenderer, QgsVectorLayer
+    layer = QgsVectorLayer("Polygon?crs=EPSG:3857&field=id:integer&field=level_1:integer"
+                           "&field=rank:integer", "lv", "memory")
+    feature = QgsFeature(layer.fields())
+    feature.setAttributes([1, 10, 15])
+    feature.setGeometry(QgsGeometry.fromWkt("POLYGON((0 0, 100 0, 100 100, 0 0))"))
+    layer.dataProvider().addFeatures([feature])
+    root = QgsRuleBasedRenderer.Rule(None)
+    root.appendChild(QgsRuleBasedRenderer.Rule(QgsFillSymbol.createSimple({"color": "red"}),
+                                               0, 0, filter_text))
+    layer.setRenderer(QgsRuleBasedRenderer(root))
+    reset_project(layer)
+    rules, _ = flattener(0, 16)
+    # As the quoted field: split per zoom, drawn from zoom 10.
+    for zoom, expected in ((8.5, []), (10.5, [[1]]), (15.0, [[1]])):
+        drawn = [_matches(r, layer) for r in _fills(_shown_at(rules, zoom))]
+        assert [d for d in drawn if d] == expected, zoom
+
+
 def test_heatmap_intensity_goes_on_beyond_the_last_tile_zoom(flattener):
     """An automatic-maximum heatmap is rescaled per zoom up to the style's
     last zoom, 24 (its stops ended at the last tile zoom: washed out when
@@ -885,6 +910,124 @@ def test_heatmap_intensity_goes_on_beyond_the_last_tile_zoom(flattener):
     rules, _ = flattener(10, 16)
     stops = dict(rules[0].heatmap["intensity_stops"])
     assert min(stops) == 10 and max(stops) == 24
+
+
+@pytest.mark.parametrize("expression,active", [
+    ("aggregate('other', 'sum', \"pop\")", True),
+    ("aggregate(layer:='other', aggregate:='sum', expression:=\"pop\", filter:=\"pop\" > 1)", True),
+    ("aggregate('other', 'sum', \"pop\") + \"pop\"", False)])
+def test_a_property_aggregating_another_layer_keeps_its_fields(flattener, expression, active):
+    """aggregate('other', 'sum', "pop") reads "pop" on the other layer: QGIS
+    evaluates it. It was switched off as reading a field the layer lacks."""
+    from qgis.core import (QgsFeature, QgsGeometry, QgsMarkerSymbol, QgsProperty,
+                           QgsSingleSymbolRenderer, QgsSymbolLayer, QgsVectorLayer)
+    layer = QgsVectorLayer("Point?crs=EPSG:3857&field=id:integer", "A", "memory")
+    feature = QgsFeature(layer.fields())
+    feature.setAttributes([1])
+    feature.setGeometry(QgsGeometry.fromWkt("POINT(0 0)"))
+    layer.dataProvider().addFeatures([feature])
+    symbol = QgsMarkerSymbol.createSimple({"size": "2"})
+    symbol.symbolLayer(0).setDataDefinedProperty(QgsSymbolLayer.Property.PropertySize,
+                                                 QgsProperty.fromExpression(expression))
+    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+    other = QgsVectorLayer("Point?crs=EPSG:3857&field=pop:double", "other", "memory")
+    reset_project(layer, other)
+    rules, diags = flattener(0, 10, layer_ids={layer.id()})
+    prop = rules[0].rule.symbol().symbolLayer(0).dataDefinedProperties().property(
+        QgsSymbolLayer.Property.PropertySize)
+    assert prop.isActive() is active
+    assert bool(diags.by_code("Q2VT_DDP_MISSING_FIELD")) is not active
+
+
+@pytest.mark.parametrize("hidden_by", ["layer", "web limits"])
+def test_diagrams_follow_the_layer_scale_range_and_web_limits(flattener, hidden_by):
+    """A layer shown from 1:10000 draws no diagram zoomed out in QGIS; its
+    diagrams were exported from zoom 0 (and web-only limits ignored)."""
+    from qgis.core import (QgsDiagramLayerSettings, QgsDiagramSettings, QgsFeature, QgsGeometry,
+                           QgsMarkerSymbol, QgsPieDiagram, QgsSingleCategoryDiagramRenderer,
+                           QgsSingleSymbolRenderer, QgsVectorLayer)
+    from qgis.PyQt.QtCore import QSizeF
+    from qgis.PyQt.QtGui import QColor
+    layer = QgsVectorLayer("Point?crs=EPSG:3857&field=a:double&field=b:double", "p", "memory")
+    feature = QgsFeature(layer.fields())
+    feature.setAttributes([1.0, 2.0])
+    feature.setGeometry(QgsGeometry.fromWkt("POINT(0 0)"))
+    layer.dataProvider().addFeatures([feature])
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsMarkerSymbol.createSimple({})))
+    options = {}
+    if hidden_by == "layer":
+        layer.setScaleBasedVisibility(True)
+        layer.setMinimumScale(10000.0)
+        layer.setMaximumScale(0.0)
+    settings = QgsDiagramSettings()
+    settings.categoryAttributes = ['"a"', '"b"']
+    settings.categoryColors = [QColor("red"), QColor("blue")]
+    settings.size = QSizeF(5, 5)
+    renderer = QgsSingleCategoryDiagramRenderer()
+    renderer.setDiagram(QgsPieDiagram())
+    renderer.setDiagramSettings(settings)
+    layer.setDiagramRenderer(renderer)
+    layer.setDiagramLayerSettings(QgsDiagramLayerSettings())
+    reset_project(layer)
+    if hidden_by == "web limits":
+        options["scale_limits"] = {layer.id(): (10000.0, 0.0)}
+    rules, _ = flattener(0, 16, **options)
+    [diagram] = [r for r in rules if r.diagram]
+    assert diagram.visibility.min_zoom == pytest.approx(zm.scale_to_zoom(10000.0))
+
+
+def _heatmap_points(crs, radius, unit):
+    """2000 points over 5 km at latitude 45 in ``crs`` with a heatmap; the
+    project in that CRS."""
+    import random
+    from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsFeature,
+                           QgsGeometry, QgsHeatmapRenderer, QgsPointXY, QgsProject, QgsVectorLayer)
+    target = QgsCoordinateReferenceSystem(crs)
+    to_crs = QgsCoordinateTransform(QgsCoordinateReferenceSystem("EPSG:3857"), target,
+                                    QgsProject.instance())
+    layer = QgsVectorLayer(f"Point?crs={crs}", "pts", "memory")
+    chance = random.Random(4)
+    features = []
+    for _ in range(2000):
+        feature = QgsFeature()
+        feature.setGeometry(QgsGeometry.fromPointXY(to_crs.transform(QgsPointXY(
+            chance.uniform(0, 7000), 5621521 + chance.uniform(0, 7000)))))
+        features.append(feature)
+    layer.dataProvider().addFeatures(features)
+    heatmap = QgsHeatmapRenderer()
+    heatmap.setRadius(radius)
+    heatmap.setRadiusUnit(unit)
+    layer.setRenderer(heatmap)
+    reset_project(layer)
+    QgsProject.instance().setCrs(target)
+    return layer
+
+
+def test_heatmap_density_in_a_geographic_project_is_that_of_a_mercator_one(flattener):
+    """The same points in EPSG:4326: densities were counted with a radius in
+    metres over coordinates in degrees (the whole layer in one kernel, a
+    heatmap drawn hundreds of times too faint)."""
+    from qgis.core import Qgis
+    stops = {}
+    for crs in ("EPSG:3857", "EPSG:4326"):
+        _heatmap_points(crs, 3, Qgis.RenderUnit.Millimeters)
+        rules, _ = flattener(12, 16)
+        stops[crs] = dict(rules[0].heatmap["intensity_stops"])
+    for zoom in (12, 14, 16):
+        assert stops["EPSG:4326"][zoom] == pytest.approx(stops["EPSG:3857"][zoom], rel=0.05)
+    assert stops["EPSG:4326"][16] > 3 * stops["EPSG:4326"][12]
+
+
+def test_heatmap_map_unit_radius_in_degrees_becomes_mercator_pixels(flattener):
+    """A radius of 0.01 degrees: about 1113 Mercator units, not 0.01 'metres'
+    (an invisible heatmap)."""
+    from qgis.core import Qgis
+    from fidelity.heatmap import map_units_per_css_px
+    _heatmap_points("EPSG:4326", 0.01, Qgis.RenderUnit.MapUnits)
+    rules, _ = flattener(12, 16)
+    radius = dict(rules[0].heatmap["radius_stops"])
+    assert radius[0] == pytest.approx(0.01 * 40075016.68557849 / 360 / map_units_per_css_px(0),
+                                      rel=1e-6)
 
 
 def test_scale_switched_marker_interval_switches_beyond_the_last_tile_zoom(flattener):

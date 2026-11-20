@@ -10,7 +10,7 @@ import re
 from typing import Optional
 
 from qgis.core import (Qgis, QgsExpression, QgsProperty, QgsPropertyDefinition, QgsSymbol,
-                       QgsSymbolLayerUtils)
+                       QgsSymbolLayerUtils, QgsTextFormat)
 
 from ..utils.config import QVariant
 from ..utils.qt_compat import enum_int
@@ -233,6 +233,18 @@ class DataDefinedPropertiesFetcher:
     def _collect_from(self, obj, prop_defs):
         """Extract active DDP entries from obj and append to results."""
         props = obj.dataDefinedProperties()
+        if isinstance(obj, QgsTextFormat):
+            # format() is a copy: a field ref set on it never reached the
+            # label, and the style does not read a format's own properties.
+            for key in sorted(props.propertyKeys()):
+                prop = props.property(key)
+                if prop and prop.isActive() and self._diagnostics is not None:
+                    self._diagnostics.add(
+                        "Q2VT_DDP_NO_EMITTER",
+                        f"Text format data-defined property '{prop.asExpression()}' is not "
+                        "available in the web style; the static value is used.",
+                        detail=prop.asExpression())
+            return
         suffix = self._suffix if self._objects == 0 else f"{self._suffix}_{self._objects}"
         self._objects += 1
         for key in sorted(props.propertyKeys()):  # a set: fixed order across sessions
@@ -292,10 +304,12 @@ class DataDefinedPropertiesFetcher:
         return f"{cls.FIELD_PREFIX}_property_{name or 'p'}_{enum_int(key)}{suffix}"
 
     def _process_boolean_prop(self, prop, props_collection, key: int, field_name: str) -> str:
-        """Replace boolean property with a field reference; return original expression."""
+        """Replace boolean property with a field reference; return original
+        expression, with @map_scale bound as for the other kinds (no
+        exporter context sets it: Bold = @map_scale < 10000 was NULL)."""
         exp_prop = QgsProperty()
         exp_prop.setExpressionString(prop.asExpression())
-        expression = exp_prop.expressionString()
+        expression = with_map_scale(exp_prop.expressionString(), self._min_scale)
         exp_prop.setExpressionString(f'"{field_name}"')
         props_collection.setProperty(key, exp_prop)
         return expression
@@ -329,7 +343,9 @@ class DataDefinedPropertiesFetcher:
                 f"with_variable('color', \"{field_name}\", "
                 f"'#' || substr(@color,8,2) || substr(@color,2,6))"
             )
-        if "array" in expression:
+        # (The hex wrapper of a colour has arrays of its own: tested on the
+        # user's expression, else a colour was evaluated twice per feature.)
+        if not is_color and "array" in original:
             expression = f"try(array_to_string({enclosed(expression)}), {enclosed(expression)})"
 
         prop.setExpressionString(field_ref)

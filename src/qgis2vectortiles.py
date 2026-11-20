@@ -70,7 +70,7 @@ from .core.fidelity.bindings import bindings_report
 from .core.fidelity.diagnostics import (
     DiagnosticCollector, StrictModeError, render_html_report)
 from .core.fidelity.model import ExportProfile, FidelityMode, OverzoomPolicy, ZoomInterval
-from .core.fidelity.units import LengthConverter, MapUnitContext
+from .core.fidelity.units import LengthConverter, MapUnitContext, is_web_mercator
 from .core.fidelity.validation import (
     inspect_mbtiles, tile_layer_fields, validate_archive, validate_glyphs, validate_style)
 
@@ -468,7 +468,7 @@ class QGIS2VectorTiles:
 
     def _length_converter(self) -> LengthConverter:
         crs = QgsProject.instance().crs()
-        is_mercator = crs.authid() in ("EPSG:3857", "EPSG:900913")
+        is_mercator = is_web_mercator(crs)
         units = "degrees" if crs.isGeographic() else getattr(crs.mapUnits(), "name", "meters")
         context = MapUnitContext.for_project(is_mercator, str(units), self.profile.reference_latitude)
         if not context.exact:
