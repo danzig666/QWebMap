@@ -157,11 +157,17 @@ export class OverviewControl {
   // theme, another basemap). Not skipped while tiles load (isStyleLoaded()
   // is false then, and a skipped change was never applied): only before the
   // overview's own first style, which applies it on load.
+  // Closed: none (opening restyles it). Unchanged (an animated marker
+  // fires styledata every frame, its symbols not in the overview): no
+  // setStyle diff of the whole overview style every 600 ms.
   restyle() {
-    if (!this.mini || !this.ready) return;
+    if (!this.mini || !this.ready || this.box.hidden) return;
     const style = overviewStyle(this.map);
     for (const id of [EXTENT, VIEW]) if (this.mini.getSource(id)) style.sources[id] = this.mini.getSource(id).serialize();
     for (const id of [EXTENT, `${VIEW}-fill`, VIEW]) if (this.mini.getLayer(id)) style.layers.push(this.mini.getLayer(id).serialize());
+    const key = JSON.stringify(style);
+    if (key === this.styleKey) return;
+    this.styleKey = key;
     this.mini.setStyle(style, { diff: true });
   }
 

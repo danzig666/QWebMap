@@ -170,3 +170,29 @@ def test_the_viewer_reads_packed_shards_by_range(tmp_path):
         assert run(f"http://127.0.0.1:{plain.server_address[1]}/")["first"] == expected
     finally:
         plain.shutdown()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
+def test_shards_of_one_pack_loaded_together_fetch_a_range_ignoring_pack_once(tmp_path):
+    """A search loads up to 24 shards of its pack at once: each sent its own
+    range request before the first answer said the server ignores Range,
+    so each got (and read) the whole pack."""
+    manifest = build_search_index(_records(20000), {"lyr-a": ["hrsz"]}, str(tmp_path),
+                                  budget_records=5000, shard_bytes=64 * 1024)
+    shards = manifest["shards"][:6]
+    expected = [read_shard(str(tmp_path), s)["entries"][0][1] for s in shards]
+    pack = os.path.join(str(tmp_path), "index.pack")
+    script = f"""
+      import {{ readFileSync }} from "node:fs";
+      import {{ fetchShard }} from {json.dumps('file://' + os.path.join(ROOT, 'resources', 'web_viewer', 'shards.mjs'))};
+      const body = readFileSync({json.dumps(pack)});
+      let gets = 0;
+      globalThis.fetch = async () => {{  // a server ignoring Range: 200, the whole pack
+        gets++;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return new Response(body, {{ status: 200 }});
+      }};
+      const shards = {json.dumps(shards)};
+      const loaded = await Promise.all(shards.map((s) => fetchShard("http://pack.test/", s)));
+      console.log(JSON.stringify({{ gets, first: loaded.map((d) => d.entries[0][1]) }}));"""
+    assert node(script) == {"gets": 1, "first": expected}

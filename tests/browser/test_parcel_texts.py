@@ -104,6 +104,32 @@ def test_parcel_report_opens_the_zone_text(site, tmp_path):
     assert out["dirty"] == "<p>a</p>b"
 
 
+def test_zone_text_failing_twice_then_loading_leaves_no_failure_notes(site, tmp_path):
+    # Each failed opening added another "text missing" line, left above
+    # the text once it loaded.
+    out = _run(site["url"], [
+        {"eval": "q2vtViewer.map.jumpTo({ center: %s, zoom: 18 }); return 1;" % json.dumps(site["parcel"])},
+        {"idle": True}, {"clickLngLat": site["parcel"]}, {"wait": 900},
+        {"eval": """
+          let fails = 2;
+          const fetched = window.fetch;
+          window.fetch = (url, ...rest) => (String(url).includes('text-1.json') && fails-- > 0
+            ? Promise.reject(new TypeError('offline')) : fetched(url, ...rest));
+          const block = document.querySelector('#q2vt-pane-parcel details.q2vt-rich-block');
+          const notes = [];
+          for (let i = 0; i < 3; i++) {
+            block.open = true;
+            await new Promise((r) => setTimeout(r, 500));
+            notes.push(block.querySelectorAll('p.q2vt-muted').length);
+            block.open = false;
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          return { notes, rich: block.querySelectorAll('.q2vt-rich').length };
+        """},
+    ], tmp_path)[1]
+    assert out == {"notes": [1, 1, 0], "rich": 1}
+
+
 READER = """
   const pane = document.getElementById('q2vt-pane-parcel');
   const block = pane.querySelector('details.q2vt-rich-block');

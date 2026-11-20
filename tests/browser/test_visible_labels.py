@@ -207,6 +207,30 @@ def test_roomiest_point_ignores_tile_cuts():
     assert _js(f"m.roomAt([{json.dumps(u)}], [3, 4])") < 0
 
 
+def test_roomiest_point_of_a_long_thin_strip_is_fast():
+    """A river 1 px wide, 3000 long with 10000 vertices a side: the search
+    started from 3000 cells, each over every edge (25 s; now a bucket grid
+    of the edges and at most 64 cells along the long side)."""
+    out = _js("""(() => {
+      const top = [], bottom = [];
+      for (let i = 0; i <= 10000; i++) { top.push([0.3 * i, 0]); bottom.push([3000 - 0.3 * i, 1]); }
+      const start = performance.now();
+      const best = m.roomiestPoint([[...top, ...bottom]], 0.5);
+      const fat = [[0, 0], [2900, 0], [2900, -50], [3000, -50], [3000, 51], [2900, 51], [2900, 1], [0, 1]];
+      return { ms: performance.now() - start, room: best.room, fat: m.roomiestPoint([fat], 0.5).room };
+    })()""")
+    assert out["room"] == pytest.approx(0.5) and out["ms"] < 3000  # about 0.1 s
+    assert out["fat"] == pytest.approx(50, abs=0.5)  # the wide end of a thin strip
+
+
+def test_view_of_a_world_copy_is_moved_into_the_world():
+    # Dragged across the antimeridian MapLibre keeps the centre unwrapped
+    # (x 1.2): the features lie in [0, 1], the view is moved there.
+    out = _js("""m.viewRect({ getBounds: () => ({ getSouthWest: () => [1.1, 0.6], getNorthEast: () => [1.3, 0.4] }) },
+      { MercatorCoordinate: { fromLngLat: ([x, y]) => ({ x, y }) } })""")
+    assert out == pytest.approx([0.1, 0.4, 0.3, 0.6])
+
+
 def test_horizontal_labels_fit_the_screen_and_slivers_get_none():
     view = [0, 0, 0.5, 1]
     box = [0.05, 0.02]  # half width, half height (world units)
@@ -257,7 +281,26 @@ def test_style_expressions_for_label_sizes():
     data = ["*", ["to-number", ["get", "size"], 6], 2]
     assert _js(f"m.evaluate({json.dumps(data)}, 10, {{size: '3'}})") == 6
     assert _js(f"m.evaluate({json.dumps(data)}, 10, {{}})") == 12
-    assert _js(f"m.evaluate(['step', ['zoom'], 1, 10, 2, 15, 3], 12)") == 2
+    assert _js("m.evaluate(['step', ['zoom'], 1, 10, 2, 15, 3], 12)") == 2
+
+
+def test_clamped_and_guarded_label_sizes_are_evaluated():
+    """The export clamps a map-unit size between its mm limits (max / min)
+    and guards a data-defined divisor (case ==): evaluate had neither, and
+    such labels were boxed as 16 px text (MapLibre drew them at 60 px)."""
+    inner = ["*", ["to-number", ["get", "s"], 0], 2]
+    size = ["interpolate", ["exponential", 2], ["zoom"], 10, ["max", inner, 6], 20, ["min", ["*", inner, 1024], 400]]
+    assert _js(f"m.evaluate({json.dumps(size)}, 10, {{s: 10}})") == 20
+    assert _js(f"m.evaluate({json.dumps(size)}, 10, {{s: 1}})") == 6
+    assert _js(f"m.evaluate({json.dumps(size)}, 20, {{s: 10}})") == 400
+    guarded = ["case", ["==", ["get", "d"], 0], 0, ["/", 30, ["get", "d"]]]
+    assert _js(f"m.evaluate({json.dumps(guarded)}, 10, {{d: 0}})") == 0
+    assert _js(f"m.evaluate({json.dumps(guarded)}, 10, {{d: 2}})") == 15
+    match = ["match", ["get", "k"], ["a", "b"], 12, "c", 14, 10]
+    assert [_js(f"m.evaluate({json.dumps(match)}, 10, {{k: {json.dumps(k)}}})") for k in "bcx"] == [12, 14, 10]
+    layout = {"text-field": ["get", "t"], "text-size": ["max", ["*", ["get", "s"], 6], 4]}
+    box = _js(f"(() => {{ const b = m.layoutBoxes({json.dumps(layout)}, 10, 1)({{ t: '123', s: 10 }}); return b.size; }})()")
+    assert box == 60
 
 
 def test_label_boxes_use_each_characters_advance():

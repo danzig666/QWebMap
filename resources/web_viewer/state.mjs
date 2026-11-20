@@ -167,7 +167,12 @@ export function sanitizeFilters(manifest, filters) {
       let clean = null;
       if (config.kind === "values" && Array.isArray(value.values)) {
         const allowed = new Set((config.values || []).map((v) => v[0]));
-        const values = value.values.filter((v) => typeof v === "string" && (allowed.has(v) || config.complete === false)).slice(0, 200);
+        // Published values as many as checked (a shared link with more
+        // than 200 opened as another filter); others (an incomplete
+        // list's) at most 200.
+        let others = 0;
+        const values = value.values.filter((v) => typeof v === "string"
+          && (allowed.has(v) || (config.complete === false && others++ < 200)));
         if (values.length || value.nulls) clean = { values, nulls: !!value.nulls };
       } else if (config.kind === "range") {
         const min = Number.isFinite(value.min) ? value.min : null;

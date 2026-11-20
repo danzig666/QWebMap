@@ -20,7 +20,16 @@ export class Legend {
       if (this.visibleOnly) { this.dirty = true; this.map.triggerRepaint(); } else this.render();
     });
     this.onZoom = () => { if (!this.visibleOnly) this.render(); };
-    this.onIdle = () => { if (this.visibleOnly && this.dirty) { this.dirty = false; this.render(); } };
+    // Not while the legend is out of sight (another tab, the panel closed):
+    // a query of every feature drawn after each move, for nothing. Listed
+    // once it shows again (the observer).
+    this.onIdle = () => {
+      if (this.visibleOnly && this.dirty && this.shown()) { this.dirty = false; this.render(); }
+    };
+    if (typeof ResizeObserver !== "undefined") {
+      this.observer = new ResizeObserver(() => this.onIdle());
+      this.observer.observe(container);
+    }
     this.onMove = () => { this.dirty = true; };
     map.on("zoomend", this.onZoom);
     map.on("moveend", this.onMove);
@@ -36,6 +45,10 @@ export class Legend {
     this.body = el("div");
     container.append(this.head, this.body);
     this.render();
+  }
+
+  shown() {
+    return this.container.isConnected && !this.container.closest("[hidden]");
   }
 
   // {layers: Set, rules: Set} drawn in the current view (rendered features).
@@ -194,6 +207,7 @@ export class Legend {
 
   destroy() {
     this.unsubscribe();
+    if (this.observer) this.observer.disconnect();
     this.map.off("zoomend", this.onZoom);
     this.map.off("moveend", this.onMove);
     this.map.off("idle", this.onIdle);
