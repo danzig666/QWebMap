@@ -96,3 +96,75 @@ def test_helpers_accept_qt_date_and_colour_variables():
             unpickler.find_class(f"{package}.QtCore", "QProcess")
     with pytest.raises(pickle.UnpicklingError):
         unpickler.find_class("os", "system")
+
+
+def test_nested_shared_does_not_deadlock_with_a_pending_exclusive():
+    """A shared stretch calling shared() code (_size_range -> _dataset_table)
+    while the main thread waits in exclusive(): both finish."""
+    inside, pending = threading.Event(), threading.Event()
+    events = []
+
+    def tile_work():
+        with gdal_guard.shared():
+            inside.set()
+            pending.wait(timeout=5)
+            time.sleep(0.2)             # exclusive() is waiting for this stretch
+            with gdal_guard.shared():
+                events.append("nested")
+        events.append("tile")
+
+    worker = threading.Thread(target=tile_work, daemon=True)  # (a deadlock fails, not hangs)
+    worker.start()
+    inside.wait(timeout=5)
+    pending.set()
+    done = threading.Event()
+
+    def render():
+        with gdal_guard.exclusive():
+            events.append("render")
+        done.set()
+
+    main = threading.Thread(target=render, daemon=True)
+    main.start()
+    worker.join(timeout=3)
+    assert done.wait(timeout=3) and not worker.is_alive()
+    assert events == ["nested", "tile", "render"]
+
+
+def test_waiting_for_helpers_keeps_the_window_served(monkeypatch):
+    """Helpers take seconds to start QGIS: wait_ready runs on QGIS's main
+    thread, which kept no events served (Not Responding, Cancel unseen)."""
+    import queue  # pylint: disable=import-outside-toplevel
+    import export_workers  # pylint: disable=import-outside-toplevel
+    monkeypatch.setattr(export_workers, "_READY_TIMEOUT_S", 0.5)
+    pool = object.__new__(export_workers.WorkerPool)
+    pool.workers, pool.alive, pool.error, pool.results = [None], [True], "", queue.Queue()
+    pumped = []
+    assert pool.wait_ready("3.44", lambda: False, lambda: pumped.append(1)) == []
+    assert len(pumped) >= 2 and pool.alive == [False]
+
+
+def test_a_helper_sending_what_cannot_be_read_is_stopped():
+    """A message the main process refuses: the helper is stopped before its
+    work is done here (else both wrote the same GeoPackages)."""
+    import queue  # pylint: disable=import-outside-toplevel
+    import subprocess  # pylint: disable=import-outside-toplevel
+    import sys  # pylint: disable=import-outside-toplevel
+    import export_workers  # pylint: disable=import-outside-toplevel
+    script = ("import pickle, struct, sys, time, os\n"
+              "data = pickle.dumps(('base-done', os.system))\n"
+              "sys.stdout.buffer.write(struct.pack('<Q', len(data)) + data); sys.stdout.buffer.flush()\n"
+              "time.sleep(60)\n")
+    process = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE)  # pylint: disable=consider-using-with
+    try:
+        pool = object.__new__(export_workers.WorkerPool)
+        pool.results = queue.Queue()
+        pool._read(0, process)  # pylint: disable=protected-access
+        number, message = pool.results.get(timeout=1)
+        assert number == 0 and message[0] == "exit"
+        assert process.poll() is not None  # stopped, not left writing
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        process.stdout.close()

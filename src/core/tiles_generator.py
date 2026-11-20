@@ -128,8 +128,31 @@ def _open_gpkg(path: str, update: bool = False):
     except RuntimeError:
         return None
 
+def _file_size(path: str) -> int:
+    """Size of ``path`` (0 when missing: a job's cost only)."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
 class TilesGenerationCancelled(RuntimeError):
     """Raised when the user cancels while ogr2ogr is running."""
+
+
+def _open_layer(path: str, table: Optional[str]):
+    """(dataset, layer) of ``path``: RuntimeError when it cannot be opened
+    (as GDAL with exceptions on), which the callers' fallbacks handle."""
+    source = _open_gpkg(path)
+    layer = None if source is None else (source.GetLayerByName(table) if table else source.GetLayer(0))
+    if layer is None:
+        raise RuntimeError(f"Cannot open {path}")
+    return source, layer
+
+
+def _stop_if(cancelled) -> None:
+    if cancelled is not None and cancelled():
+        raise TilesGenerationCancelled("Tile generation cancelled")
 
 
 # Seconds per unit of TileProgress cost until a job has finished (measured
@@ -281,6 +304,7 @@ class GDALTilesGenerator:
         # With a cache: one tile set per QGIS layer (its datasets), reused
         # while the layer's datasets are unchanged, then merged.
         self.cache = cache
+        self._fell_back: set = set()  # (_tile_layer_groups)
         self.dataset_keys = dataset_keys or {}
         self.layer_groups = layer_groups or {}
         # Datasets tiled without simplification: colour bands that do not
@@ -792,7 +816,12 @@ class GDALTilesGenerator:
             low, high = self._layer_zoom_range(member)
             if name in self.small_datasets and self._drawn_small(name, max(low, high - 1)):
                 names.append(name)
-        return [self.min_feature_px, sorted(names)] if names else []
+        if not names:
+            return []
+        # Tiled from joined pieces or not (_joinable: a line offset or
+        # pattern added, which the datasets' keys do not cover either).
+        joined = sorted(n for n in names if self._joinable(n))
+        return [self.min_feature_px, sorted(names)] + ([["joined", joined]] if joined else [])
 
     # SIMPLIFICATION (tile units, 8 a CSS px) of lighter tiles (with
     # ``min_feature_px``): a quarter pixel at the tile's zoom, fewer points
@@ -816,7 +845,19 @@ class GDALTilesGenerator:
         self._zooms = [min_zoom, max_zoom]
         work = join(self.output_dir, "layer_tiles")
         os.makedirs(work, exist_ok=True)
+        try:
+            self._tile_layer_groups(work, output, min_zoom, max_zoom)
+        finally:
+            # Kept in the cache; not needed here (nor the pieces of a failed
+            # or cancelled run, the copies of the jobs' preparation included).
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _tile_layer_groups(self, work: str, output: str, min_zoom: int, max_zoom: int):
+        """_generate_per_layer's tiles, their pieces made in ``work``."""
         parts, groups = [], []
+        # Groups whose merged/cut/joined copies could not be made (a dataset
+        # unreadable for a moment): not cached, made again on the next export.
+        self._fell_back = set()
         for number, (owner, key, members) in enumerate(self._tile_groups()):
             cached = self.cache.get_tiles(key) if key and self.cache is not None else None
             if cached:
@@ -916,26 +957,21 @@ class GDALTilesGenerator:
                                                     top_simplification=top, buffer=buffer,
                                                     simplification=simplification)
                     jobs.append((index, piece, command, cost * len(part) / max(1, len(inside)), owner))
-        try:
-            self._run_parallel([job[2] for job in jobs], [job[3] for job in jobs], [job[4] for job in jobs])
-            for index, (key, target, *_rest) in enumerate(groups):
-                # (A job may write no file: a merged copy without features.)
-                pieces = [job for job in jobs if job[0] == index and os.path.exists(job[1])]
-                if len(pieces) > 1 or (pieces and pieces[0][1] != target):  # one piece: as it is
-                    self._check_cancelled()
-                    merge_mbtiles([job[1] for job in pieces], target, min_zoom, max_zoom, workers=cpu)
-            self._check_cancelled()
-            # A group without a single tile has no file: left out (not cached).
-            stored = {target: self.cache.put_tiles(key, target)
-                      for key, target, *_ in groups if key and self.cache is not None
-                      and os.path.exists(target)}
-            merge_mbtiles([stored.get(path, path) for path in parts
-                           if path in stored or os.path.exists(path)], output, min_zoom, max_zoom,
-                          workers=cpu)
-        finally:
-            # Kept in the cache; not needed here (nor the pieces of a failed
-            # or cancelled run).
-            shutil.rmtree(work, ignore_errors=True)
+        self._run_parallel([job[2] for job in jobs], [job[3] for job in jobs], [job[4] for job in jobs])
+        for index, (key, target, *_rest) in enumerate(groups):
+            # (A job may write no file: a merged copy without features.)
+            pieces = [job for job in jobs if job[0] == index and os.path.exists(job[1])]
+            if len(pieces) > 1 or (pieces and pieces[0][1] != target):  # one piece: as it is
+                self._check_cancelled()
+                merge_mbtiles([job[1] for job in pieces], target, min_zoom, max_zoom, workers=cpu)
+        self._check_cancelled()
+        # A group without a single tile has no file: left out (not cached).
+        stored = {target: self.cache.put_tiles(key, target)
+                  for key, target, *_ in groups if key and self.cache is not None
+                  and os.path.exists(target) and target not in self._fell_back}
+        merge_mbtiles([stored.get(path, path) for path in parts
+                       if path in stored or os.path.exists(path)], output, min_zoom, max_zoom,
+                      workers=cpu)
 
     def _filtered_jobs(self, index: int, target: str, members: List[QgsVectorLayer],
                        cuts: Dict[str, Tuple[int, int, float]], owner: str, buffer: int,
@@ -1014,7 +1050,10 @@ class GDALTilesGenerator:
             try:
                 written = join_lines(source, self._table_of(source), outputs,
                                      cancelled=lambda: self.feedback is not None and self.feedback.isCanceled())
+            except TilesGenerationCancelled:
+                raise
             except RuntimeError:  # unreadable (GDAL exceptions on): filtered as it is
+                self._fell_back.add(target)
                 continue
             out[name] = {z: outputs[z][0] for z, count in written.items() if count}
             counts.append(f"{name} ({written.get(last, 0)} lines at zoom {last})")
@@ -1057,8 +1096,16 @@ class GDALTilesGenerator:
         for number, (name, (low, last, outline)) in enumerate(sorted(merged.items())):
             source = by_name[name].source().split("|layername=")[0]
             outputs = {z: f"{target[:-8]}_m{number:02d}_z{z:02d}.gpkg" for z in range(low, last + 1)}
-            written = merge_per_tile(source, self._table_of(source), outputs, outline,
-                                     cancelled=lambda: self.feedback is not None and self.feedback.isCanceled())
+            try:
+                written = merge_per_tile(source, self._table_of(source), outputs, outline,
+                                         cancelled=lambda: self.feedback is not None
+                                         and self.feedback.isCanceled())
+            except TilesGenerationCancelled:
+                raise
+            except RuntimeError:  # unreadable: those zooms tiled from the dataset as it is
+                self._fell_back.add(target)
+                copies[name] = {z: source for z in outputs}
+                continue
             copies[name] = {z: path for z, path in outputs.items() if written.get(z)}
         jobs = []
         for zoom in sorted({z for paths in copies.values() for z in paths}):
@@ -1077,7 +1124,7 @@ class GDALTilesGenerator:
                 ET.SubElement(node, "LayerSRS").text = f"EPSG:{_EPSG_CRS}"
                 ET.SubElement(node, "GeometryType").text = "wkbUnknown"
                 conf[name] = {"minzoom": zoom, "maxzoom": zoom}
-                cost += os.path.getsize(copies[name][zoom]) + _TILE_COST * self._tiles_at(zoom)
+                cost += _file_size(copies[name][zoom]) + _TILE_COST * self._tiles_at(zoom)
             ET.ElementTree(root).write(piece_vrt, encoding="utf-8", xml_declaration=True)
             with open(piece_conf, "w", encoding="utf-8") as handle:
                 json.dump(conf, handle)
@@ -1135,9 +1182,15 @@ class GDALTilesGenerator:
                 limit = 0.0
                 if name in small and small[name][0] <= zoom <= small[name][1]:
                     limit = self._min_size(zoom)
-                written = grid_cut_lines(source, table, cut, zoom, limit,
-                                         cancelled=lambda: self.feedback is not None
-                                         and self.feedback.isCanceled())
+                try:
+                    written = grid_cut_lines(source, table, cut, zoom, limit,
+                                             cancelled=lambda: self.feedback is not None
+                                             and self.feedback.isCanceled())
+                except TilesGenerationCancelled:
+                    raise
+                except RuntimeError:  # unreadable: tiled from the dataset as it is (uncut)
+                    self._fell_back.add(target)
+                    cut, written = source, 1
                 if not written:
                     continue
                 node = ET.SubElement(root, "OGRVRTLayer", name=name)
@@ -1147,7 +1200,7 @@ class GDALTilesGenerator:
                 ET.SubElement(node, "LayerSRS").text = f"EPSG:{_EPSG_CRS}"
                 ET.SubElement(node, "GeometryType").text = "wkbUnknown"
                 conf[name] = {"minzoom": zoom, "maxzoom": zoom}
-                cost += os.path.getsize(cut) + _TILE_COST * written
+                cost += _file_size(cut) + _TILE_COST * written
             if not conf:
                 continue
             ET.ElementTree(root).write(piece_vrt, encoding="utf-8", xml_declaration=True)
@@ -1461,6 +1514,18 @@ def _union(geometries):
         return collection.Buffer(0)
 
 
+def _unions(groups: Dict[tuple, list], cancelled) -> Dict[tuple, object]:
+    """{group: union of its geometries}; ``groups`` emptied as it goes (the
+    clones of a large dataset not held twice), Cancel seen between unions."""
+    out = {}
+    while groups:
+        if len(out) % 200 == 0:
+            _stop_if(cancelled)
+        group, members = groups.popitem()
+        out[group] = _union(members)
+    return out
+
+
 @gdal_guard.shared_section
 def merge_per_tile(path: str, table: Optional[str], outputs: Dict[int, str], outline: bool,
                    cancelled=None) -> Dict[int, int]:
@@ -1469,8 +1534,7 @@ def merge_per_tile(path: str, table: Optional[str], outputs: Dict[int, str], out
     that zoom (outlines: the merged shapes' boundaries; rings that do not
     close stay as they are). The highest zoom merges the features, each
     lower one the pieces of the zoom above. Returns {zoom: features written}."""
-    source = _open_gpkg(path)
-    layer = source.GetLayerByName(table) if table else source.GetLayer(0)
+    source, layer = _open_layer(path, table)
     definition = layer.GetLayerDefn()
     keep = _merge_key_fields(definition)
     srs = layer.GetSpatialRef()
@@ -1495,14 +1559,14 @@ def merge_per_tile(path: str, table: Optional[str], outputs: Dict[int, str], out
         cy = math.floor(((y0 + y1) / 2 + WORLD_HALF) / cell)
         groups[(key, cx, cy)].append(polygon.Clone())
     written = {}
-    pieces = {group: _union(members) for group, members in groups.items()}
+    pieces = _unions(groups, cancelled)
     for zoom in range(top, min(outputs) - 1, -1):
         if zoom != top:
             parents: Dict[tuple, list] = collections.defaultdict(list)
             for (key, cx, cy), geometry in pieces.items():
                 if geometry is not None:
                     parents[(key, cx // 2, cy // 2)].append(geometry)
-            pieces = {group: _union(members) for group, members in parents.items()}
+            pieces = _unions(parents, cancelled)
         if zoom not in outputs:
             continue
         driver = ogr.GetDriverByName("GPKG")
@@ -1519,7 +1583,12 @@ def merge_per_tile(path: str, table: Optional[str], outputs: Dict[int, str], out
         number = 0
         shapes = [(key, geometry, True) for (key, _cx, _cy), geometry in pieces.items()]
         shapes += [(key, geometry, False) for key, geometry in loose]
-        for key, geometry, merged in shapes:
+        for count, (key, geometry, merged) in enumerate(shapes):
+            if count % 2000 == 0 and cancelled is not None and cancelled():
+                out.RollbackTransaction()
+                out = None
+                target = None  # closed: the work folder is removed (Windows)
+                raise TilesGenerationCancelled("Tile generation cancelled")
             if geometry is None or geometry.IsEmpty():
                 continue
             shape = geometry.Boundary() if outline and merged else geometry
@@ -1631,8 +1700,7 @@ def grid_cut_lines(path: str, table: Optional[str], output: str, zoom: int,
     as the zoom's tiles leave them out (_filtered_jobs). Returns the
     pieces written. ``cancelled()``: True stops (TilesGenerationCancelled)."""
     size = _tile_size(max(0, zoom - _LONG_LINE_GRID_UP))
-    source = _open_gpkg(path)
-    layer = source.GetLayerByName(table) if table else source.GetLayer(0)
+    source, layer = _open_layer(path, table)
     definition = layer.GetLayerDefn()
     driver = ogr.GetDriverByName("GPKG")
     if os.path.exists(output):
@@ -1766,8 +1834,7 @@ def join_lines(path: str, table: Optional[str], outputs: Dict[int, Tuple[str, fl
     feature key its pieces share (none when they are of several features:
     such a line opens no popup, as merged fills) and the lowest feature
     order. Returns {zoom: pieces written}."""
-    source = _open_gpkg(path)
-    layer = source.GetLayerByName(table) if table else source.GetLayer(0)
+    source, layer = _open_layer(path, table)
     definition = layer.GetLayerDefn()
     keep = _merge_key_fields(definition)
     names = {definition.GetFieldDefn(i).GetName().lower(): i for i in range(definition.GetFieldCount())}
@@ -1784,7 +1851,9 @@ def join_lines(path: str, table: Optional[str], outputs: Dict[int, Tuple[str, fl
         order = feature.GetField(order_index) if order_index is not None else count
         groups[group].extend((points, key, order) for points in parts)
     lines = []  # (order, group, key, points)
-    for group, members in groups.items():
+    while groups:  # (each group's pieces freed once chained)
+        _stop_if(cancelled)
+        group, members = groups.popitem()
         for points, indexes in chain_lines([m[0] for m in members]):
             keys = {members[i][1] for i in indexes}
             orders = [members[i][2] for i in indexes if members[i][2] is not None]
@@ -1808,7 +1877,12 @@ def join_lines(path: str, table: Optional[str], outputs: Dict[int, Tuple[str, fl
         out_definition = out.GetLayerDefn()
         number = 0
         out.StartTransaction()
-        for order, group, key, points in lines:
+        for count, (order, group, key, points) in enumerate(lines):
+            if count % 2000 == 0 and cancelled is not None and cancelled():
+                out.RollbackTransaction()
+                out = None
+                target = None  # closed: the work folder is removed (Windows)
+                raise TilesGenerationCancelled("Tile generation cancelled")
             if min_size > 0:
                 xs, ys = [p[0] for p in points], [p[1] for p in points]
                 if max(max(xs) - min(xs), max(ys) - min(ys)) < min_size:
