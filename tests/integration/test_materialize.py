@@ -3242,24 +3242,37 @@ def test_dense_generated_geometry_is_thinned_before_bands_and_tiles(plugin, tmp_
 
 
 @pytest.mark.parametrize("expression,capped", [
-    ("smooth(wave_randomized($geometry, 1, 3, 0.01, 0.015, 20), 10)", True),
-    ("smooth($geometry, iterations:=8, offset:=0.3)", True),
-    ("CASE WHEN $area > 5 THEN smooth(smooth($geometry, 9), 7) ELSE $geometry END", True),
-    ("smooth($geometry, 3)", False),
-    ("smooth($geometry, \"passes\")", False),
+    ("smooth(wave_randomized($geometry, 1, 3, 0.01, 0.015, 20), 10)",
+     "smooth(wave_randomized($geometry, 1, 3, 0.01, 0.015, 20), 5)"),
+    ("smooth($geometry, iterations:=8, offset:=0.3)", "smooth($geometry, iterations:=5, offset:=0.3)"),
+    ("CASE WHEN $area > 5 THEN smooth(smooth($geometry, 9), 7) ELSE $geometry END",
+     "CASE WHEN $area > 5 THEN smooth(smooth($geometry, 5), 5) ELSE $geometry END"),
+    ("smooth($geometry, 3)", None),
+    ("smooth($geometry, \"passes\")", None),
+    # Columns named like keywords stay columns (rebuilt from the parse tree,
+    # "null" became NULL and "and" did not parse: not capped).
+    ('smooth(buffer($geometry, "null"), 10)', 'smooth(buffer($geometry, "null"), 5)'),
+    ('smooth(buffer($geometry, "true"), 10) -- smooth(x, 9)', 'smooth(buffer($geometry, "true"), 5) -- smooth(x, 9)'),
+    ('smooth(buffer($geometry, "and"), 10)', 'smooth(buffer($geometry, "and"), 5)'),
+    ('smooth(buffer($geometry, "case"), iterations:=12)', 'smooth(buffer($geometry, "case"), iterations:=5)'),
+    ("smooth(buffer($geometry, \"Név\"), 10) || 'smooth(a, 9)'", "smooth(buffer($geometry, \"Név\"), 5) || 'smooth(a, 9)'"),
+    # Unquoted accented names are QGIS identifiers too (the scanner raised).
+    ("smooth(Név, 10)", "smooth(Név, 5)"),
+    ('smooth("x", 9) + 0 * név', 'smooth("x", 5) + 0 * név'),
+    # A backslash-escaped quote does not end the string.
+    ("concat('it\\'s smooth(', 'x') || smooth($geometry, 10)",
+     "concat('it\\'s smooth(', 'x') || smooth($geometry, 5)"),
 ])
 def test_smooth_passes_are_capped_in_exported_generators(plugin, expression, capped):
     """Each smooth() pass doubles the vertices (10 passes: 10 million for a
-    300 m polygon); beyond five the outline moves by millimetres."""
+    300 m polygon); beyond five the outline moves by millimetres. Only the
+    count changes: the rest of the expression is the user's text."""
     from qgis.core import QgsExpression
-    from q2vt_plugin.src.core.rules_exporter import MAX_SMOOTH_ITERATIONS, _capped_smoothing
-    out = _capped_smoothing(expression)  # QGIS 4 writes 0.3 as 0.29999999999999999
+    from q2vt_plugin.src.core.rules_exporter import _capped_smoothing
+    out = _capped_smoothing(expression)
+    assert out == (capped or expression)
     assert not QgsExpression(out).hasParserError()
-    if not capped:
-        assert out == expression
-        return
-    passes = [int(p) for p in __import__("re").findall(r"smooth\(.*?, (\d+), 0\.(?:3|2999+\d*)|, (\d+), 0\.25", out) for p in p if p]
-    assert passes and max(passes) == MAX_SMOOTH_ITERATIONS
+    assert QgsExpression(out).referencedColumns() == QgsExpression(expression).referencedColumns()
 
 
 def test_meters_at_scale_line_offset_is_the_offset_line(plugin, tmp_path):
