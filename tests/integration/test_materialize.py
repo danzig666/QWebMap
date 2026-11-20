@@ -3465,3 +3465,141 @@ def test_meters_at_scale_line_inside_polygon_in_project_units(plugin, tmp_path):
     rules, _ = _export_in_feet(plugin, layer, tmp_path)
     assert [r.recipe.kind for r in rules] == ["inside_band"]
     assert rules[0].recipe.param("outer") == pytest.approx(8 / 0.3048, rel=1e-5)
+
+
+def test_screen_offset_line_with_a_near_reversing_vertex_is_exported(plugin, tmp_path):
+    """A digitizing spike turning back within float noise of 180 degrees
+    loops at every zoom (an infinite loop zoom): its int() raised
+    OverflowError and failed the whole export."""
+    layer = _layer("LineString", ["LINESTRING(0 0, 1000 0, 0 -0.000001)"], str(tmp_path / "spike.gpkg"))
+    line = QgsSimpleLineSymbolLayer()
+    line.setOffset(2.0)
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([line])))
+    _outputs, rules, diags = _export(plugin, layer, tmp_path)
+    assert rules and not diags.by_code("Q2VT_RULE_EXPORT_FAILED")
+
+
+def _flatten_in(layer, crs):
+    """The materialized rules of ``layer`` in a project of ``crs``."""
+    import tempfile
+    from qgis.core import QgsCoordinateReferenceSystem
+    from q2vt_plugin.src.core.rules_flattener import RulesFlattener
+    from fidelity.diagnostics import DiagnosticCollector
+    reset_project(layer).setCrs(QgsCoordinateReferenceSystem(crs))
+    diags = DiagnosticCollector()
+    rules = RulesFlattener(0, 14, tempfile.mkdtemp(), QgsProcessingFeedback(), diags).flatten_all_rules()
+    return rules, diags
+
+
+def _memory_layer(kind, wkt, crs):
+    layer = QgsVectorLayer(f"{kind}?crs={crs}", "src", "memory")
+    feature = QgsFeature()
+    feature.setGeometry(QgsGeometry.fromWkt(wkt))
+    layer.dataProvider().addFeatures([feature])
+    return layer
+
+
+METRES_TO_FEET = 1 / 0.3048  # EPSG:2263 (feet; US survey within 2e-6)
+
+
+@pytest.mark.parametrize("crs,wkt,per_metre", [
+    ("EPSG:2263", "POLYGON((0 0, 3000 0, 3000 3000, 0 3000, 0 0))", METRES_TO_FEET),
+    ("EPSG:4326", "POLYGON((19 47, 19.1 47, 19.1 47.1, 19 47.1, 19 47))", None)])
+def test_meters_at_scale_hatch_spacing_is_in_project_units(plugin, crs, wkt, per_metre):
+    """A hatch spaced 100 m: lines 100 project units apart were 100 ft in
+    US feet (3.28x too dense) and 100 degrees in a geographic CRS (no
+    hatch). Metres in a geographic CRS stay a texture."""
+    layer = _memory_layer("Polygon", wkt, crs)
+    hatch = QgsLinePatternFillSymbolLayer()
+    hatch.setDistance(100)
+    hatch.setDistanceUnit(Qgis.RenderUnit.MetersInMapUnits)
+    hatch.setOffset(10)
+    hatch.setOffsetUnit(Qgis.RenderUnit.MetersInMapUnits)
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol([hatch])))
+    rules, _diags = _flatten_in(layer, crs)
+    recipes = [r.recipe for r in rules if r.recipe is not None and r.recipe.kind.startswith("hatch")]
+    if per_metre is None:
+        assert not recipes
+        return
+    assert recipes and all(r.param("spacing") == pytest.approx(100 * per_metre, rel=1e-4) and
+                           r.param("offset") == pytest.approx(10 * per_metre, rel=1e-4) for r in recipes)
+
+
+@pytest.mark.parametrize("crs,wkt,per_metre", [
+    ("EPSG:2263", "LINESTRING(0 0, 3000 0)", METRES_TO_FEET),
+    # Eastwards from the centre on the ellipsoid, as QGIS converts them.
+    ("EPSG:4326", "LINESTRING(19 47, 19.1 47)", 0.0131482 / 1000)])
+def test_meters_at_scale_arrow_sizes_are_in_project_units(plugin, crs, wkt, per_metre):
+    """An arrow 5 m wide was 5 degrees (~550 km) wide in a geographic CRS
+    and 5 ft in US feet."""
+    from qgis.core import QgsArrowSymbolLayer
+    layer = _memory_layer("LineString", wkt, crs)
+    arrow = QgsArrowSymbolLayer()
+    for name, value in (("ArrowWidth", 5), ("ArrowStartWidth", 5), ("HeadLength", 10),
+                        ("HeadThickness", 5)):
+        getattr(arrow, f"set{name}")(value)
+        getattr(arrow, f"set{name}Unit")(Qgis.RenderUnit.MetersInMapUnits)
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([arrow])))
+    rules, diags = _flatten_in(layer, crs)
+    sizes = [r.recipe.param("sizes") for r in rules if r.recipe is not None and r.recipe.kind == "arrow_polygons"]
+    assert sizes and all(s[:4] == pytest.approx((5 * per_metre, 5 * per_metre, 10 * per_metre, 5 * per_metre),
+                                                rel=1e-3) for s in sizes)
+    # One factor at the export centre in a geographic CRS: reported.
+    centred = [d for d in diags.by_code("Q2VT_SYMBOL_APPROXIMATE") if "centre" in d.message]
+    assert bool(centred) == (crs == "EPSG:4326")
+
+
+def test_meters_at_scale_arrow_fill_offset_without_a_crs(plugin):
+    """Millimetre arrow sizes with a fill offset in meters at scale and no
+    project CRS: the painter offsets multiplied by None (TypeError)."""
+    from qgis.core import QgsArrowSymbolLayer, QgsSimpleFillSymbolLayer
+    from qgis.PyQt.QtCore import QPointF
+    layer = _memory_layer("LineString", "LINESTRING(0 0, 3000 0)", "EPSG:3857")
+    arrow = QgsArrowSymbolLayer()
+    fills = []
+    for colour, offset in (("black", QPointF(2, 2)), ("red", QPointF(0, 0))):
+        fill = QgsSimpleFillSymbolLayer(QColor(colour))
+        fill.setStrokeStyle(Qt.PenStyle.NoPen)
+        fill.setOffset(offset)
+        fill.setOffsetUnit(Qgis.RenderUnit.MetersInMapUnits)
+        fills.append(fill)
+    arrow.setSubSymbol(QgsFillSymbol(fills))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([arrow])))
+    rules, diags = _flatten_in(layer, "")
+    recipes = [r.recipe for r in rules if r.recipe is not None and r.recipe.kind == "arrow_polygons"]
+    assert recipes and any(r.param("painter") and r.param("painter")[0] == pytest.approx((2, -2))
+                           for r in recipes)
+    assert any("without a valid project CRS" in d.message for d in diags.by_code("Q2VT_SYMBOL_APPROXIMATE"))
+
+
+@pytest.mark.skipif(not hasattr(__import__("qgis.core").core, "QgsFilledLineSymbolLayer"),
+                    reason="Filled line symbol layers: QGIS 3.44+")
+def test_filled_line_keeps_the_symbol_opacity_and_offset(plugin, tmp_path):
+    """The simple line a filled line becomes took only its fill's opacity:
+    the parent symbol's opacity, the offset and the data-defined width were
+    dropped."""
+    from qgis.core import QgsFilledLineSymbolLayer, QgsProperty, QgsSymbolLayer
+    layer = _layer("LineString", LINES, str(tmp_path / "fl.gpkg"))
+    filled = QgsFilledLineSymbolLayer()
+    filled.setWidth(4)
+    filled.setOffset(3)
+    filled.setOffsetUnit(Qgis.RenderUnit.Millimeters)
+    filled.setDataDefinedProperty(QgsSymbolLayer.Property.PropertyStrokeWidth, QgsProperty.fromExpression('"id" + 2'))
+    filled.subSymbol().setColor(QColor("black"))
+    filled.subSymbol().symbolLayer(0).setDataDefinedProperty(
+        QgsSymbolLayer.Property.PropertyFillColor, QgsProperty.fromExpression("if(\"id\" > 1, 'red', 'black')"))
+    symbol = QgsLineSymbol([filled])
+    symbol.setOpacity(0.5)
+    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+    reference = ink_mask(render([layer], EXTENT))
+    outputs, rules, _diags = _export(plugin, layer, tmp_path)
+    assert mask_difference(reference, ink_mask(render(outputs, EXTENT))) < 0.05
+    lines = [r.rule.symbol() for r in rules if r.rule.symbol().symbolLayer(0).layerType() == "SimpleLine"]
+    assert lines
+    for line_symbol in lines:
+        assert line_symbol.opacity() == pytest.approx(0.5)
+        line = line_symbol.symbolLayer(0)
+        assert line.offset() == pytest.approx(3)
+        assert line.dataDefinedProperties().isActive(QgsSymbolLayer.Property.PropertyStrokeWidth)
+        # The fill's data-defined colour colours the line.
+        assert line.dataDefinedProperties().isActive(QgsSymbolLayer.Property.PropertyStrokeColor)
