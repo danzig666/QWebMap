@@ -154,10 +154,14 @@ _RELEASE_PATH_RESERVE = 160
 def long_path_warning(publication_dir: str, windows: bool = os.name == "nt") -> str:
     """A warning when the release's files would pass Windows' 260-character
     path limit (QGIS's Python without long paths enabled), else ""."""
-    longest = len(os.path.abspath(publication_dir)) + _RELEASE_PATH_RESERVE
-    if not windows or longest < 260:
+    if not windows:
         return ""
-    return (f"The output folder's path is long ({len(publication_dir)} characters): the web map's files "
+    import ntpath  # pylint: disable=import-outside-toplevel
+    # (A Windows path as Windows reads it: "C:\\web" is absolute, also when checked elsewhere.)
+    full = publication_dir if ntpath.isabs(publication_dir) else os.path.abspath(publication_dir)
+    if len(full) + _RELEASE_PATH_RESERVE < 260:
+        return ""
+    return (f"The output folder's path is long ({len(full)} characters): the web map's files "
             "may pass Windows' 260-character limit and the export fail at the end. Choose a shorter "
             "output folder or address name if it does.")
 

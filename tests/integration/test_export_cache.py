@@ -111,6 +111,8 @@ def test_unchanged_layers_are_reused_and_results_match(plugin, tmp_path):
     first = export_local(project, profile, EXTENT, first_log)
     assert "Export cache: 0 of" in first_log.cache_line()
     assert os.path.isdir(cache_dir(profile))
+    # (Read now: the next export removes this run's work folder.)
+    first_tiles, first_diagnostics = _tiles(first), _diagnostics(first)
 
     again_log = Log()
     again = export_local(project, profile, EXTENT, again_log)
@@ -118,8 +120,8 @@ def test_unchanged_layers_are_reused_and_results_match(plugin, tmp_path):
     assert " 0 of" not in datasets and "reused" in datasets
     hits, total = (int(v) for v in datasets.split("cache: ")[1].split(" datasets")[0].split(" of "))
     assert hits == total > 0
-    assert _tiles(again) == _tiles(first)
-    assert _diagnostics(again) == _diagnostics(first)
+    assert _tiles(again) == first_tiles
+    assert _diagnostics(again) == first_diagnostics
     assert again.feature_counts == first.feature_counts
 
     # Edit one feature of the zones layer (through QGIS, like a user would).
