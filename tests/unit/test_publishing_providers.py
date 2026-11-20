@@ -354,3 +354,121 @@ def test_label_fonts_are_stored_gzip_compressed(env):
     assert new_prefix + plain[len(prefix):] in puts
     for key in glyphs:
         assert client.meta[new_prefix + key[len(prefix):]].get("ContentEncoding") == "gzip"
+
+
+def test_s3_clients_send_checksums_only_when_required():
+    """botocore 1.36+ sends a CRC32 on every upload; many S3-compatible
+    services (not only R2) reject it."""
+    from publishing.models import DestinationConfig
+    for provider in (S3Provider(DestinationConfig(kind="s3", endpoint="https://s3.example", bucket="b"),
+                                Credentials("AKIA1234", "secret-value"), "maps/x"),
+                     R2Provider(DestinationConfig(kind="r2", account_id="0123abcd", bucket="b"),
+                                Credentials("AKIA1234", "secret-value"), "maps/x")):
+        config = provider.client.meta.config
+        assert config.request_checksum_calculation == "when_required"
+        assert config.response_checksum_validation == "when_required"
+
+
+@pytest.mark.parametrize("with_boto3", [True, False])
+def test_old_system_sdk_is_not_used(tmp_path, with_boto3):
+    """A system boto3/botocore from before conditional writes (distro
+    packages) rejects If-None-Match client-side: every publish failed. The
+    vendored SDK is used instead, as a whole (never its boto3 over the
+    system botocore)."""
+    import subprocess
+    import sys
+    import textwrap
+    system = tmp_path / "system"
+    (system / "botocore").mkdir(parents=True)
+    (system / "botocore" / "__init__.py").write_text("__version__ = '1.29.0'\n")
+    (system / "botocore" / "loaders.py").write_text(textwrap.dedent("""
+        class _Loader:
+            def load_service_model(self, service, kind):
+                return {"shapes": {"PutObjectRequest": {"members": {"Bucket": {}}},
+                                   "CompleteMultipartUploadRequest": {"members": {"Bucket": {}}}}}
+        def create_loader():
+            return _Loader()
+        """))
+    if with_boto3:
+        (system / "boto3").mkdir()
+        (system / "boto3" / "__init__.py").write_text("__version__ = '1.26.0'\n")
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src")
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path[:0] = [{str(system)!r}, {src!r}]
+        import botocore  # (another plugin imported the system one first)
+        from publishing.providers.s3 import sdk_versions
+        versions = sdk_versions()
+        import botocore, botocore.config
+        print(versions["vendored"], versions["botocore"], botocore.__version__)
+        """)
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120,
+                         cwd=str(tmp_path), check=False)
+    assert out.returncode == 0, out.stderr
+    vendored, version, imported = out.stdout.split()
+    assert vendored == "True" and version == imported == "1.43.106"
+
+
+def test_new_enough_system_sdk_is_kept(tmp_path):
+    """The system SDK stays first when it can do conditional writes (the
+    vendored model stands in for a current system botocore)."""
+    from publishing.providers import s3
+    import botocore
+    if not s3._from_vendor(botocore):  # pylint: disable=protected-access
+        pytest.skip("a system SDK is installed")
+    assert s3._has_conditional_writes()  # pylint: disable=protected-access
+
+
+def test_lost_multipart_completion_is_reconciled(env, tmp_path):
+    """CompleteMultipartUpload stored the object but its answer was lost:
+    the retry finds the upload id used up (NoSuchUpload), and the object
+    already there with this content is accepted."""
+    provider, client = env["provider"], env["client"]
+    provider.part_size = 64 * 1024
+    data = os.urandom(64 * 1024 * 2 + 5)
+    path = tmp_path / "big.bin"
+    path.write_bytes(data)
+    client.inject("complete_multipart_upload", ClientError("RequestTimeout", 400), after=True)
+    for conditional in (True, False):
+        provider.conditional_writes = conditional
+        name = f"big-{conditional}.bin"
+        etag = provider.put_file(name, str(path), "application/octet-stream", "x", "cafe" + name)
+        assert etag and provider.head(name)["size"] == len(data)
+        client.inject("complete_multipart_upload", ClientError("RequestTimeout", 400), after=True)
+
+
+@pytest.mark.parametrize("code, status, expected, retryable", [
+    ("RequestTimeTooSkewed", 403, "Q2VT_PUB_UPLOAD", False),   # the clock, not the keys
+    ("OperationAborted", 409, "Q2VT_PUB_UPLOAD", True),       # transient, not another publisher
+    ("BucketNotEmpty", 409, "Q2VT_PUB_UPLOAD", False),
+    ("ConditionalRequestConflict", 409, "Q2VT_PUB_ACTIVATION_CONFLICT", False),
+    ("PreconditionFailed", 412, "Q2VT_PUB_ACTIVATION_CONFLICT", False),
+    ("", 412, "Q2VT_PUB_ACTIVATION_CONFLICT", False),
+    ("AccessDenied", 403, "Q2VT_PUB_CREDENTIALS", False),
+    ("403", 403, "Q2VT_PUB_CREDENTIALS", False),               # HEAD: no body, no code
+    ("SlowDown", 503, "Q2VT_PUB_UPLOAD", True),
+])
+def test_errors_are_classified_by_code_first(env, code, status, expected, retryable):
+    failure = env["provider"]._classify(ClientError(code, status))  # pylint: disable=protected-access
+    assert (failure.code, failure.retryable) == (expected, retryable)
+    if code == "RequestTimeTooSkewed":
+        assert "clock" in failure.message
+
+
+def test_retention_keeps_complete_releases_over_interrupted_ones(env):
+    """Interrupted uploads (no release.json) cannot be rolled back to: they
+    do not count toward ``keep`` and never push out a complete release.
+    Those older than the newest complete one are abandoned and go; newer
+    ones may still be uploading and stay."""
+    provider = env["provider"]
+    ids = [_publish(env, _release(env, name)).release_id for name in ("a", "b")]
+
+    def interrupted(release_id):
+        provider.put_bytes(f"releases/{release_id}/style.json", b"{}", "application/json", "x")
+    stale = "r-20000101T000000Z-00000001"  # older than the newest complete one
+    fresh = "r-99991231T235959Z-0000000f"
+    for release_id in (stale, fresh):
+        interrupted(release_id)
+    assert provider.list_releases() == [stale, ids[0], ids[1], fresh]
+    assert retention_plan(provider, keep=2) == [stale]
+    assert retention_plan(provider, keep=1) == [stale, ids[0]]

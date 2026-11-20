@@ -773,3 +773,21 @@ def test_zoomed_out_mode_is_set_shown_and_saved(project, messages, tmp_path):
     assert again.edit_zoomed_out(("full", None))
     assert again_item.text(COL_ZOOMED) == "" and again.collect().layer(parcels.id()).zoomed_out == "full"
     again.close()
+
+
+def test_retention_failure_is_a_message(plugin, messages):
+    """'Delete old releases…' offline or with an expired key: a message,
+    not a Python error out of the button's slot."""
+    from q2vt_plugin.src.gui.deployment_history import DeploymentHistoryDialog  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.errors import PublishingError  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.models import PublicationProfile  # pylint: disable=import-error
+
+    class Offline:
+        prefix = "maps/x"
+
+        def read_pointer(self):
+            raise PublishingError("Q2VT_PUB_UPLOAD", "Object storage request failed.")
+
+    dialog = DeploymentHistoryDialog(None, Offline(), PublicationProfile(title="X", slug="x"), [], None)
+    dialog.retention()
+    assert messages == [("warning", "Object storage request failed.")]

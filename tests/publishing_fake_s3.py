@@ -134,7 +134,9 @@ class FakeS3Client:
 
     def complete_multipart_upload(self, **params):
         def real():
-            upload = self.uploads.pop(params["UploadId"])
+            upload = self.uploads.pop(params["UploadId"], None)
+            if upload is None:  # (as S3: also for an id already completed)
+                raise ClientError("NoSuchUpload", 404)
             numbers = [p["PartNumber"] for p in params["MultipartUpload"]["Parts"]]
             data = b"".join(upload["parts"][n][1] for n in numbers)
             stored = dict(upload["params"])
