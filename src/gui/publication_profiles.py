@@ -136,6 +136,8 @@ def import_document(text: str, project: QgsProject) -> Tuple[PublicationProfile,
     if not isinstance(data, dict):
         raise ValueError("not a settings file")
     names = (data.get("layerNames") or {}) if FILE_FORMAT in data else {}
+    if not isinstance(names, dict) or not all(isinstance(name, str) for name in names.values()):
+        raise ValueError("layerNames: layer ids and their names")
     raw = data["profile"] if FILE_FORMAT in data else data
     here = project.mapLayers()
     by_name = {}

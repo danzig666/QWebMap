@@ -316,3 +316,62 @@ def test_the_simple_view_recommends_a_scale_from_the_layers(plugin, monkeypatch,
     page.wait_for_preview()
     assert page.preview.pixmap() is not None and not page.preview.pixmap().isNull()
     dialog.close()
+
+
+def test_showing_the_simple_view_never_replaces_zooms_set_elsewhere(plugin, monkeypatch, tmp_path):
+    """Automatic detail is on for new settings, but zooms set in the advanced
+    view stay when the simple view is shown (it shows "Choose automatically"
+    unticked then); saved settings reopened in the simple view are not
+    changed by showing them; the views cannot be switched while exporting."""
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    dialog.profile.view.extent = [2119000, 6019000, 2123000, 6023000]
+    dialog.profile.view.extent_mode = "fixed"
+    dialog.e_min_zoom.setValue(5)
+    dialog.e_max_zoom.setValue(19)
+    before = dialog._profile_json()  # pylint: disable=protected-access
+    dialog.set_simple_view(True, remember=False)
+    dialog.set_simple_view(False, remember=False)
+    assert (dialog.e_min_zoom.value(), dialog.e_max_zoom.value()) == (5, 19)
+    assert dialog._profile_json() == before  # pylint: disable=protected-access
+    assert not dialog.simple.auto.isChecked() and dialog.simple.zoom.isEnabled()
+    dialog._busy(True)  # pylint: disable=protected-access
+    assert not dialog.btn_simple.isEnabled() and not dialog.btn_advanced.isEnabled()
+    dialog._busy(False)  # pylint: disable=protected-access
+    assert dialog.btn_simple.isEnabled()
+    dialog.simple.auto.setChecked(True)               # ticked again: the automatic choice
+    assert (dialog.e_min_zoom.value(), dialog.e_max_zoom.value()) != (5, 19)
+    dialog.e_min_zoom.setValue(5)
+    dialog.e_max_zoom.setValue(19)
+    assert dialog.save_settings()
+    dialog.close()
+    from qgis.core import QgsSettings  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error,import-outside-toplevel
+    QgsSettings().setValue(PublishDialog.VIEW_KEY, "simple")
+    try:
+        again = PublishDialog(iface=None)                # saved, automatic detail on, opened simple
+    finally:
+        QgsSettings().remove(PublishDialog.VIEW_KEY)
+    assert again.is_simple_view()
+    assert (again.e_min_zoom.value(), again.e_max_zoom.value()) == (5, 19)
+    assert again._profile_json() == again._saved_json  # pylint: disable=protected-access
+    again.close()
+
+
+def test_a_zip_that_cannot_be_made_is_said(plugin, monkeypatch, tmp_path):
+    """Make a ZIP to send: a disk or file error is said, no half-written ZIP."""
+    import shutil  # pylint: disable=import-outside-toplevel
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    folder = tmp_path / "web_maps" / "terv"
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(dialog, "_local_map_dir", lambda: str(folder))
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+
+    def full(base, *args, **kwargs):
+        open(base + ".zip", "wb").close()
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(shutil, "make_archive", full)
+    assert dialog.simple.make_zip() == ""
+    assert warned and "No space left" in warned[0] and "No space left" in dialog.status.text()
+    assert not (tmp_path / "web_maps" / "terv.zip").exists()
+    dialog.close()
