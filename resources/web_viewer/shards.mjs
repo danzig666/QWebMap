@@ -18,8 +18,9 @@ async function packBytes(url, shard) {
   const href = url.href;
   // While the first request for a pack is out, the others wait for its
   // answer: a server that ignores Range sent each of them (a search loads
-  // up to 24 shards at once) the whole pack.
-  if (probes.has(href)) await probes.get(href);
+  // up to 24 shards at once) the whole pack. Looped: when the first
+  // request failed, one of the waiters probes again, the others wait for it.
+  while (probes.has(href)) await probes.get(href);
   if (!wholePacks.has(href)) {
     const first = !ranged.has(href) && !probes.has(href);
     let answered = () => {};

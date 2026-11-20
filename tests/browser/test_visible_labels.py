@@ -210,7 +210,7 @@ def test_roomiest_point_ignores_tile_cuts():
 def test_roomiest_point_of_a_long_thin_strip_is_fast():
     """A river 1 px wide, 3000 long with 10000 vertices a side: the search
     started from 3000 cells, each over every edge (25 s; now a bucket grid
-    of the edges and at most 64 cells along the long side)."""
+    of the edges)."""
     out = _js("""(() => {
       const top = [], bottom = [];
       for (let i = 0; i <= 10000; i++) { top.push([0.3 * i, 0]); bottom.push([3000 - 0.3 * i, 1]); }
@@ -221,6 +221,17 @@ def test_roomiest_point_of_a_long_thin_strip_is_fast():
     })()""")
     assert out["room"] == pytest.approx(0.5) and out["ms"] < 3000  # about 0.1 s
     assert out["fat"] == pytest.approx(50, abs=0.5)  # the wide end of a thin strip
+
+
+def test_roomiest_point_of_thin_strips_keeps_its_room():
+    """Starting from fewer, bigger cells ran the 600-visit budget out before
+    the refinement reached the short side's resolution: a tapered strip got
+    room 0.67 instead of 1, one with two bumps 0.94 instead of 1.2."""
+    taper = [[0, 0], [5000, 0], [5000, 2], [0, 0.2]]
+    bumps = [[0, 0], [3000, 0], [3000, 1], [1210, 1], [1210, 2.2], [1200, 2.2], [1200, 1],
+             [600, 1], [600, 2.4], [590, 2.4], [590, 1], [0, 1]]
+    assert _js(f"m.roomiestPoint([{json.dumps(taper)}], 0.05).room") == pytest.approx(1, abs=0.05)
+    assert _js(f"m.roomiestPoint([{json.dumps(bumps)}], 0.05).room") == pytest.approx(1.2, abs=0.05)
 
 
 def test_view_of_a_world_copy_is_moved_into_the_world():
@@ -282,6 +293,8 @@ def test_style_expressions_for_label_sizes():
     assert _js(f"m.evaluate({json.dumps(data)}, 10, {{size: '3'}})") == 6
     assert _js(f"m.evaluate({json.dumps(data)}, 10, {{}})") == 12
     assert _js("m.evaluate(['step', ['zoom'], 1, 10, 2, 15, 3], 12)") == 2
+    # Own properties only (MapLibre): "constructor" is on every object's prototype.
+    assert _js("[m.evaluate(['has', 'constructor'], 10, {}), m.evaluate(['has', 'a'], 10, {a: 0})]") == [False, True]
 
 
 def test_clamped_and_guarded_label_sizes_are_evaluated():

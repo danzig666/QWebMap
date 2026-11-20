@@ -1904,12 +1904,14 @@ function edgeGrid(rings, x0, y0, x1, y1) {
         if ((a[1] > y) === (b[1] > y)) continue;
         const at = (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0];
         if (sign > 0 ? !(x < at) : !(at <= x)) continue;
-        if (bucket !== undefined && clampCol(col(at)) !== bucket) continue;
+        // (at clamped to the edge: rounded just past its end, it fell in a
+        // bucket without the edge and the crossing was never counted.)
+        if (bucket !== undefined && clampCol(col(Math.min(Math.max(at, Math.min(a[0], b[0])), Math.max(a[0], b[0])))) !== bucket) continue;
       } else {
         if ((a[0] > x) === (b[0] > x)) continue;
         const at = (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]) + a[1];
         if (sign > 0 ? !(y < at) : !(at <= y)) continue;
-        if (bucket !== undefined && clampRow(row(at)) !== bucket) continue;
+        if (bucket !== undefined && clampRow(row(Math.min(Math.max(at, Math.min(a[1], b[1])), Math.max(a[1], b[1])))) !== bucket) continue;
       }
       count++;
     }
@@ -2139,14 +2141,12 @@ export function roomiestPoint(rings, precision = 0, extra = null) {
     }
     return top;
   };
-  // At most 64 cells along the long side: a long thin strip (a river 1 px
-  // wide, 3000 long) would otherwise start with thousands of cells, each
-  // over every edge. Bigger cells still bound their room (max), so the
-  // refinement below finds the same point.
-  const step = Math.max(size, Math.max(maxX - minX, maxY - minY) / 64);
-  const half = step / 2;
-  for (let x = minX; x < maxX; x += step) {
-    for (let y = minY; y < maxY; y += step) push(cell(x + half, y + half, half));
+  // Cells of the short side (no cap along the long one: bigger cells ran
+  // the 600-visit budget out before reaching this resolution, and thin
+  // strips got less room; edgeGrid keeps thousands of cells cheap).
+  const half = size / 2;
+  for (let x = minX; x < maxX; x += size) {
+    for (let y = minY; y < maxY; y += size) push(cell(x + half, y + half, half));
   }
   let best = cell(fallback[0], fallback[1], 0);
   const center = cell((minX + maxX) / 2, (minY + maxY) / 2, 0);
@@ -3077,7 +3077,7 @@ export function evaluate(expression, zoom, properties = {}) {
     case "!": return !ev(args[0]);
     case "all": return args.every((value) => ev(value));
     case "any": return args.some((value) => ev(value));
-    case "has": return args[0] in properties;
+    case "has": return Object.prototype.hasOwnProperty.call(properties, args[0]);  // own keys (not "constructor")
     case "to-boolean": return Boolean(ev(args[0]));
     case "to-string": return String(ev(args[0]) ?? "");
     case "concat": return args.map((value) => String(ev(value) ?? "")).join("");
