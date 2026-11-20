@@ -58,12 +58,15 @@ else:
 
 Img = Image.Image  # (typing.TypeAlias needs Python 3.10)
 
-_BASE_CANVAS_PX = 1000
+# Side of a fill / line symbol preview (fallback pattern texture), CSS px.
+_PREVIEW_CSS_PX = 128
 _MAX_CANVAS_PX = 4096
 # First canvas when QGIS's bounds of a marker are larger than the largest.
 _PROBE_CANVAS_PX = 1024
 # WebGL MAX_TEXTURE_SIZE on common desktop GPUs; many phones allow 4096.
 MAX_SHEET_PX = 16384
+# Larger sheets fail on many phones and integrated GPUs: a warning.
+LARGE_SHEET_PX = 8192
 _PX_PER_MM = 96.0 / 25.4
 
 
@@ -124,33 +127,56 @@ class PatternImages:
     retina_1x: bool = False
 
 
+def _path_reach(points) -> float:
+    """CSS px from the image centre to the edge of a symbol drawn along
+    ``points`` (SymbolImage.path), with room for its stroke and effects."""
+    return max((max(abs(x), abs(y)) for x, y in points), default=0.0) + 32
+
+
+def _path_canvas(points, scale_factor: float) -> int:
+    """Canvas side (px) of a symbol drawn along ``points``."""
+    return int(2 * _path_reach(points) * scale_factor) + 2
+
+
 def _pixels_to_millimeters(symbol: QgsSymbol) -> None:
     """Sizes in pixels as the same millimetres (96 DPI): QGIS draws pixel
     sizes 1:1 whatever the render context's scale, so an oversampled sprite
-    (e.g. the @2x sheet) of a pixel-sized marker came out at its 1x size."""
+    (e.g. the @2x sheet) of a pixel-sized marker came out at its 1x size.
+    Sub-symbols (a filled marker's fill) and the symbol's buffer too."""
+    buffer = symbol.bufferSettings() if hasattr(symbol, "bufferSettings") else None
+    for layer in symbol.symbolLayers() + ([buffer] if buffer is not None else []):
+        _object_pixels_to_millimeters(layer)
+        sub = layer.subSymbol() if layer is not buffer else layer.fillSymbol()
+        if sub is not None:
+            _pixels_to_millimeters(sub)
+
+
+def _object_pixels_to_millimeters(layer) -> None:
+    """``_pixels_to_millimeters`` of one symbol layer (or buffer settings)."""
     pixels = Qgis.RenderUnit.Pixels
-    for layer in symbol.symbolLayers():
-        for unit_getter in [name for name in dir(layer)
-                            if name.endswith("Unit") and not name.startswith("set")]:
-            base = unit_getter[:-len("Unit")]
-            setter = f"set{base[:1].upper()}{base[1:]}"
-            unit_setter = f"set{unit_getter[:1].upper()}{unit_getter[1:]}"
-            if not all(hasattr(layer, name) for name in (base, setter, unit_setter)):
+    for unit_getter in [name for name in dir(layer)
+                        if name.endswith("Unit") and not name.startswith("set")]:
+        base = unit_getter[:-len("Unit")]
+        setter = f"set{base[:1].upper()}{base[1:]}"
+        unit_setter = f"set{unit_getter[:1].upper()}{unit_getter[1:]}"
+        if not all(hasattr(layer, name) for name in (base, setter, unit_setter)):
+            continue
+        # A random fill's densityArea is an area: px² to mm².
+        per_mm = _PX_PER_MM ** 2 if base == "densityArea" else _PX_PER_MM
+        try:
+            if getattr(layer, unit_getter)() != pixels:
                 continue
-            try:
-                if getattr(layer, unit_getter)() != pixels:
-                    continue
-                value = getattr(layer, base)()
-                if isinstance(value, QPointF):
-                    value = QPointF(value.x() / _PX_PER_MM, value.y() / _PX_PER_MM)
-                elif isinstance(value, (int, float)):
-                    value = value / _PX_PER_MM
-                else:
-                    continue
-                getattr(layer, setter)(value)
-                getattr(layer, unit_setter)(Qgis.RenderUnit.Millimeters)
-            except (TypeError, AttributeError, RuntimeError):
+            value = getattr(layer, base)()
+            if isinstance(value, QPointF):
+                value = QPointF(value.x() / per_mm, value.y() / per_mm)
+            elif isinstance(value, (int, float)):
+                value = value / per_mm
+            else:
                 continue
+            getattr(layer, setter)(value)
+            getattr(layer, unit_setter)(Qgis.RenderUnit.Millimeters)
+        except (TypeError, AttributeError, RuntimeError):
+            continue
 
 
 # Symbol layers whose zero stroke width QGIS draws with a cosmetic pen (one
@@ -213,26 +239,6 @@ class SymbolImage:
                 "wrap symbol layers in a matching symbol first."
             )
         self._render()
-
-    def _extract_markers(self, symbol: QgsSymbol, markers: list):
-        """Recursively extract marker symbols from a symbol object"""
-        if symbol.type() == QgsSymbol.SymbolType.Marker:
-            markers.append(symbol)
-        else:
-            for sym_layer in symbol.symbolLayers():
-                sub_symbol = sym_layer.subSymbol()
-                if sub_symbol:
-                    self._extract_markers(sub_symbol, markers)
-
-    def _set_symbol_size(self, marker, scale_factor):
-        """Set marker symbol size including outlines and buffer width"""
-        if hasattr(marker, "size") and hasattr(marker, "setSize"):
-            marker.setSize(marker.size() * scale_factor)
-        for sym_layer in marker.symbolLayers():
-            if hasattr(sym_layer, 'strokeWidth') and hasattr(sym_layer, 'setStrokeWidth'):
-                sym_layer.setStrokeWidth(sym_layer.strokeWidth() * scale_factor)
-        if hasattr(marker, "bufferSettings") and marker.bufferSettings():
-            marker.bufferSettings().setSize(marker.bufferSettings().size() * scale_factor)
 
     def _marker_canvas(self, symbol: QgsMarkerSymbol, context_factory, feature=None,
                        expression_context=None) -> int:
@@ -341,9 +347,12 @@ class SymbolImage:
         px around the image's centre, y down, as QGIS draws it there (its
         own pen, dashes, effects)."""
         from qgis.PyQt.QtGui import QPolygonF  # pylint: disable=import-outside-toplevel
-        reach = max((max(abs(x), abs(y)) for x, y in points), default=0.0)
         # Room for the stroke and its effects around the path.
-        canvas = min(_MAX_CANVAS_PX, int(2 * (reach + 32) * self.scale_factor) + 2)
+        canvas = _path_canvas(points, self.scale_factor)
+        if canvas > _MAX_CANVAS_PX:
+            # Cut to the cap, the 2x image of a long callout was shorter
+            # than the 1x one (SpriteGenerator lowers the density instead).
+            raise SpriteRenderError(f"Sprite '{self.name}' would be {canvas} px wide")
         image = QImage(canvas, canvas, _ARGB)
         image.fill(0)
         painter = QPainter(image)
@@ -360,6 +369,25 @@ class SymbolImage:
             else:
                 symbol.renderPolyline(polygon, feature, context)
             symbol.stopRender(context)
+        finally:
+            painter.end()
+        return image
+
+    def _render_preview(self, symbol) -> QImage:
+        """A fill / line symbol's preview (a pattern approximation) on a
+        _PREVIEW_CSS_PX square, drawn with the sprite's render context so
+        the 1x and 2x images show the same pattern. (On a fixed 1000 /
+        2000 px canvas each preview was a 333 CSS px texture: a dozen made
+        an 8000 px @2x sheet that phones cannot load.)"""
+        side = max(1, int(round(_PREVIEW_CSS_PX * self.scale_factor)))
+        image = QImage(side, side, _ARGB)
+        image.fill(0)
+        painter = QPainter(image)
+        painter.setRenderHint(_ANTIALIAS)
+        context = self._context(painter)
+        context.setExpressionContext(QgsExpressionContext(self._feature_context()[1]))
+        try:
+            symbol.drawPreviewIcon(painter, QSize(side, side), context)
         finally:
             painter.end()
         return image
@@ -418,9 +446,8 @@ class SymbolImage:
             symbol.setAngle(0)
         if self.scale_factor > 1 and isinstance(symbol, QgsMarkerSymbol):
             _hairlines_to_one_pixel(symbol)
-        if self.scale_factor != 1 and isinstance(symbol, QgsMarkerSymbol):
+        if self.scale_factor != 1:
             _pixels_to_millimeters(symbol)
-        canvas = int(_BASE_CANVAS_PX * max(1.0, self.scale_factor / 3.0))
         if self.path is not None:
             qt_img = self._render_path(symbol, self.path)
         elif isinstance(symbol, QgsMarkerSymbol) and self.buffer_only:
@@ -428,12 +455,7 @@ class SymbolImage:
         elif isinstance(symbol, QgsMarkerSymbol):
             qt_img = self._render_marker(symbol)
         else:
-            # Fill/line previews (pattern approximations): legacy size scaling.
-            markers = []
-            self._extract_markers(symbol, markers)
-            for marker in markers:
-                self._set_symbol_size(marker, self.scale_factor)
-            qt_img = symbol.asImage(QSize(canvas, canvas))
+            qt_img = self._render_preview(symbol)
         if qt_img is None or qt_img.isNull():
             raise SpriteRenderError(f"QGIS returned an empty image for sprite '{self.name}'")
         pil_img = self._qt_to_pil(qt_img)
@@ -492,6 +514,11 @@ class SpriteGenerator:
             request = SpriteRequest(request)
         try:
             quality = request.oversampling or self.scale_factor
+            if request.path is not None and \
+                    _path_canvas(request.path, quality * self.lower_factor) > _MAX_CANVAS_PX:
+                # A long callout: a lower density (declared as its pixelRatio)
+                # keeps its 2x image within the largest canvas, whole.
+                quality = (_MAX_CANVAS_PX - 2) / (2.0 * _path_reach(request.path) * self.lower_factor)
             frame = {"frame": request.frame, "frame_rate": request.frame_rate}
             frame["buffer_only"] = request.buffer_only
             frame["path"] = request.path
@@ -547,6 +574,12 @@ class SpriteGenerator:
                     "Q2VT_SPRITE_SHEET_TOO_LARGE",
                     f"Sprite sheet @{ratio}x is {sheet.width}x{sheet.height} px; browsers whose "
                     f"GPU textures are smaller than {max(sheet.size)} px draw no icons or "
+                    "patterns.", component="sprite")
+            elif max(sheet.size) > LARGE_SHEET_PX:
+                self.diagnostics.add(
+                    "Q2VT_SPRITE_SHEET_LARGE",
+                    f"Sprite sheet @{ratio}x is {sheet.width}x{sheet.height} px; phones and GPUs "
+                    f"whose textures are smaller than {max(sheet.size)} px draw no icons or "
                     "patterns.", component="sprite")
         self.index = atlas.index
         self.names = sorted(atlas.index[1])
