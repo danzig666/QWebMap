@@ -69,15 +69,13 @@ def test_html_runs_get_their_colour_and_font(plugin, tmp_path, export):  # noqa:
     assert any("background colour" in str(c) for c in codes), codes
 
 
-def test_html_runs_in_the_exported_fields(plugin, tmp_path):
-    """The run fields as the exporter writes them (one feature)."""
+def _exported_runs(tmp_path, text):
     from qgis.core import QgsProcessingFeedback, QgsRectangle  # pylint: disable=import-outside-toplevel
     from q2vt_fixtures import reset_project  # pylint: disable=import-outside-toplevel
     from q2vt_plugin.src.core.rules_flattener import RulesFlattener  # pylint: disable=import-error
     from q2vt_plugin.src.core.rules_exporter import RulesExporter  # pylint: disable=import-error
     from fidelity.diagnostics import DiagnosticCollector  # pylint: disable=import-error
-    layer = _labelled_points(str(tmp_path / "p.gpkg"),
-                             'A <i>it</i> <span style="font-size:20pt;color:blue">big</span>')
+    layer = _labelled_points(str(tmp_path / "p.gpkg"), text)
     reset_project(layer)
     diags = DiagnosticCollector()
     rules = RulesFlattener(0, 22, str(tmp_path), QgsProcessingFeedback(), diags).flatten_all_rules()
@@ -93,6 +91,19 @@ def test_html_runs_in_the_exported_fields(plugin, tmp_path):
              feature[f"q2vt_label_f{i}"]) for i in range(4) if f"q2vt_label_h{i}" in names]
     def plain(value):
         return None if value is None or str(value) == "NULL" else value
-    runs = [tuple(plain(v) for v in run) for run in runs]
+    return [tuple(plain(v) for v in run) for run in runs]
+
+
+def test_html_runs_in_the_exported_fields(plugin, tmp_path):
+    """The run fields as the exporter writes them (one feature)."""
+    runs = _exported_runs(tmp_path, 'A <i>it</i> <span style="font-size:20pt;color:blue">big</span>')
     assert runs[:4] == [("A ", None, None, None), ("it", None, None, "||1"), (" ", None, None, None),
                         ("big", 2.0, "blue", None)], runs
+
+
+def test_size_only_span_keeps_its_text_apart(plugin, tmp_path):
+    """A span setting only an absolute size: its text field holds only its
+    text, paired with its scale (not the whole label scaled)."""
+    runs = _exported_runs(tmp_path, '<span style="font-size:20pt">Big</span> small')
+    assert runs[:2] == [("Big", 2.0, None, None), (" small", None, None, None)], runs
+    assert all(run[0] is None for run in runs[2:]), runs
