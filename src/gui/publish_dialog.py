@@ -3638,6 +3638,10 @@ class PublishDialog(QDialog):
         self.local_profile_json = store.dumps_profile(self.profile)
         self.status.setText(tr("Local web map ready: {} ({} files, {:.1f} MB).").format(
             result.entry_path, len(result.release.files), result.release.total_bytes / 1e6))
+        if result.mbtiles_copy:
+            self.log(tr("MBTiles: {}").format(result.mbtiles_copy))
+        if result.zip_path:
+            self.log(tr("Offline ZIP: {}").format(result.zip_path))
         for warning in result.warnings:
             self.log(f"⚠ {warning}")
         self._update_local_buttons()

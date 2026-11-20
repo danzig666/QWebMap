@@ -21,11 +21,13 @@ Activation replaces ``current.json`` with ``os.replace`` after an fsync;
 failures before that leave the previous release current and intact.
 """
 
+import contextlib
 import datetime as _dt
 import hashlib
 import html
 import json
 import os
+import platform
 import posixpath
 import re
 import shutil
@@ -98,30 +100,80 @@ class ReleaseResult:
 
 # --- locking / recovery -----------------------------------------------------------------
 
+def _process_alive(pid: int) -> bool:
+    """Whether process ``pid`` runs on this computer (True when unsure)."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes  # pylint: disable=import-outside-toplevel
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return kernel32.GetLastError() == 5  # access denied: it exists
+            try:
+                code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return True
+                return code.value == 259  # STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        except (AttributeError, OSError, ValueError):
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
 class PublicationLock:
-    """Prevents two local builds into one publication folder at once."""
+    """Prevents two local builds into one publication folder at once. A lock
+    file left by a closed or crashed QGIS (its process is gone; or 6 hours
+    old) is removed."""
 
     def __init__(self, publication_dir: str):
         self.path = os.path.join(publication_dir, LOCK_NAME)
         self.fd = None
+
+    def _stale(self) -> bool:
+        try:
+            age = time.time() - os.path.getmtime(self.path)
+            with open(self.path, encoding="utf-8", errors="replace") as handle:
+                parts = handle.read().split()
+        except OSError:
+            return False
+        if age > LOCK_STALE_S:
+            return True
+        # "pid time host": a process of this computer that has ended (not
+        # this one: two exports of one QGIS do not share a folder either).
+        if len(parts) >= 3 and parts[2] == platform.node() and parts[0].isdigit():
+            pid = int(parts[0])
+            return pid != os.getpid() and not _process_alive(pid)
+        return False
 
     def __enter__(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         for _ in range(2):
             try:
                 self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(self.fd, f"{os.getpid()} {time.time():.0f}".encode())
+                os.write(self.fd, f"{os.getpid()} {time.time():.0f} {platform.node()}".encode())
                 return self
             except FileExistsError:
-                try:
-                    age = time.time() - os.path.getmtime(self.path)
-                except OSError:
+                if not os.path.exists(self.path):
                     continue
-                if age > LOCK_STALE_S:
-                    os.remove(self.path)
+                if self._stale():
+                    try:
+                        os.remove(self.path)
+                    except OSError:
+                        pass
                     continue
                 raise PublishingError("Q2VT_PUB_DESTINATION",
-                                      "Another export is writing this publication folder.")
+                                      "Another export is writing this publication folder.",
+                                      detail=f"If no export is running (QGIS was closed during one), "
+                                             f"delete {self.path}")
         raise PublishingError("Q2VT_PUB_DESTINATION", "Could not lock the publication folder.")
 
     def __exit__(self, *exc):
@@ -140,7 +192,10 @@ def recover(publication_dir: str) -> List[str]:
     releases = os.path.join(publication_dir, "releases")
     if os.path.isdir(releases):
         for name in os.listdir(releases):
-            if name.startswith(".staging-"):
+            # A release without release.json: one whose move into an
+            # unversioned site failed part-way (a finished release has one).
+            if name.startswith(".staging-") or (RELEASE_ID.match(name) and not os.path.exists(
+                    os.path.join(releases, name, "release.json"))):
                 shutil.rmtree(os.path.join(releases, name), ignore_errors=True)
                 removed.append(f"releases/{name}")
     if os.path.isdir(publication_dir):
@@ -459,7 +514,7 @@ def build_release(bundle: ExportBundle, profile: PublicationProfile, publication
                   connect_origins: Iterable[str] = (),
                   pmtiles_path: Optional[str] = None,
                   extra_validators: Optional[List[Callable[[str, dict], None]]] = None,
-                  stable_entry: bool = True) -> ReleaseResult:
+                  stable_entry: bool = True, locked: bool = False) -> ReleaseResult:
     """Build, validate and (optionally) activate one immutable local release.
 
     ``extra_files``: ``{release path: local file}`` (legend swatches, ...).
@@ -470,13 +525,15 @@ def build_release(bundle: ExportBundle, profile: PublicationProfile, publication
     ``extra_validators``: callables ``(staging_dir, manifest)`` raising
     PublishingError; they run before the release is renamed into place.
     ``stable_entry``: False for a release that is moved out as a whole site
-    (unversioned local output): no entry page at the publication root."""
+    (unversioned local output): no entry page at the publication root.
+    ``locked``: the caller holds the folder's PublicationLock (export_local,
+    from PLAN to the moved site)."""
     if transport not in ("pmtiles", "xyz"):
         raise ValueError(transport)
     progress = feedback if isinstance(feedback, Progress) else Progress(feedback)
     publication_dir = os.path.abspath(publication_dir)
     os.makedirs(os.path.join(publication_dir, "releases"), exist_ok=True)
-    with PublicationLock(publication_dir):
+    with contextlib.nullcontext() if locked else PublicationLock(publication_dir):
         recover(publication_dir)
         release_id = new_release_id()
         staging = os.path.join(publication_dir, "releases", f".staging-{release_id}")
