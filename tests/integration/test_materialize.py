@@ -3527,10 +3527,36 @@ def test_meters_at_scale_arrow_sizes_are_in_project_units(plugin, crs, wkt, per_
         getattr(arrow, f"set{name}")(value)
         getattr(arrow, f"set{name}Unit")(Qgis.RenderUnit.MetersInMapUnits)
     layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([arrow])))
-    rules, _diags = _flatten_in(layer, crs)
+    rules, diags = _flatten_in(layer, crs)
     sizes = [r.recipe.param("sizes") for r in rules if r.recipe is not None and r.recipe.kind == "arrow_polygons"]
     assert sizes and all(s[:4] == pytest.approx((5 * per_metre, 5 * per_metre, 10 * per_metre, 5 * per_metre),
                                                 rel=1e-3) for s in sizes)
+    # One factor at the export centre in a geographic CRS: reported.
+    centred = [d for d in diags.by_code("Q2VT_SYMBOL_APPROXIMATE") if "centre" in d.message]
+    assert bool(centred) == (crs == "EPSG:4326")
+
+
+def test_meters_at_scale_arrow_fill_offset_without_a_crs(plugin):
+    """Millimetre arrow sizes with a fill offset in meters at scale and no
+    project CRS: the painter offsets multiplied by None (TypeError)."""
+    from qgis.core import QgsArrowSymbolLayer, QgsSimpleFillSymbolLayer
+    from qgis.PyQt.QtCore import QPointF
+    layer = _memory_layer("LineString", "LINESTRING(0 0, 3000 0)", "EPSG:3857")
+    arrow = QgsArrowSymbolLayer()
+    fills = []
+    for colour, offset in (("black", QPointF(2, 2)), ("red", QPointF(0, 0))):
+        fill = QgsSimpleFillSymbolLayer(QColor(colour))
+        fill.setStrokeStyle(Qt.PenStyle.NoPen)
+        fill.setOffset(offset)
+        fill.setOffsetUnit(Qgis.RenderUnit.MetersInMapUnits)
+        fills.append(fill)
+    arrow.setSubSymbol(QgsFillSymbol(fills))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsLineSymbol([arrow])))
+    rules, diags = _flatten_in(layer, "")
+    recipes = [r.recipe for r in rules if r.recipe is not None and r.recipe.kind == "arrow_polygons"]
+    assert recipes and any(r.param("painter") and r.param("painter")[0] == pytest.approx((2, -2))
+                           for r in recipes)
+    assert any("without a valid project CRS" in d.message for d in diags.by_code("Q2VT_SYMBOL_APPROXIMATE"))
 
 
 @pytest.mark.skipif(not hasattr(__import__("qgis.core").core, "QgsFilledLineSymbolLayer"),
@@ -3547,6 +3573,8 @@ def test_filled_line_keeps_the_symbol_opacity_and_offset(plugin, tmp_path):
     filled.setOffsetUnit(Qgis.RenderUnit.Millimeters)
     filled.setDataDefinedProperty(QgsSymbolLayer.Property.PropertyStrokeWidth, QgsProperty.fromExpression('"id" + 2'))
     filled.subSymbol().setColor(QColor("black"))
+    filled.subSymbol().symbolLayer(0).setDataDefinedProperty(
+        QgsSymbolLayer.Property.PropertyFillColor, QgsProperty.fromExpression("if(\"id\" > 1, 'red', 'black')"))
     symbol = QgsLineSymbol([filled])
     symbol.setOpacity(0.5)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
@@ -3560,3 +3588,5 @@ def test_filled_line_keeps_the_symbol_opacity_and_offset(plugin, tmp_path):
         line = line_symbol.symbolLayer(0)
         assert line.offset() == pytest.approx(3)
         assert line.dataDefinedProperties().isActive(QgsSymbolLayer.Property.PropertyStrokeWidth)
+        # The fill's data-defined colour colours the line.
+        assert line.dataDefinedProperties().isActive(QgsSymbolLayer.Property.PropertyStrokeColor)

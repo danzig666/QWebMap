@@ -3515,14 +3515,24 @@ class SymbolMaterializer:
         screen = any(abs(v or 0.0) > 1e-12 and normalize_unit(u) not in ("map", "m")
                      for v, u in values)
         # "Meters at scale" in project map units; in a geographic CRS at the
-        # map's centre, as QGIS converts them.
+        # map's centre, as QGIS converts them (the arrow sizes and the
+        # painter fill offsets below).
+        metres = any(normalize_unit(u) == "m" for _, u in values) or any(
+            normalize_unit(l.offsetUnit()) == "m" for l in fill_layers
+            if l.layerType() == "SimpleFill")
         per_metre = self._scaled_map_distance(1.0, Qgis.RenderUnit.MetersInMapUnits)
         if per_metre is None:
             per_metre = self._metre_at_centre(flat_rule)
-        if per_metre is None and any(normalize_unit(u) == "m" for _, u in values):
-            self._report("Q2VT_SYMBOL_APPROXIMATE",
-                         "Arrow sizes in meters at scale without a valid project CRS; "
-                         "read as map units.", flat_rule)
+            # QGIS converts at each view's centre: one factor, the export's.
+            if per_metre is not None and metres:
+                self._report("Q2VT_SYMBOL_APPROXIMATE",
+                             "Arrow sizes in meters at scale in a geographic CRS are converted "
+                             "at the export extent's centre (QGIS: at each view's centre).", flat_rule)
+        if per_metre is None:
+            if metres:
+                self._report("Q2VT_SYMBOL_APPROXIMATE",
+                             "Arrow sizes in meters at scale without a valid project CRS; "
+                             "read as map units.", flat_rule)
             per_metre = 1.0
         crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         base = (("crs", crs), ("curved", bool(layer.isCurved())),
