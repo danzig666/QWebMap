@@ -976,6 +976,15 @@ def test_diagrams_follow_the_layer_scale_range_and_web_limits(flattener, hidden_
     assert diagram.visibility.min_zoom == pytest.approx(zm.scale_to_zoom(10000.0))
 
 
+@pytest.fixture
+def heatmap_points():
+    """Builds the heatmap layer; the project is cleared and back in
+    EPSG:3857 after the test, so a failure here does not leave the next
+    test a layer and CRS it did not set up."""
+    yield _heatmap_points
+    reset_project()
+
+
 def _heatmap_points(crs, radius, unit):
     """2000 points over 5 km at latitude 45 in ``crs`` with a heatmap; the
     project in that CRS."""
@@ -1003,29 +1012,32 @@ def _heatmap_points(crs, radius, unit):
     return layer
 
 
-def test_heatmap_density_in_a_geographic_project_is_that_of_a_mercator_one(flattener):
+def test_heatmap_density_in_a_geographic_project_is_that_of_a_mercator_one(flattener,
+                                                                          heatmap_points):
     """The same points in EPSG:4326: densities were counted with a radius in
     metres over coordinates in degrees (the whole layer in one kernel, a
     heatmap drawn hundreds of times too faint)."""
     from qgis.core import Qgis
     stops = {}
     for crs in ("EPSG:3857", "EPSG:4326"):
-        _heatmap_points(crs, 3, Qgis.RenderUnit.Millimeters)
+        heatmap_points(crs, 3, Qgis.RenderUnit.Millimeters)
         rules, _ = flattener(12, 16)
         stops[crs] = dict(rules[0].heatmap["intensity_stops"])
+        del rules  # no rule outlives its layer into the next project
     for zoom in (12, 14, 16):
         assert stops["EPSG:4326"][zoom] == pytest.approx(stops["EPSG:3857"][zoom], rel=0.05)
     assert stops["EPSG:4326"][16] > 3 * stops["EPSG:4326"][12]
 
 
-def test_heatmap_map_unit_radius_in_degrees_becomes_mercator_pixels(flattener):
+def test_heatmap_map_unit_radius_in_degrees_becomes_mercator_pixels(flattener, heatmap_points):
     """A radius of 0.01 degrees: about 1113 Mercator units, not 0.01 'metres'
     (an invisible heatmap)."""
     from qgis.core import Qgis
     from fidelity.heatmap import map_units_per_css_px
-    _heatmap_points("EPSG:4326", 0.01, Qgis.RenderUnit.MapUnits)
+    heatmap_points("EPSG:4326", 0.01, Qgis.RenderUnit.MapUnits)
     rules, _ = flattener(12, 16)
     radius = dict(rules[0].heatmap["radius_stops"])
+    del rules
     assert radius[0] == pytest.approx(0.01 * 40075016.68557849 / 360 / map_units_per_css_px(0),
                                       rel=1e-6)
 
