@@ -107,3 +107,13 @@ def test_size_only_span_keeps_its_text_apart(plugin, tmp_path):
     runs = _exported_runs(tmp_path, '<span style="font-size:20pt">Big</span> small')
     assert runs[:2] == [("Big", 2.0, None, None), (" small", None, None, None)], runs
     assert all(run[0] is None for run in runs[2:]), runs
+
+
+def test_html_entities_get_their_glyphs(plugin, tmp_path):
+    """The glyph scan reads the stored label (raw markup): the characters its
+    entities decode to, drawn from the section fields, are built too."""
+    from q2vt_plugin.src.core.glyphs_generator import GlyphGenerator  # pylint: disable=import-error
+    path = str(tmp_path / "p.gpkg")
+    _labelled_points(path, "Caf&eacute; &#8364;5&nbsp;x AT&amp;T")
+    chars = GlyphGenerator._extract_unique_chars([path], "t")  # pylint: disable=protected-access
+    assert {"é", "€", " ", "&", "a", "m", "p", ";"} <= chars, chars
