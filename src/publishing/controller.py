@@ -37,7 +37,7 @@ from .progress import Progress
 from .search_index import build_search_index
 from .bundle import walk_files
 from .validation import safe_relative_path, scan_text_for_leaks
-from .web_builder import PublicationLock, ReleaseResult, build_release, write_zip
+from .web_builder import RELEASE_ID, PublicationLock, ReleaseResult, build_release, write_zip
 
 STAGES = ["PLAN", "EXPORT_MVT", "RECORDS", "LEGEND", "PARCELS", "RASTER", "BASEMAP", "STREETS", "TILES",
           "BUILD_RELEASE",
@@ -699,6 +699,16 @@ def _flat_state(path: str) -> set:
     return out
 
 
+def _flat_release(path: str) -> str:
+    """The release id the state file names, "" when none is valid."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            release_id = json.load(handle).get("release")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return release_id if isinstance(release_id, str) and RELEASE_ID.match(release_id) else ""
+
+
 def _write_flat_state(state_path: str, release_id: str, files) -> None:
     tmp = state_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
@@ -729,6 +739,11 @@ def flatten_release(release, publication_dir: str, progress=None) -> None:
     files = walk_files(site)
     state_path = os.path.join(publication_dir, FLAT_STATE)
     previous = _flat_state(state_path)
+    # The release an earlier move was moving: still there when that move
+    # failed on its release.json (recover() keeps a release that has one).
+    moved = _flat_release(state_path)
+    if moved and moved != release.release_id:
+        shutil.rmtree(os.path.join(publication_dir, "releases", moved), ignore_errors=True)
     entry = "index.html"
     # Old and new files listed before any is moved: after a move that failed
     # part-way the next export still removes what this one wrote.

@@ -116,6 +116,17 @@ def test_web_addresses_and_approved_attribute_values_are_no_leaks(tmp_path):
     assert scan_bundle(str(tmp_path), ["search/manifest.json"]) == ["search/manifest.json: absolute local path"]
 
 
+def test_attribute_files_are_not_parsed_for_paths(tmp_path, monkeypatch):
+    """A large lookup file is not JSON-parsed only to drop its path result."""
+    import publishing.validation as validation  # pylint: disable=import-outside-toplevel
+    parsed = []
+    monkeypatch.setattr(validation, "_json_strings", lambda text: parsed.append(text) or [])
+    (tmp_path / "features").mkdir()
+    (tmp_path / "features" / "a.json").write_text('{"k": "pw-123456"}')
+    assert scan_bundle(str(tmp_path), ["features/a.json"], ["pw-123456"]) == ["features/a.json: credential value"]
+    assert parsed == []
+
+
 def test_line_breaks_in_json_text_are_no_local_paths(tmp_path):
     """JSON writes a line break or tab as \\n / \\t: "Data source:" before a
     line break is no "C:\\n..." path. Paths are found in the decoded strings,
@@ -140,3 +151,6 @@ def test_crs_grid_files_are_published_without_their_path():
         "+nadgrids=@a.gsb,@null +geoidgrids=@h.gtx"
     assert public_proj("+proj=utm +zone=34 +nadgrids=@null") == "+proj=utm +zone=34 +nadgrids=@null"
     assert not scan_text_for_leaks(json.dumps({"proj": public_proj("+nadgrids=\\\\srv\\g\\a.gsb")}))
+    # A quoted value with a space (PROJ quotes it): the whole path goes.
+    assert public_proj('+nadgrids="C:/Program Files/x.gsb" +x') == "+nadgrids=@x.gsb +x"
+    assert public_proj('+nadgrids="C:/Program Files/my grid.gsb" +x') == '+nadgrids="@my grid.gsb" +x'

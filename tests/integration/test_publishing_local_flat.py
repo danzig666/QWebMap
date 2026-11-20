@@ -150,6 +150,31 @@ def test_a_site_move_that_fails_part_way_is_repaired_by_the_next_export(tmp_path
     assert json.load(open(os.path.join(pub, "manifest.json"), encoding="utf-8"))["releaseId"] == third.release_id
 
 
+def test_a_release_whose_first_move_failed_is_removed_by_the_next_export(tmp_path, monkeypatch):
+    """The move of release.json fails: the release keeps it (recover() keeps
+    it as finished); the next export removes it by the state file's id."""
+    from publishing import controller
+    from publishing.models import PublicationProfile
+    from publishing.web_builder import build_release, recover
+    from publishing_fixtures import fixture_bundle
+    bundle = fixture_bundle(str(tmp_path / "export"))
+    profile = PublicationProfile(title="Teszt", slug="teszt")
+    pub = str(tmp_path / "web" / "teszt")
+    first = build_release(bundle, profile, pub, activate=False, stable_entry=False)
+
+    def failing(source, target):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(controller, "_replace", failing)
+    with pytest.raises(PermissionError):
+        controller.flatten_release(first, pub)
+    monkeypatch.undo()
+    assert recover(pub) == [] and os.path.isdir(first.release_dir)
+    second = build_release(bundle, profile, pub, activate=False, stable_entry=False)
+    controller.flatten_release(second, pub)
+    assert not os.path.exists(os.path.join(pub, "releases"))
+
+
 def test_a_file_in_use_is_replaced_when_it_is_free_again(tmp_path, monkeypatch):
     from publishing import controller
     calls = []

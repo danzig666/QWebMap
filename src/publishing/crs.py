@@ -9,8 +9,9 @@ import re
 from typing import Optional
 
 # Grid files of a datum shift (+nadgrids=C:/grids/x.gsb): the visitor's
-# proj4js has none of them, and a local path must not be published.
-_GRID_PARAM = re.compile(r"\+(nadgrids|geoidgrids|grids)=(\S+)")
+# proj4js has none of them, and a local path must not be published. PROJ
+# may quote a value with a space ("C:/Program Files/x.gsb").
+_GRID_PARAM = re.compile(r'\+(nadgrids|geoidgrids|grids)=("[^"]*"|\S+)')
 
 
 def public_proj(proj: str) -> str:
@@ -20,8 +21,13 @@ def public_proj(proj: str) -> str:
         name = re.split(r"[\\/]", item.lstrip("@"))[-1]
         return item if name == item.lstrip("@") and ":" not in name else f"@{name}"
 
-    return _GRID_PARAM.sub(lambda m: f"+{m.group(1)}=" + ",".join(grid(i) for i in m.group(2).split(",")),
-                           proj or "")
+    def param(m) -> str:
+        value = m.group(2)
+        quoted = value[:1] == '"'
+        value = ",".join(grid(i) for i in (value[1:-1] if quoted else value).split(","))
+        return f'+{m.group(1)}="{value}"' if quoted and re.search(r"\s", value) else f"+{m.group(1)}={value}"
+
+    return _GRID_PARAM.sub(param, proj or "")
 
 
 def project_crs_info(project) -> Optional[dict]:

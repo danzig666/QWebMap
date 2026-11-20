@@ -107,10 +107,16 @@ def _process_alive(pid: int) -> bool:
     if os.name == "nt":
         try:
             import ctypes  # pylint: disable=import-outside-toplevel
-            kernel32 = ctypes.windll.kernel32
+            # use_last_error: ctypes keeps the call's error (a later call may
+            # overwrite GetLastError); a HANDLE is a pointer, not a C int.
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+            kernel32.GetExitCodeProcess.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong))
+            kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
             handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
             if not handle:
-                return kernel32.GetLastError() == 5  # access denied: it exists
+                return ctypes.get_last_error() == 5  # access denied: it exists
             try:
                 code = ctypes.c_ulong()
                 if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
