@@ -66,3 +66,15 @@ def test_format_lists_colours_and_fonts_per_section():
     assert options["text-font"] == ["match", ["coalesce", ["get", "q2vt_label_f0"], ""],
                                     "|1|", ["literal", ["Arial Bold"]], ["literal", ["Arial Regular"]]]
     assert "text-color" not in format_expression()[2]
+
+
+def test_size_only_span_fields_come_from_one_parse():
+    """An absolute font-size alone starts a run only with the base size: the
+    text, colour and font fields use it like the scale field (pairs by index)."""
+    from fidelity.html_labels import (html_runs, section_color, section_font, section_scale,
+                                      section_text)
+    text = '<span style="font-size:20pt">Big</span> small'
+    assert len(html_runs(text, 10)) == 2
+    assert [section_text(text, i, 10) for i in range(3)] == ["Big", " small", None]
+    assert [section_scale(text, i, 10) for i in range(2)] == [2.0, None]
+    assert section_color(text, 1, 10) is None and section_font(text, 1, 10) is None

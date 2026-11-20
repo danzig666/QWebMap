@@ -4815,17 +4815,18 @@ class RulesExporter:
             # with their own scale, colour and font.
             html_labels.register_expression_functions()
             base = _format_points(settings.format())
-            base = repr(base) if base else "NULL"
+            # 0, not NULL: a NULL argument makes the function NULL.
+            base = repr(base) if base else "0"
             for index in range(html_labels.MAX_SECTIONS):
-                fields.append((10, f"q2vt_html_text({filter_exp}, {index})",
+                fields.append((10, f"q2vt_html_text({filter_exp}, {index}, {base})",
                                html_labels.TEXT_FIELD.format(index)))
                 fields.append((6, f"q2vt_html_scale({filter_exp}, {index}, {base})",
                                html_labels.SCALE_FIELD.format(index)))
-                fields.append((10, f"q2vt_html_color({filter_exp}, {index})",
+                fields.append((10, f"q2vt_html_color({filter_exp}, {index}, {base})",
                                html_labels.COLOR_FIELD.format(index)))
-                fields.append((10, f"q2vt_html_font({filter_exp}, {index})",
+                fields.append((10, f"q2vt_html_font({filter_exp}, {index}, {base})",
                                html_labels.FONT_FIELD.format(index)))
-            fields.append((2, f"q2vt_html_flags({filter_exp})", html_labels.FLAGS_FIELD))
+            fields.append((2, f"q2vt_html_flags({filter_exp}, {base})", html_labels.FLAGS_FIELD))
         settings.isExpression = False
         settings.fieldName = field_name
         return fields

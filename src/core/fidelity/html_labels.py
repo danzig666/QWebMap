@@ -238,9 +238,11 @@ def _run(text, index: int, base_points=None) -> Optional[Run]:
     return runs[index] if index < len(runs) else None
 
 
-def section_text(text, index: int) -> Optional[str]:
+# Every section field takes the label's base size: an absolute font-size
+# starts a run only with it, so fields parsed without it pair up wrongly.
+def section_text(text, index: int, base_points=None) -> Optional[str]:
     """None after the last run (a NULL field: not written into the tiles)."""
-    run = _run(text, index)
+    run = _run(text, index, base_points)
     return run.text if run else None
 
 
@@ -250,13 +252,13 @@ def section_scale(text, index: int, base_points=None) -> Optional[float]:
     return run.scale if run and run.scale != 1.0 else None
 
 
-def section_color(text, index: int) -> Optional[str]:
-    run = _run(text, index)
+def section_color(text, index: int, base_points=None) -> Optional[str]:
+    run = _run(text, index, base_points)
     return (run.color or None) if run else None
 
 
-def section_font(text, index: int) -> Optional[str]:
-    run = _run(text, index)
+def section_font(text, index: int, base_points=None) -> Optional[str]:
+    run = _run(text, index, base_points)
     return (run.font or None) if run else None
 
 
@@ -285,13 +287,15 @@ def format_expression(color=None, fonts: Optional[list] = None) -> list:
 
 
 def register_expression_functions() -> None:
-    """``q2vt_html_text/scale/color/font(text, i)`` and
-    ``q2vt_html_flags(text)`` for the exporter's field calculation
-    (idempotent)."""
+    """``q2vt_html_text/scale/color/font(text, i, base_points)`` and
+    ``q2vt_html_flags(text, base_points)`` for the exporter's field
+    calculation (idempotent)."""
     from qgis.core import QgsExpression  # pylint: disable=import-outside-toplevel
     from qgis.core import qgsfunction  # pylint: disable=import-outside-toplevel
 
-    if QgsExpression.isFunctionName("q2vt_html_color"):
+    # _REGISTERED is empty after a plugin reload: replace the old module's
+    # functions (another signature).
+    if _REGISTERED and QgsExpression.isFunctionName("q2vt_html_color"):
         return
     for name in ("q2vt_html_text", "q2vt_html_scale"):  # an older registration
         if QgsExpression.isFunctionName(name):
@@ -299,24 +303,24 @@ def register_expression_functions() -> None:
 
     # The legacy ``args=2`` form crashes QGIS 3.34; arguments come evaluated.
     @qgsfunction(group="Custom", referenced_columns=[])
-    def q2vt_html_text(text, index):
-        return section_text(text, int(index))
+    def q2vt_html_text(text, index, base_points=None):
+        return section_text(text, int(index), base_points)
 
     @qgsfunction(group="Custom", referenced_columns=[])
     def q2vt_html_scale(text, index, base_points):
         return section_scale(text, int(index), base_points)
 
     @qgsfunction(group="Custom", referenced_columns=[])
-    def q2vt_html_color(text, index):
-        return section_color(text, int(index))
+    def q2vt_html_color(text, index, base_points=None):
+        return section_color(text, int(index), base_points)
 
     @qgsfunction(group="Custom", referenced_columns=[])
-    def q2vt_html_font(text, index):
-        return section_font(text, int(index))
+    def q2vt_html_font(text, index, base_points=None):
+        return section_font(text, int(index), base_points)
 
     @qgsfunction(group="Custom", referenced_columns=[])
-    def q2vt_html_flags(text):
-        return html_flags(text) or None
+    def q2vt_html_flags(text, base_points=None):
+        return html_flags(text, base_points) or None
 
     # QGIS keeps only a pointer: without a reference the functions are
     # garbage collected and the next evaluation crashes.

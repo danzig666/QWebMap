@@ -1,3 +1,4 @@
+import html
 import os
 import math
 import logging
@@ -308,6 +309,8 @@ class GlyphGenerator:
                         val = feat.GetFieldAsString(field_idx)
                         if val:
                             unique_chars.update(val)
+                            if "&" in val:  # HTML labels: the decoded entities are drawn
+                                unique_chars.update(html.unescape(val))
                     feat = base_layer.GetNextFeature()
 
             except Exception as e:

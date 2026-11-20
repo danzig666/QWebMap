@@ -578,6 +578,10 @@ def test_label_data_defined_opacity_and_buffer_colour(mc):
     settings.setDataDefinedProperties(props)
     halo = mc.TextPropertyExtractor.get_text_halo_color(text, settings)
     assert halo[0] == "let" and "q2vt_c" in str(halo) and halo[-1][-1] == ["*", ["at", 3, ["var", "q2vt_halo"]], 0.5]
+    # A NULL value falls back to the buffer colour, its opacity applied once.
+    fallback = halo[2][1][-1]
+    assert halo[2][1][:2] == ["to-color", ["get", "q2vt_c"]], halo
+    assert fallback.replace(" ", "").endswith(",1.0)") or fallback.replace(" ", "").endswith(",1)"), fallback
 
 
 @pytest.mark.parametrize("mode,drawn", [(0, False), (1, True), (2, True)])
@@ -599,3 +603,26 @@ def test_paint_effect_draw_modes(mc, mode, drawn):
     below, _ = exporter._line_effect_layers(  # pylint: disable=protected-access
         layer, {"id": "l", "type": "line", "paint": {"line-width": 1, "line-color": "#000"}})
     assert bool(below) is drawn
+
+
+def test_glow_keeps_its_colour_alpha_a_shadow_does_not(mc):
+    """QGIS draws an outer glow with its colour's alpha, a drop shadow's
+    colour opaque (QgsImageOperation::overlayColor; checked against QGIS)."""
+    from qgis.core import QgsDrawSourceEffect, QgsDropShadowEffect, QgsEffectStack, QgsOuterGlowEffect
+    def opacity(effect_class, alpha):
+        effect = effect_class()
+        effect.setColor(QColor(0, 0, 0, alpha))
+        effect.setOpacity(1.0)
+        stack = QgsEffectStack(effect)
+        stack.appendEffect(QgsDrawSourceEffect())
+        layer = QgsSimpleLineSymbolLayer(QColor("black"), 1.0)
+        layer.setPaintEffect(stack)
+        exporter = mc.QgisMapLibreStyleExporter.__new__(mc.QgisMapLibreStyleExporter)
+        exporter.context = mc.PropertyExtractor.context
+        below, _ = exporter._line_effect_layers(  # pylint: disable=protected-access
+            layer, {"id": "l", "type": "line", "paint": {"line-width": 1, "line-color": "#000"}})
+        return below[0]["paint"]["line-opacity"]
+
+    assert opacity(QgsOuterGlowEffect, 128) == pytest.approx(
+        opacity(QgsOuterGlowEffect, 255) * 128 / 255, rel=0.01)
+    assert opacity(QgsDropShadowEffect, 128) == opacity(QgsDropShadowEffect, 255)

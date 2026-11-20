@@ -9,8 +9,8 @@ tree and collects all active data-defined properties, returning
 import re
 from typing import Optional
 
-from qgis.core import (Qgis, QgsExpression, QgsProperty, QgsPropertyDefinition, QgsSymbol,
-                       QgsSymbolLayerUtils)
+from qgis.core import (Qgis, QgsExpression, QgsPalLayerSettings, QgsProperty,
+                       QgsPropertyDefinition, QgsSymbol, QgsSymbolLayerUtils)
 
 from ..utils.config import QVariant
 from ..utils.qt_compat import enum_int
@@ -235,9 +235,17 @@ class DataDefinedPropertiesFetcher:
         props = obj.dataDefinedProperties()
         suffix = self._suffix if self._objects == 0 else f"{self._suffix}_{self._objects}"
         self._objects += 1
+        skipped = set()
+        if isinstance(obj, QgsPalLayerSettings):
+            # Label placement the converter reads only statically (reported
+            # there): no tile fields nobody reads.
+            from .maplibre_converter import TextPropertyExtractor  # pylint: disable=import-outside-toplevel
+            skipped = {enum_int(getattr(QgsPalLayerSettings.Property, name))
+                       for name in TextPropertyExtractor.UNREAD_PLACEMENT_PROPERTIES
+                       if hasattr(QgsPalLayerSettings.Property, name)}
         for key in sorted(props.propertyKeys()):  # a set: fixed order across sessions
             prop = props.property(key)
-            if not prop or not prop.isActive():
+            if not prop or not prop.isActive() or enum_int(key) in skipped:
                 continue
 
             property_kind = enum_int(prop.propertyType())  # (a Python enum on Qt 6)
