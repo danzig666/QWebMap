@@ -2724,7 +2724,7 @@ class PublishDialog(QDialog):
         self.o_reuse = QCheckBox(tr("Reuse unchanged layers from earlier exports (faster)"))
         self.o_reuse.setToolTip(tr("Layers whose data files, style and export settings did not change "
                                    "since an earlier export in this output folder are not processed "
-                                   "again. Database and web layers are always exported."))
+                                   "again. Database, web and memory layers are always exported."))
         clear_cache = QPushButton(tr("Clear cache…"))
         clear_cache.clicked.connect(self.clear_cache)
         cache_row.addWidget(self.o_reuse, 1)
