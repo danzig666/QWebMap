@@ -34,7 +34,7 @@ from .models import PublicationProfile, ReleaseState
 from .progress import Progress
 from .search_index import build_search_index
 from .bundle import walk_files
-from .validation import safe_relative_path
+from .validation import safe_relative_path, scan_text_for_leaks
 from .web_builder import ReleaseResult, build_release, write_zip
 
 STAGES = ["PLAN", "EXPORT_MVT", "RECORDS", "LEGEND", "PARCELS", "RASTER", "BASEMAP", "STREETS", "TILES",
@@ -304,6 +304,14 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
     stage("PLAN")
     from .crs import project_crs_info  # pylint: disable=import-outside-toplevel
     crs_info = project_crs_info(project)
+    # The manifest's own texts: a path in them is found now, not by the leak
+    # scan after the (long) tile export.
+    for name, value in (("Title", profile.title), ("Description", profile.description),
+                        ("Attribution", profile.attribution),
+                        ("Parcel report disclaimer", profile.parcel_info.disclaimer)):
+        if value and "absolute local path" in scan_text_for_leaks(json.dumps({"v": value})):
+            raise PublishingError("Q2VT_PUB_SECRET_LEAK",
+                                  f"{name}: remove the local file path from it (Publish window).")
     problems = qgis_model.check_profile_against_project(profile, project)
     if problems:
         raise PublishingError("Q2VT_PUB_PROFILE_INVALID", " ".join(problems[:6]),

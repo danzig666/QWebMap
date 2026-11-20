@@ -407,6 +407,11 @@ TEXT_EXTENSIONS = {".html", ".json", ".mjs", ".js", ".css", ".txt", ".md", ".svg
 # https://example.com/home/plans.pdf is no local path.)
 _ABS_PATH = re.compile(r"(?:[A-Za-z]:\\\\|[A-Za-z]:\\[^\\\s\"]|(?<![\w.~%-])(?:/home/|/Users/|/tmp/|"
                        r"/var/folders/)|\\\\Users\\\\|file:///)")
+# The same in the strings of a JSON file, decoded: its encoded text has
+# "Zone:\n" for a line break after "Zone:", no path. Also drive paths with
+# forward slashes and network shares (a grid file in a CRS definition).
+_ABS_PATH_DECODED = re.compile(r"(?:(?<![\w.+/-])[A-Za-z]:(?:\\|/(?=[^/\s]))|(?<![\w\\])\\\\[\w.$-]+\\|"
+                               r"(?<![\w.~%-])(?:/home/|/Users/|/tmp/|/var/folders/)|\\Users\\|file:///)")
 # Attribute values the user approved (popup lookup, search): a value may be a
 # Windows path or say "password =": only secret and canary values are looked for.
 _ATTRIBUTE_DATA = ("features/", "search/")
@@ -435,10 +440,32 @@ def check_public_file(relative: str, allow_mbtiles: bool = False) -> None:
         raise PublishingError("Q2VT_PUB_FORBIDDEN_FILE", relative)
 
 
+def _json_strings(text: str) -> Optional[List[str]]:
+    """The keys and string values of a JSON document, None for other text."""
+    if text.lstrip()[:1] not in ("{", "["):
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    out, stack = [], [data]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            out.extend(k for k in item if isinstance(k, str))
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return out
+
+
 def scan_text_for_leaks(text: str, secrets: Iterable[str] = ()) -> List[str]:
     """Absolute local paths and known secret values found in ``text``."""
     problems = []
-    if _ABS_PATH.search(text):
+    strings = _json_strings(text)
+    if any(_ABS_PATH_DECODED.search(v) for v in strings) if strings is not None else _ABS_PATH.search(text):
         problems.append("absolute local path")
     for secret in secrets:
         if secret and len(secret) >= 6 and secret in text:
