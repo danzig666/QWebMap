@@ -549,6 +549,49 @@ def test_data_defined_label_placement_is_reported_without_tile_fields(plugin, tm
     assert len(fields) == 1 and "size" in fields[0], fields
 
 
+def test_rules_under_an_inactive_parent_do_not_count_for_label_obstacles(mc):
+    """QGIS draws no rule under a switched-off group: its over-point child
+    does not stop the layer's symbols blocking labels."""
+    from qgis.core import QgsRuleBasedLabeling, QgsVectorLayer  # pylint: disable=import-outside-toplevel
+    layer = QgsVectorLayer("Point?crs=EPSG:3857", "pts", "memory")
+    obstacle = _settings(Qgis.LabelPlacement.AroundPoint, 10, Qgis.RenderUnit.Points)
+    obstacle.obstacleSettings().setIsObstacle(True)
+    root = QgsRuleBasedLabeling.Rule(None)
+    root.appendChild(QgsRuleBasedLabeling.Rule(QgsPalLayerSettings(obstacle)))
+    group = QgsRuleBasedLabeling.Rule(None)
+    group.setActive(False)
+    group.appendChild(QgsRuleBasedLabeling.Rule(
+        _settings(Qgis.LabelPlacement.OverPoint, 10, Qgis.RenderUnit.Points)))
+    root.appendChild(group)
+    layer.setLabeling(QgsRuleBasedLabeling(root))
+    layer.setLabelsEnabled(True)
+    assert mc.point_symbols_block_labels(layer) is True
+    layer.labeling().rootRule().children()[1].setActive(True)
+    assert mc.point_symbols_block_labels(layer) is False
+
+
+def test_a_failed_frame_image_keeps_the_labels(mc):
+    """A label's frame (or callout) the sprite renderer rejects: the label
+    is drawn without it, not left out; an icon layer is still left out."""
+    exporter = _exporter(mc)
+    exporter.diagnostics = DiagnosticCollector()
+    exporter.style = {"layers": [
+        {"id": "lbl", "type": "symbol", "layout": {
+            "text-field": ["get", "q2vt_label"], "icon-image": "frame_1",
+            "icon-text-fit": "both", "text-size": 12}, "paint": {"icon-opacity": 0.5,
+                                                                "text-color": "#000"}},
+        {"id": "pts", "type": "symbol", "layout": {"icon-image": "frame_1"}, "paint": {}},
+        {"id": "ok", "type": "symbol", "layout": {"text-field": "a", "icon-image": "m_2"},
+         "paint": {}}]}
+    exporter._drop_layers_with_failed_images({"frame_1": "too large"})  # pylint: disable=protected-access
+    layers = {layer["id"]: layer for layer in exporter.style["layers"]}
+    assert set(layers) == {"lbl", "ok"}
+    assert layers["lbl"]["layout"] == {"text-field": ["get", "q2vt_label"], "text-size": 12}
+    assert layers["lbl"]["paint"] == {"text-color": "#000"}
+    assert layers["ok"]["layout"]["icon-image"] == "m_2"
+    assert len(exporter.diagnostics.items) == 2
+
+
 def _unread(settings):
     from q2vt_plugin.src.core.maplibre_converter import TextPropertyExtractor  # pylint: disable=import-error,import-outside-toplevel
     return TextPropertyExtractor.unread_placement_properties(settings)

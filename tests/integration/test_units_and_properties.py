@@ -578,6 +578,10 @@ def test_label_data_defined_opacity_and_buffer_colour(mc):
     settings.setDataDefinedProperties(props)
     halo = mc.TextPropertyExtractor.get_text_halo_color(text, settings)
     assert halo[0] == "let" and "q2vt_c" in str(halo) and halo[-1][-1] == ["*", ["at", 3, ["var", "q2vt_halo"]], 0.5]
+    # A NULL value falls back to the buffer colour, its opacity applied once.
+    fallback = halo[2][1][-1]
+    assert halo[2][1][:2] == ["to-color", ["get", "q2vt_c"]], halo
+    assert fallback.replace(" ", "").endswith(",1.0)") or fallback.replace(" ", "").endswith(",1)"), fallback
 
 
 @pytest.mark.parametrize("mode,drawn", [(0, False), (1, True), (2, True)])

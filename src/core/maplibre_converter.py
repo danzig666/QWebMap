@@ -96,8 +96,16 @@ def _label_settings_of(layer) -> list:
     except (AttributeError, RuntimeError):
         return []
     if hasattr(labeling, "rootRule"):
-        return [rule.settings() for rule in labeling.rootRule().descendants()
-                if rule.active() and rule.settings() is not None]
+        # QGIS draws no rule under an inactive parent: its subtree is skipped.
+        found, pending = [], list(labeling.rootRule().children())
+        while pending:
+            rule = pending.pop(0)
+            if not rule.active():
+                continue
+            if rule.settings() is not None:
+                found.append(rule.settings())
+            pending.extend(rule.children())
+        return found
     try:
         return [labeling.settings()]
     except (AttributeError, RuntimeError, TypeError):
@@ -1570,9 +1578,13 @@ class TextPropertyExtractor:
         color_prop = label_settings.dataDefinedProperties().property(
             QgsPalLayerSettings.Property.BufferColor
         )
-        value = PropertyExtractor.get_value_or_expression(base_color, color_prop, "color")
+        # The fallback (a NULL value) without the opacity: it is applied once, below.
+        raw_color = PropertyExtractor.convert_qcolor_to_maplibre(QColor(buffer.color()))
+        value = PropertyExtractor.get_value_or_expression(raw_color, color_prop, "color")
         opacity = float(buffer.opacity())
-        if value == base_color or opacity >= 1.0 or color_prop is None or not color_prop.isActive():
+        if value == raw_color or color_prop is None or not color_prop.isActive():
+            return base_color
+        if opacity >= 1.0:
             return value
         # A data-defined colour replaces the colour only: QGIS still draws
         # the buffer at its opacity.
@@ -7567,6 +7579,19 @@ class QgisMapLibreStyleExporter:
             images = names([(layer_def.get("layout") or {}).get("icon-image"),
                             (layer_def.get("paint") or {}).get("fill-pattern"),
                             (layer_def.get("paint") or {}).get("line-pattern")])
+            layout = layer_def.get("layout") or {}
+            if layout.get("text-field") and names(layout.get("icon-image")) & set(failed):
+                # A label's frame, balloon or callout: the label is kept without it.
+                for part in ("layout", "paint"):
+                    for key in [k for k in (layer_def.get(part) or {}) if k.startswith("icon-")]:
+                        del layer_def[part][key]
+                self.diagnostics.add(
+                    "Q2VT_SPRITE_RENDER_FAILED",
+                    f"Style layer '{layer_def['id']}': its background or callout image could not "
+                    "be rendered; the labels are drawn without it.",
+                    component=layer_def["id"], layer_id=layer_def.get("source-layer", ""))
+                kept.append(layer_def)
+                continue
             if images & set(failed):
                 self.diagnostics.add(
                     "Q2VT_SPRITE_RENDER_FAILED",
