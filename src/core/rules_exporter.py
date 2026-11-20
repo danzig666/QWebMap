@@ -1568,7 +1568,8 @@ class RulesExporter:
             return False
         if pool.ready_workers is None:
             from qgis.core import Qgis as _Qgis  # pylint: disable=import-outside-toplevel
-            pool.ready_workers = pool.wait_ready(_Qgis.version(), self._is_cancelled) \
+            pool.ready_workers = pool.wait_ready(_Qgis.version(), self._is_cancelled,
+                                                 main_thread.keep_responsive) \
                 if pool.workers else []
             if pool.ready_workers:
                 self._post("pushInfo", f"   {len(pool.ready_workers)} worker processes export the datasets")

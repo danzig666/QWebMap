@@ -262,16 +262,29 @@ class WorkerPool:
         while True:
             try:
                 message = receive(process.stdout)
-            except (EOFError, OSError, pickle.UnpicklingError, ValueError):
+            except (EOFError, OSError):
+                self.results.put((number, ("exit", process.poll())))
+                return
+            except (pickle.UnpicklingError, ValueError):
+                # A message not understood: stopped, so it writes nothing more
+                # of the groups this process then does itself.
+                try:
+                    process.kill()
+                    process.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
                 self.results.put((number, ("exit", process.poll())))
                 return
             self.results.put((number, message))
 
-    def wait_ready(self, version: str, cancelled) -> List[int]:
-        """The workers that started and run this QGIS version."""
+    def wait_ready(self, version: str, cancelled, pump=None) -> List[int]:
+        """The workers that started and run this QGIS version (``pump()``
+        keeps the window responsive meanwhile: they take seconds to start)."""
         ready, waiting = [], set(range(len(self.workers)))
         deadline = time.monotonic() + _READY_TIMEOUT_S
         while waiting and time.monotonic() < deadline and not cancelled():
+            if pump is not None:
+                pump()
             try:
                 number, message = self.results.get(timeout=0.2)
             except queue.Empty:

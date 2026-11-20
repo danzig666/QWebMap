@@ -646,3 +646,111 @@ def test_lines_drawn_by_direction_are_not_joined(plugin, tmp_path):
     assert joinable({"line-width": 1, "line-dasharray": [2, 1]})
     assert not joinable({"line-width": 1}, "l00t00d01r00g02c01o03i13s00")  # a polygon outline
     assert not joinable({"line-width": 1}, "l00t01d01r00g01c01o03i13s00")  # a label
+
+
+def test_tile_cache_key_follows_whether_lines_are_joined(plugin, tmp_path):
+    """A line offset or pattern added to a joinable dataset's style: its
+    cached tiles (of joined pieces, some reversed) are not reused."""
+    from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core import export_cache, tiles_generator  # pylint: disable=import-error
+    name = "l00t00d01r00g01c01o03i13s00"
+    dataset, _length = _river(str(tmp_path), name, pieces=20)
+    cache = export_cache.ExportCache(str(tmp_path / "cache"))
+
+    def key(paint):
+        style = {"layers": [{"id": "r", "type": "line", "source": "t", "source-layer": name, "paint": paint}]}
+        generator = tiles_generator.GDALTilesGenerator(
+            [dataset], style, str(tmp_path / "out"), QgsRectangle(2100000, 6010000, 2290000, 6030000), 100,
+            None, layer_zooms={name: (3, 13)}, cache=cache, dataset_keys={name: "k"},
+            layer_groups={"river": [name]}, min_feature_px=0.5, small_datasets={name})
+        generator._zooms = [3, 13]  # pylint: disable=protected-access
+        (_owner, value, _members), = generator._tile_groups()  # pylint: disable=protected-access
+        return value
+    plain = key({"line-width": 1})
+    assert plain and plain == key({"line-width": 1})
+    assert key({"line-width": 1, "line-offset": 3}) != plain
+    assert key({"line-width": 1, "line-pattern": "arrow"}) != plain
+
+
+def test_a_cancelled_preparation_leaves_no_work_folder(plugin, tmp_path, monkeypatch):
+    """Cancel while the joined (merged, grid-cut) copies are written, before
+    ogr2ogr runs: the layer_tiles folder of those copies is removed too."""
+    from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core import tiles_generator  # pylint: disable=import-error
+    name = "l00t00d01r00g01c01o03i13s00"
+    style = {"layers": [{"id": "r", "type": "line", "source": "t", "source-layer": name,
+                         "paint": {"line-width": 1}}]}
+    dataset, _length = _river(str(tmp_path), name, pieces=200)
+    original = tiles_generator.join_lines
+    started = []
+
+    def cancelled_join(path, table, outputs, cancelled=None):
+        started.append(1)
+        original(path, table, dict(list(outputs.items())[:1]))  # a copy written in the folder
+        raise tiles_generator.TilesGenerationCancelled("Tile generation cancelled")
+    monkeypatch.setattr(tiles_generator, "join_lines", cancelled_join)
+    out = tmp_path / "out"
+    generator = tiles_generator.GDALTilesGenerator(
+        [dataset], style, str(out), QgsRectangle(2100000, 6010000, 2290000, 6030000), 100, None,
+        layer_zooms={name: (3, 13)}, layer_groups={"river": [name]},
+        min_feature_px=0.5, small_datasets={name})
+    with pytest.raises(tiles_generator.TilesGenerationCancelled):
+        generator.generate()
+    assert started and not (out / "layer_tiles").exists()
+
+
+def test_unreadable_datasets_raise_runtime_error_and_cancel_is_seen(plugin, tmp_path):
+    """A dataset that cannot be opened: RuntimeError (each caller then tiles
+    it as it is), not AttributeError. merge_per_tile sees Cancel while it
+    unions and writes, not only while it reads."""
+    from q2vt_plugin.src.core import tiles_generator  # pylint: disable=import-error
+    broken = tmp_path / "broken.gpkg"
+    broken.write_bytes(b"not a geopackage")
+    for call in (lambda: tiles_generator.merge_per_tile(str(broken), None, {5: str(tmp_path / "m.gpkg")}, False),
+                 lambda: tiles_generator.grid_cut_lines(str(broken), None, str(tmp_path / "g.gpkg"), 5),
+                 lambda: tiles_generator.join_lines(str(broken), None, {5: (str(tmp_path / "j.gpkg"), 0.0)})):
+        with pytest.raises(RuntimeError) as raised:
+            call()
+        assert not isinstance(raised.value, tiles_generator.TilesGenerationCancelled)
+    path = str(tmp_path / "parcels.gpkg")
+    source = ogr.GetDriverByName("GPKG").CreateDataSource(path)
+    layer = source.CreateLayer("parcels", None, ogr.wkbPolygon)
+    for i in range(10):
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(ogr.CreateGeometryFromWkt(
+            f"POLYGON(({i * 10} 0, {i * 10 + 10} 0, {i * 10 + 10} 10, {i * 10} 10, {i * 10} 0))"))
+        layer.CreateFeature(feature)
+    layer = source = None
+    calls = []
+
+    def cancelled():
+        calls.append(1)
+        return len(calls) > 1  # after the first features were read
+    with pytest.raises(tiles_generator.TilesGenerationCancelled):
+        tiles_generator.merge_per_tile(path, None, {5: str(tmp_path / "m5.gpkg")}, False, cancelled=cancelled)
+
+
+def test_the_tiles_of_an_unreadable_merged_or_long_line_dataset_are_made_from_it(plugin, tmp_path,
+                                                                                  monkeypatch):
+    """merge_per_tile or grid_cut_lines failing (a file locked a moment):
+    those zooms are tiled from the dataset as it is, not the export lost."""
+    from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core import tiles_generator  # pylint: disable=import-error
+    name = "l00t00d01r00g01c01o03i13s00"
+    dataset, _length = _river(str(tmp_path), name, pieces=20)
+    generator = tiles_generator.GDALTilesGenerator(
+        [dataset], {"layers": []}, str(tmp_path / "out"), QgsRectangle(2100000, 6010000, 2290000, 6030000),
+        100, None, layer_zooms={name: (3, 13)})
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("locked")
+    monkeypatch.setattr(tiles_generator, "merge_per_tile", fail)
+    monkeypatch.setattr(tiles_generator, "grid_cut_lines", fail)
+    target = str(tmp_path / "group_0000.mbtiles")
+    merged = generator._merged_jobs(0, target, [dataset], {name: (5, 6, False)}, "o", 80, 2)  # pylint: disable=protected-access
+    cut = generator._long_line_jobs(0, target, [dataset], {name: (12, 13)}, {}, "o", 80, 2)  # pylint: disable=protected-access
+    assert len(merged) == 2 and len(cut) == 2
+    source = dataset.source().split("|layername=")[0]
+    for _index, piece, _command, _cost, _owner in merged + cut:
+        with open(piece[:-8] + ".vrt", encoding="utf-8") as handle:
+            assert source in handle.read()
