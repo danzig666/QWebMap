@@ -25,7 +25,9 @@
    `git checkout hu-hesz && git merge main && git push`.
 5. **Releases**: bump `metadata.txt` on `main` and release `main`. After the sync, build the
    variant zip on `hu-hesz` (`python3 tools/build_release.py`, which reads `variant.json`), add
-   its notes, commit, and run the *Release* workflow on `hu-hesz` with the same version. Both
+   its notes, commit, and run the *Release* workflow on `hu-hesz` with the same version (it
+   checks that the committed zip is that commit's plugin and that the branch's last successful
+   *Tests* run tested the same code; run *Tests* first if the code changed since). Both
    zips install into the same plugin folder, so installing one replaces the other. Profiles
    saved in projects are the same for both.
 6. **Only generic releases are "Latest"** on the repository page; the workflow creates variant

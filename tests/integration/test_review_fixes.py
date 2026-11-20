@@ -189,3 +189,10 @@ def test_regulation_texts_table_round_trip(dialog):
     window._populate(profile)  # pylint: disable=protected-access
     again = window.collect().parcel_info
     assert (again.text_layer_id, again.text_code_field, again.text_field) == (texts.id(), "szab_ov", "eloiras_html")
+
+
+def test_an_unanswered_message_box_does_not_block():
+    """A warning/information/critical box no test patched would wait forever
+    offscreen and hang the whole CI job: the conftest answers Ok."""
+    for show in (QMessageBox.warning, QMessageBox.information, QMessageBox.critical):
+        assert show(None, "QWebMap", "test") == QMessageBox.StandardButton.Ok

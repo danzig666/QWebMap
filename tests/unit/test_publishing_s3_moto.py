@@ -26,14 +26,16 @@ from publishing.providers.s3 import S3Provider, sdk_versions
 from publishing.deployments import publish
 from publishing.web_builder import build_release
 from publishing_fixtures import fixture_bundle
+from q2vt_support import missing_tool
 
 MOTO_PATH = os.environ.get("Q2VT_MOTO_PATH", "")
 MOTO_PYTHON = os.environ.get("Q2VT_MOTO_PYTHON", "python3")
-pytestmark = pytest.mark.skipif(not MOTO_PATH, reason="moto server not configured (Q2VT_MOTO_PATH)")
 
 
 @pytest.fixture(scope="module")
 def moto():
+    if not MOTO_PATH:
+        missing_tool("moto server not configured (Q2VT_MOTO_PATH)")
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]

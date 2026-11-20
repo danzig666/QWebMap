@@ -16,6 +16,7 @@ from publishing.pmtiles_builder import PmtilesOptions, build_pmtiles
 from publishing.validation import (compare_archives, open_pmtiles, validate_pmtiles)
 from publishing.vendor.pmtiles.tile import Compression, TileType, zxy_to_tileid
 from publishing_fixtures import encode_tile, make_mbtiles, pyramid, sample_tile
+from q2vt_support import missing_tool
 
 
 def _digest(path):
@@ -192,9 +193,10 @@ def _cli():
     return path if path and os.path.exists(path) else None
 
 
-@pytest.mark.skipif(_cli() is None, reason="official go-pmtiles CLI not available "
-                    "(set Q2VT_PMTILES_CLI; tools/publishing/fetch_pmtiles_cli.py)")
 def test_official_cli_verifies_the_archive(tmp_path):
+    if _cli() is None:
+        missing_tool("official go-pmtiles CLI not available "
+                     "(set Q2VT_PMTILES_CLI; tools/publishing/fetch_pmtiles_cli.py)")
     source = make_mbtiles(str(tmp_path / "cli.mbtiles"), pyramid(4))
     archive = build_pmtiles(source, str(tmp_path / "cli.pmtiles"))
     run = subprocess.run([_cli(), "verify", archive.path], capture_output=True, text=True)

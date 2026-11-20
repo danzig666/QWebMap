@@ -1,24 +1,26 @@
-# Runs the full test suite in the official QGIS image of the LTR the plugin
-# is developed against (3.34, Ubuntu 24.04 like the development machine):
+# Runs the full test suite in the official QGIS image of the oldest QGIS the
+# plugin installs on (metadata.txt qgisMinimumVersion: 3.44 LTR, Qt5, Ubuntu
+# 24.04; development runs 3.34 locally, which users cannot install on):
 # unit + PyQGIS integration tests in one job, browser tests (QGIS export +
 # Chromium) in another; and the same under Qt6 in the QGIS 4 image (qt6.yml,
-# called as the "qt6" job). (The image of exactly 3.34.4, qgis/qgis:final-3_34_4,
-# is Ubuntu 22.04 with sip 6.5, whose bindings crash on plain PyQGIS such as
-# QgsLineSymbol([QgsSimpleLineSymbolLayer()]); it cannot run the tests.)
+# called as the "qt6" job). The unit job also gets Node with MapLibre
+# (tools/maplibre), a moto S3 server and the go-pmtiles CLI
+# (tools/ci/prepare_test_tools.sh): the parity tests and the real S3 SDK test
+# need them, and with Q2VT_REQUIRE_TOOLS they fail instead of skipping.
 #
 # Nightly at 1:23 Budapest time on main, which also starts the run of each
 # variant branch (hu-hesz). A nightly run stops within seconds when no commit
-# since the branch's last successful run changed code or tests (src/, tests/,
-# schemas/, resources/, tools/, metadata.txt, pytest.ini or this file); docs,
-# README, changelog, release notes and zips do not count. On a variant branch
-# only its own files count (those that differ from main, see
-# docs/BRANCHES.md): main's changes are tested on main.
+# since the branch's last successful run changed code or tests (the paths in
+# tools/ci/tested_paths); docs, README, changelog, release notes and zips do
+# not count. On a variant branch main's changes merged in count too: the
+# variant's preset and viewer add-on run on main's hooks.
 #
 # GitHub delays or drops scheduled runs under load (most of all at the top of
 # the hour, and in the European morning: the 3:00 slot started as late as
 # 7:39), so the slots are at odd minutes in the quiet night hours (around
 # midnight UTC), and a second entry at 2:47 Budapest time runs only when the 1:23 one
-# did not start that night.
+# did not start that night (else it cancels itself: a cancelled run does not
+# count as tested).
 #
 # "Run workflow" in the Actions tab always runs everything, on the branch
 # chosen there (tick "nightly" to get the nightly check instead).
@@ -55,9 +57,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # The history (commits and trees: enough for git diff --name-only)
+          # and only tools/ci and the root files: blob:none alone still
+          # downloads every file at HEAD, the release zips included.
+          filter: blob:none
+          sparse-checkout: tools/ci
       - name: Skip the backup slot if tonight's run already started
         id: backup
-        if: github.event_name == 'schedule' && github.event.schedule == '13 4 * * *'
+        # The backup entry of on.schedule (tests/unit/test_ci_workflows.py).
+        if: github.event_name == 'schedule' && github.event.schedule == '47 2 * * *'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -67,6 +75,11 @@ jobs:
           if [ "${others}" != "0" ]; then
             echo "skip=true" >> "${GITHUB_OUTPUT}"
             echo "The 1:23 run started tonight: backup slot skipped." | tee -a "${GITHUB_STEP_SUMMARY}"
+            # Cancelled, not successful: a skipped success would count as
+            # tested (the next nightly and the release start from it) while
+            # the 1:23 run may still fail.
+            gh run cancel "${GITHUB_RUN_ID}"
+            sleep 120
           fi
       - name: Start the nightly runs of the variant branches
         if: github.event_name == 'schedule' && steps.backup.outputs.skip != 'true'
@@ -95,13 +108,10 @@ jobs:
           [ -n "${last}" ] || run true "No earlier successful run on ${BRANCH}: all tests."
           git cat-file -e "${last}^{commit}" 2>/dev/null \
             || run true "The last tested commit ${last} is gone (history rewritten): all tests."
-          paths=(src tests schemas resources tools metadata.txt pytest.ini .github/workflows/tests.yml)
-          changed="$(git diff --name-only "${last}" HEAD -- "${paths[@]}")"
-          if [ -f variant.json ]; then
-            # A variant branch: only the files it adds or changes against main.
-            own="$(git diff --name-only origin/main...HEAD -- "${paths[@]}" variant.json)"
-            changed="$(git diff --name-only "${last}" HEAD -- "${paths[@]}" variant.json | grep -Fxf <(echo "${own}") || true)"
-          fi
+          mapfile -t paths < <(grep -v '^#' tools/ci/tested_paths)
+          # On a variant branch main's merged changes count as well (and
+          # variant.json): the variant runs on main's hooks.
+          changed="$(git diff --name-only "${last}" HEAD -- "${paths[@]}" variant.json)"
           [ -n "${changed}" ] || run false "Nothing to test on ${BRANCH} since ${last:0:7}: skipped."
           run true "Changed since ${last:0:7}: $(echo "${changed}" | wc -l) files, e.g. $(echo "${changed}" | head -5 | paste -sd ' ')"
 
@@ -112,14 +122,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     container:
-      image: qgis/qgis:3.34.15-noble
+      # The minimum QGIS (metadata.txt), pinned like the Qt6 image.
+      image: qgis/qgis:3.44.15-noble@sha256:907fb2cc44adc47a8eba64316c345f0675c226d11cddea47b16ef03097caea7e
     env:
       QT_QPA_PLATFORM: offscreen
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      Q2VT_REQUIRE_TOOLS: "1"
     steps:
       - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            /*
+            !/releases/
+          sparse-checkout-cone-mode: false
       - name: Prepare
         run: tools/ci/prepare_qgis_container.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Tools of the parity tests
+        run: tools/ci/prepare_test_tools.sh
       - name: Unit tests
         if: success() || failure()
         run: tools/ci/run_test_files.sh "Unit tests" $(ls tests/unit/test_*.py | sort)
@@ -140,12 +162,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     container:
-      image: qgis/qgis:3.34.15-noble
+      # The minimum QGIS (metadata.txt), pinned like the Qt6 image.
+      image: qgis/qgis:3.44.15-noble@sha256:907fb2cc44adc47a8eba64316c345f0675c226d11cddea47b16ef03097caea7e
     env:
       QT_QPA_PLATFORM: offscreen
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
       - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            /*
+            !/releases/
+          sparse-checkout-cone-mode: false
       - name: Prepare
         run: tools/ci/prepare_qgis_container.sh
       - uses: actions/setup-node@v5
