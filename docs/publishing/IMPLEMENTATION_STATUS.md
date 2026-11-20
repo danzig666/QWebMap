@@ -2423,3 +2423,15 @@ Reimplemented, no code copied.
 * Fast-zoom stand-ins (upstream cf7a88a): `zoom.stand_in_zooms`, `zoom_bridge.stand_in` (opacity stepped,
   `q2vt:hidden-below`), the old minzoom widening removed (tests/integration/test_stand_ins.py,
   tests/browser/test_web_viewer_stand_ins.py).
+
+## 4.60.0 — Simple view
+
+* `gui/simple_page.py` (`SimplePage`): the essential settings, written straight into the advanced
+  view's controls and layer configs (no settings of its own); `PublishDialog.set_simple_view`,
+  `ask_first_view` (`VIEW_KEY` in QGIS settings; asked only when the window was never opened),
+  the Simple / Advanced switch, local export only (`_confirm_extent` not asked).
+* `gui/detail_scale.py`: map scales (`SCALES`) ↔ zooms through `zoom_load.zoom_scale_factor`,
+  `recommend` (median feature size → ~40 px, layer scale ranges, tile cap), `preview_settings` /
+  `preview_centre` (densest grid cell of the preview's size); the automatic choice per project
+  (`QWebMap/simple/autoDetail`, default on for new settings).
+* tests/integration/test_publish_dialog_review.py (views, export, first run, recommendation, preview).

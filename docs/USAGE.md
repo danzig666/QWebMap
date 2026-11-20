@@ -5,7 +5,7 @@ QWebMap publishes a QGIS project as a fast, accurate web map: vector tiles in on
 ## Quick start
 
 1. **Install.** Download `QWebMap-<version>.zip` from the [latest release](https://github.com/danzig666/QWebMap/releases/latest) (not the `-hu` file), then *Plugins → Manage and Install Plugins → Install from ZIP*. QGIS 3.44 or newer, or QGIS 4.
-2. **Open the window:** *Web → QWebMap: Publish Web Map…*
+2. **Open the window:** *Web → QWebMap: Publish Web Map…* The first time, it asks whether to start in the **Simple** view (the essential settings and one button, see [Simple view](#simple-view)) or the **Advanced** one; the steps below are the advanced view's.
 3. **Map tab.** Enter a **Title**. Choose the **Extent**: the current map view, a layer's extent, or **Draw…** a rectangle. Tick **Publish** for the layers to put on the web map, or click **Publish the visible layers**.
 4. **Interaction tab** (optional). For each layer, tick the fields to show in **Popup**, to **Search**, or to **Filter**. Only ticked fields become public.
 5. **Export locally**, then **Preview**: the map opens in your browser from this computer. Fix what you see in QGIS or in the window, and export again (unchanged layers are reused, so it is faster).
@@ -13,6 +13,26 @@ QWebMap publishes a QGIS project as a fast, accurate web map: vector tiles in on
 7. **Save the project.** The settings live in the project file. Save it after **Save settings** or **Close**.
 
 > If the map is slow when zoomed out, use **Zoomed-out load…** on the Map tab (the export also offers it). For a raster layer (scanned plan, orthophoto), keep **Sharpest detail** at *Like the image*. Each extra zoom level makes about 4× more tiles.
+
+## Simple view
+
+**Simple** / **Advanced** at the top of the window switch between the two views at any time. Both show the same settings: the simple view only shows fewer of them, so switching never changes or loses anything, and everything set in the advanced view is kept (and used) while the simple one is shown. The choice is remembered for you in QGIS. The window asks once, the first time it is opened; users of earlier versions keep the advanced view.
+
+The simple view makes the web map **in a folder on this computer**, whatever the advanced view's *Destination* says. To put it online, copy that folder to any web server, or use **Publish** in the advanced view.
+
+- **Title** — The map's title. The address name (slug) is made from it.
+- **Layers** — The project's layers, in the order of the QGIS layer list. **On the map**: the layer is published. **Show its information when clicked**: a click on a feature shows its attributes (all fields except ids and technical ones such as `fid`); ticking it also puts the layer on the map. Anyone who opens the map can see this information. **Use the layers visible in QGIS** ticks exactly the layers visible in the QGIS layer list.
+- **Area** — *What the QGIS map shows now* (the map view each time the map is made) or *The extent of a layer*. Its size and the number of tiles are shown below it. A drawn or frozen area set in the advanced view is shown as such.
+- **How close visitors can zoom** — As a map scale, from 1:100 000 to 1:500, in the scales of your project (its CRS), like the scale box of QGIS. The map always opens showing the whole area; the farthest zoom out follows from the area.
+  - **Choose automatically from the project** (on for new settings) — The scale at which the smallest typical features of the published layers are clearly visible (about 40 pixels), at least the detail a layer needs that only appears when zoomed in (its scale range), and less detail for a very large area so the map stays quick to make. The reasons are written under the slider. The choice is kept with the project. Moving the slider turns it off.
+  - The **preview** beside it draws the published layers as QGIS does, at that scale, where the area has most detail: what visitors see when fully zoomed in (without the background map).
+- **Background map** — *None* (only the project's layers) or *OpenStreetMap* (streets, water and place names under your layers; downloaded for the area while the map is made, so an internet connection is needed then).
+- **Save in folder** — Where the map is written (a folder named after the address inside it).
+- **Also uses advanced settings: …** — Shown when the project uses settings the simple view does not show (a drawn area, the parcel report, web basemaps, an online destination, documents, a description). They are kept and used; **Show them** opens the advanced view.
+- **Make web map** — Makes the web map in the folder. No questions are asked on the way (the area's size is shown beside it); warnings about a heavy map still are.
+- **Open in browser** — Opens the map made in the folder (also one made earlier), served from this computer.
+- **Open folder** — Opens the map's folder.
+- **Make a ZIP to send** — One ZIP file of the map's folder next to it, e.g. to send to a colleague or a web host, and opens the folder holding it.
 
 ## Map tab
 

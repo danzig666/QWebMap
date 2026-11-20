@@ -199,3 +199,120 @@ def test_web_zoom_scales_become_the_projects_scale_list(plugin, monkeypatch, tmp
     finally:
         zm.configure(zm.WEB_MERCATOR_TOP_SCALE)
     dialog.close()
+
+
+def test_the_simple_view_shows_and_edits_the_same_settings(plugin, monkeypatch, tmp_path):
+    """The simple view writes into the advanced view's controls: switching
+    either way changes nothing; its layers, information, area, zoom,
+    background and folder are the window's settings."""
+    from q2vt_plugin.src.gui.detail_scale import SCALES, zoom_for_scale  # pylint: disable=import-error,import-outside-toplevel
+    from qgis.PyQt.QtCore import Qt as QtCore_Qt  # pylint: disable=import-outside-toplevel
+    dialog, parcels = _dialog(plugin, monkeypatch, tmp_path)
+    before = dialog._profile_json()  # pylint: disable=protected-access
+    dialog.set_simple_view(True, remember=False)
+    dialog.set_simple_view(False, remember=False)
+    dialog.set_simple_view(True, remember=False)
+    assert dialog._profile_json() == before  # pylint: disable=protected-access
+    page = dialog.simple
+    assert page.title.text() == dialog.e_title.text()
+    page.title.setText("Egyszerű térkép")
+    page._title_edited("Egyszerű térkép")  # pylint: disable=protected-access
+    assert dialog.e_title.text() == "Egyszerű térkép"
+    row = next(r for r in range(page.layers.rowCount())
+               if page.layers.item(r, 0).data(QtCore_Qt.ItemDataRole.UserRole) == parcels.id())
+    page.layers.item(row, 1).setCheckState(QtCore_Qt.CheckState.Unchecked)
+    assert parcels.id() not in [c.layer_id for c in dialog.collect().layers if c.included]
+    page.layers.item(row, 2).setCheckState(QtCore_Qt.CheckState.Checked)   # information: on the map too
+    profile = dialog.collect()
+    config = next(c for c in profile.layers if c.layer_id == parcels.id())
+    assert config.included and config.popup_fields
+    assert not any(p.field.lower() in ("fid", "id") for p in config.popup_fields)
+    page.layers.item(row, 2).setCheckState(QtCore_Qt.CheckState.Unchecked)
+    assert not next(c for c in dialog.collect().layers if c.layer_id == parcels.id()).popup_fields
+    page.auto.setChecked(False)                      # the slider: a map scale
+    page.zoom.setValue(len(SCALES) - 1)
+    assert dialog.e_max_zoom.value() == zoom_for_scale(page._factor(), SCALES[-1])  # pylint: disable=protected-access
+    page.area.setCurrentIndex(page.area.findData("layer"))
+    page.area_layer.setCurrentIndex(page.area_layer.findData(parcels.id()))
+    profile = dialog.collect()
+    assert profile.view.extent_mode == "layer" and profile.view.extent_layer == parcels.id()
+    assert profile.view.min_zoom <= profile.view.max_zoom
+    page.bg_osm.setChecked(True)
+    assert dialog.collect().basemap.kind == "protomaps"
+    page.bg_none.setChecked(True)
+    assert dialog.collect().basemap.kind == "none"
+    page.folder.setText(str(tmp_path / "maps"))
+    page._folder_edited(str(tmp_path / "maps"))  # pylint: disable=protected-access
+    assert dialog.collect().output.local_directory == str(tmp_path / "maps")
+    assert not dialog.btn_publish.isVisible() and page.isVisibleTo(dialog)
+    dialog.close()
+
+
+def test_the_simple_view_exports_locally_whatever_the_destination(plugin, monkeypatch, tmp_path):
+    """Make web map: a local export (no upload), no "Published area?" question."""
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    dialog.d_kind.setCurrentIndex(dialog.d_kind.findData("r2"))
+    dialog.set_simple_view(True, remember=False)
+    assert dialog._confirm_extent()  # pylint: disable=protected-access
+    calls = []
+    monkeypatch.setattr(dialog, "export_locally", lambda: calls.append("local") or True)
+    monkeypatch.setattr(dialog, "publish", lambda: calls.append("publish"))
+    dialog.simple.make_map()
+    assert calls == ["local"]
+    assert "online destination" in dialog.simple.advanced_note.text()
+    dialog.close()
+
+
+def test_the_first_view_question_only_for_new_users(plugin, monkeypatch, tmp_path):
+    from qgis.core import QgsSettings  # pylint: disable=import-outside-toplevel
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    settings = QgsSettings()
+    asked = []
+    monkeypatch.setattr(QMessageBox, "open", lambda box: (asked.append(box.text()), box.done(0)))
+    monkeypatch.setattr(QMessageBox, "clickedButton",
+                        lambda box: next(b for b in box.buttons() if b.text() == "Simple"))
+    try:
+        settings.remove(dialog.VIEW_KEY)
+        settings.setValue(dialog.GEOMETRY_KEY, dialog.saveGeometry())   # used the window before
+        dialog.ask_first_view()
+        assert not asked and settings.value(dialog.VIEW_KEY) == "advanced" and not dialog.is_simple_view()
+        settings.remove(dialog.VIEW_KEY)
+        settings.remove(dialog.GEOMETRY_KEY)                            # a new user
+        dialog.ask_first_view()
+        assert asked and settings.value(dialog.VIEW_KEY) == "simple" and dialog.is_simple_view()
+        dialog.ask_first_view()
+        assert len(asked) == 1                                          # once
+    finally:
+        settings.remove(dialog.VIEW_KEY)
+    dialog.close()
+
+
+def test_the_simple_view_recommends_a_scale_from_the_layers(plugin, monkeypatch, tmp_path):
+    """Automatic detail: the features' size sets the scale (small parcels: a
+    detailed scale), a layer shown only when zoomed in needs its scale; the
+    choice is kept with the project; a preview of the map at that scale."""
+    from q2vt_plugin.src.gui.detail_scale import recommend, scale_of_zoom  # pylint: disable=import-error,import-outside-toplevel
+    from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+    dialog, parcels = _dialog(plugin, monkeypatch, tmp_path)
+    page = dialog.simple
+    dialog.profile.view.extent = [2119000, 6019000, 2123000, 6023000]
+    dialog.profile.view.extent_mode = "fixed"
+    factor = page._factor()  # pylint: disable=protected-access
+    box = QgsRectangle(*dialog.profile.view.extent)
+    scale, reasons = recommend(dialog.project, [parcels], box, factor, 0)
+    assert scale == 50000 and reasons and "676 m across" in reasons[0]   # 1 km Mercator squares at 47.4°N
+    parcels.setScaleBasedVisibility(True)
+    parcels.setMinimumScale(1000.0)                   # shown from 1:1 000 on: needs 1:500
+    assert recommend(dialog.project, [parcels], box, factor, 0)[0] <= 500
+    parcels.setScaleBasedVisibility(False)
+    dialog.show()
+    dialog.set_simple_view(True, remember=False)
+    assert page.auto.isChecked()                      # new settings: automatic
+    page.auto.setChecked(False)
+    assert not dialog.project.readBoolEntry("QWebMap", "simple/autoDetail", True)[0]
+    page.auto.setChecked(True)
+    assert abs(scale_of_zoom(factor, dialog.e_max_zoom.value())) <= scale * 1.01
+    assert dialog.project.readBoolEntry("QWebMap", "simple/autoDetail", False)[0]
+    page.wait_for_preview()
+    assert page.preview.pixmap() is not None and not page.preview.pixmap().isNull()
+    dialog.close()
