@@ -766,9 +766,9 @@ An empty title falls back to the file name.
 </li></ul>
 <h2 id="output-tab">Output tab</h2>
 <ul><li>
-<strong>Archive</strong> — Tile archive format. <em>PMTiles (vector tiles for static web hosting)</em> (default) is what the web map uses. <em>PMTiles + MBTiles copy</em> also writes <code>&lt;slug&gt;-&lt;release&gt;.mbtiles</code> next to the publication folder. <em>MBTiles only (desktop / preview; not for direct web hosting)</em> works for local export only.
+<strong>Archive</strong> — Tile archive format. <em>PMTiles (vector tiles for static web hosting)</em> (default) is what the web map uses. <em>PMTiles + MBTiles copy</em> also writes <code>&lt;slug&gt;.mbtiles</code> next to the publication folder, replaced by each export. <em>MBTiles only (desktop / preview; not for direct web hosting)</em> works for local export only; it writes the same <code>&lt;slug&gt;.mbtiles</code>, and the web map is still built for the preview.
 </li><li>
-<strong>Local output folder</strong> — Folder for the exported map. It goes in <code>&lt;folder&gt;/&lt;name&gt;/</code>. Default: <code>web_maps</code> next to the project file, or in your home folder if the project is unsaved. Also used as the work and cache folder for uploads.
+<strong>Local output folder</strong> — Folder for the exported map. It goes in <code>&lt;folder&gt;/&lt;name&gt;/</code>. A relative folder is inside the project's folder; <code>~</code> is your home folder. Default: <code>web_maps</code> next to the project file, or in your home folder if the project is unsaved. Also used as the work and cache folder for uploads.
 </li><li>
 <strong>…</strong> — Opens a folder picker for the local output folder.
 </li><li>
@@ -776,7 +776,7 @@ An empty title falls back to the file name.
 </li><li>
 <strong>Also write the legacy XYZ web package (web/)</strong> — Also writes static XYZ tiles, a style and a viewer in a <code>web/</code> folder inside the export's work folder (<code>.q2vt-work</code>). Off by default.
 </li><li>
-<strong>Also write an offline ZIP of the release</strong> — Writes <code>&lt;slug&gt;-&lt;release&gt;.zip</code> next to the publication folder. The ZIP holds the whole site. Off by default.
+<strong>Also write an offline ZIP of the release</strong> — Writes <code>&lt;slug&gt;.zip</code> next to the publication folder, replaced by each export. The ZIP holds the whole site. Off by default.
 </li><li>
 <strong>CPU limit (%)</strong> — Share of CPU cores used for parallel export, tiling and raster drawing (1–100, default 100).
 </li><li>

@@ -145,6 +145,22 @@ def publication_dirs(profile: PublicationProfile, base: Optional[str] = None):
     return os.path.join(base, profile.slug), work
 
 
+# What a release adds under the publication folder at most: releases/<id>/
+# and glyphs/<font stack>/<range>.pbf (two font names, about 120 characters).
+_RELEASE_PATH_RESERVE = 160
+
+
+def long_path_warning(publication_dir: str, windows: bool = os.name == "nt") -> str:
+    """A warning when the release's files would pass Windows' 260-character
+    path limit (QGIS's Python without long paths enabled), else ""."""
+    longest = len(os.path.abspath(publication_dir)) + _RELEASE_PATH_RESERVE
+    if not windows or longest < 260:
+        return ""
+    return (f"The output folder's path is long ({len(publication_dir)} characters): the web map's files "
+            "may pass Windows' 260-character limit and the export fail at the end. Choose a shorter "
+            "output folder or address name if it does.")
+
+
 def cache_dir(profile: PublicationProfile, base: Optional[str] = None) -> str:
     """The export cache of a local output folder (shared by its publications;
     on this computer for a network output folder, as the work folder)."""
@@ -374,6 +390,9 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
     exporter = None
     try:
         os.makedirs(work_dir, exist_ok=True)
+        too_long = long_path_warning(publication_dir)
+        if too_long:
+            progress.info(f"⚠ {too_long}")
         if _local_root(output_folder(base_dir or profile.output.local_directory)):
             progress.info(f"Network output folder: the work files are on this computer, in {work_dir}")
         live_rasters, raster_configs = _live_rasters(project, raster_configs, extent_3857, progress)

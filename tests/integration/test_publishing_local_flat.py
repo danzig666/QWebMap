@@ -181,3 +181,13 @@ def test_a_local_path_in_the_description_stops_the_export_at_plan(tmp_path):
         export_local(project, profile, EXTENT)
     assert error.value.code == "Q2VT_PUB_SECRET_LEAK" and "Description" in error.value.message
     assert not os.path.exists(os.path.join(profile.output.local_directory, "arlo-teszt"))
+
+
+def test_a_long_output_path_is_reported_at_plan_on_windows(tmp_path):
+    """Windows' 260-character paths: said before the export, not as a
+    traceback after it."""
+    from publishing.controller import long_path_warning
+    long = os.path.join(str(tmp_path), "OneDrive - Municipality", "Documents" * 8, "web_maps", "arlo-teszt")
+    assert "260-character" in long_path_warning(long, windows=True)
+    assert long_path_warning(long, windows=False) == ""
+    assert long_path_warning(os.path.join("C:\\", "web", "arlo"), windows=True) == ""
