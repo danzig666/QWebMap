@@ -8,6 +8,8 @@ import os
 import shutil
 import subprocess
 
+import pytest
+
 from publishing.feature_index import build_feature_index, fnv1a, shard_key
 from publishing.identifiers import encode_compound, key_expression, validate_keys
 from publishing.search_index import build_search_index, normalize, words
