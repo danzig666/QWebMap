@@ -322,6 +322,27 @@ def test_work_file_writer_errors_raise_with_their_message(plugin, tmp_path):
         _module()._checked(failing).addFeature(QgsFeature())  # pylint: disable=protected-access
 
 
+def test_work_file_feature_of_another_type_is_skipped_not_fatal(plugin, tmp_path):
+    """FlatGeobuf refuses a feature whose type differs from the layer's (a
+    multi line in a line file): that feature was dropped before the writers
+    were checked; failing the whole group for it was a regression."""
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "FlatGeobuf"
+    out = str(tmp_path / "lines.fgb")
+    writer = _module()._checked(QgsVectorFileWriter.create(  # pylint: disable=protected-access
+        out, QgsFields(), QgsWkbTypes.LineString, QgsCoordinateReferenceSystem("EPSG:3857"),
+        _bare(tmp_path)._transform_context, options))  # pylint: disable=protected-access
+    features = []
+    for wkt in ("LineString(0 0, 1 1)", "MultiLineString((0 0, 1 1), (2 2, 3 3))", "LineString(5 5, 6 6)"):
+        feature = QgsFeature()
+        feature.setGeometry(QgsGeometry.fromWkt(wkt))
+        features.append(feature)
+    assert writer.addFeatures(features)
+    assert writer.skipped == 1
+    del writer
+    assert QgsVectorLayer(out, "lines", "ogr").featureCount() == 2
+
+
 def test_locked_work_file_fails_the_group_instead_of_the_export(plugin, tmp_path, monkeypatch):
     """A half-written dataset still open elsewhere (Windows) could not be
     deleted before the group was redone: PermissionError ended the export."""

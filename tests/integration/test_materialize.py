@@ -3256,6 +3256,12 @@ def test_dense_generated_geometry_is_thinned_before_bands_and_tiles(plugin, tmp_
     ('smooth(buffer($geometry, "and"), 10)', 'smooth(buffer($geometry, "and"), 5)'),
     ('smooth(buffer($geometry, "case"), iterations:=12)', 'smooth(buffer($geometry, "case"), iterations:=5)'),
     ("smooth(buffer($geometry, \"Név\"), 10) || 'smooth(a, 9)'", "smooth(buffer($geometry, \"Név\"), 5) || 'smooth(a, 9)'"),
+    # Unquoted accented names are QGIS identifiers too (the scanner raised).
+    ("smooth(Név, 10)", "smooth(Név, 5)"),
+    ('smooth("x", 9) + 0 * név', 'smooth("x", 5) + 0 * név'),
+    # A backslash-escaped quote does not end the string.
+    ("concat('it\\'s smooth(', 'x') || smooth($geometry, 10)",
+     "concat('it\\'s smooth(', 'x') || smooth($geometry, 5)"),
 ])
 def test_smooth_passes_are_capped_in_exported_generators(plugin, expression, capped):
     """Each smooth() pass doubles the vertices (10 passes: 10 million for a

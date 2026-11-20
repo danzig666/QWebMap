@@ -440,14 +440,25 @@ class _CheckedWriter:
             raise RuntimeError(f"Cannot write a work file: {writer.errorMessage()}")
         self._writer = writer
 
+    skipped = 0
+
     def addFeature(self, feature, *args):  # noqa: N802
         if not self._writer.addFeature(feature, *args):
-            raise RuntimeError(f"Cannot write a work file: {self._writer.errorMessage()}")
+            message = self._writer.errorMessage()
+            if "Mismatched geometry type" in message:
+                # One feature of another type (a multi part into a single
+                # part FlatGeobuf): dropped, as before the check, not the group.
+                if not self.skipped:
+                    crash_log.note(f"Work file feature skipped: {message}")
+                self.skipped += 1
+                return False
+            raise RuntimeError(f"Cannot write a work file: {message}")
         return True
 
     def addFeatures(self, features, *args):  # noqa: N802
-        if not self._writer.addFeatures(features, *args):
-            raise RuntimeError(f"Cannot write a work file: {self._writer.errorMessage()}")
+        # One by one: QgsVectorFileWriter.addFeatures stops at a failed one.
+        for feature in features:
+            self.addFeature(feature, *args)
         return True
 
     def __getattr__(self, name):
@@ -5830,8 +5841,12 @@ def _capped_smoothing(expression: str) -> str:
     parsed = QgsExpression(expression)
     if parsed.hasParserError() or "smooth" not in expression.lower():
         return expression
+    try:
+        spans = _smooth_counts(expression)
+    except Exception:  # pylint: disable=broad-except
+        return expression  # no cap rather than a failed rule group
     text = expression
-    for first, last in reversed(_smooth_counts(expression)):
+    for first, last in reversed(spans):
         count = expression[first:last]
         try:
             passes = float(count.strip())
@@ -5855,17 +5870,18 @@ def _smooth_counts(text: str) -> List[Tuple[int, int]]:
     calls, spans, i = [], [], 0  # calls: [argument number, its start, named?]
     while i < len(text):
         char = text[i]
-        if char in "'\"":  # a string or a quoted name ('' / "" escape the quote)
-            i += 1
+        if char in "'\"":  # a string or a quoted name ('' / "" escape the quote;
+            i += 1         # a string also takes backslash escapes, a name does not)
             while i < len(text) and not (text[i] == char and text[i + 1:i + 2] != char):
-                i += 2 if text[i] == char else 1
+                i += 2 if text[i] == char or (char == "'" and text[i] == "\\") else 1
         elif text.startswith("--", i):
             while i < len(text) and text[i] != "\n":
                 i += 1
         elif text.startswith("/*", i):
             i = text.find("*/", i + 2) + 1 or len(text)
         elif char.isalpha() or char == "_":
-            word = re.match(r"[A-Za-z_][A-Za-z0-9_]*", text[i:]).group(0)
+            # Unicode: QGIS takes unquoted accented names (Név)
+            word = re.match(r"[^\W\d]\w*", text[i:]).group(0)
             after = re.match(r"\s*\(", text[i + len(word):])
             if after:
                 i += len(word) + len(after.group(0))
