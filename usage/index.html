@@ -63,12 +63,13 @@ mark { background: #f6e27a; color: #1d2418; }
 <body>
 <header>
   <img src="icons/icon.png" alt="">
-  <div><div class="name">QWebMap user guide</div><div class="ver">version 4.59.0 · <a href="https://github.com/danzig666/QWebMap">GitHub</a> · <a href="https://danzig666.github.io/QWebMap/">demo map</a></div></div>
+  <div><div class="name">QWebMap user guide</div><div class="ver">version 4.60.0 · <a href="https://github.com/danzig666/QWebMap">GitHub</a> · <a href="https://danzig666.github.io/QWebMap/">demo map</a></div></div>
   <button id="toc-button" type="button" aria-expanded="false" aria-controls="toc">Contents</button>
   <input id="find" type="search" placeholder="Find an option…" aria-label="Find an option">
 </header>
 <div class="layout">
 <nav id="toc"><a href="#quick-start">Quick start</a>
+<a href="#simple-view">Simple view</a>
 <a href="#map-tab">Map tab</a>
 <a href="#web-map" class="sub">Web map</a>
 <a href="#layers-publishing-does-not-change-the-project-s-layer-visibility" class="sub">Layers (publishing does not change the project's layer visibility)</a>
@@ -104,12 +105,12 @@ mark { background: #f6e27a; color: #1d2418; }
 <a href="#keeping-this-guide-up-to-date">Keeping this guide up to date</a></nav>
 <main>
 <h1 id="qwebmap-user-guide">QWebMap user guide</h1>
-<p>QWebMap publishes a QGIS project as a fast, accurate web map: vector tiles in one PMTiles file, a ready viewer, and a static site you can open locally, upload to Cloudflare R2 / S3 or copy to any web server. This guide is for QWebMap 4.59.0, the generic edition. Everything is set in one window: <strong>Web → QWebMap: Publish Web Map…</strong> (or its toolbar button). The settings are saved in the project.</p>
+<p>QWebMap publishes a QGIS project as a fast, accurate web map: vector tiles in one PMTiles file, a ready viewer, and a static site you can open locally, upload to Cloudflare R2 / S3 or copy to any web server. This guide is for QWebMap 4.60.0, the generic edition. Everything is set in one window: <strong>Web → QWebMap: Publish Web Map…</strong> (or its toolbar button). The settings are saved in the project.</p>
 <h2 id="quick-start">Quick start</h2>
 <ol><li>
 <strong>Install.</strong> Download <code>QWebMap-&lt;version&gt;.zip</code> from the <a href="https://github.com/danzig666/QWebMap/releases/latest">latest release</a> (not the <code>-hu</code> file), then <em>Plugins → Manage and Install Plugins → Install from ZIP</em>. QGIS 3.44 or newer, or QGIS 4.
 </li><li>
-<strong>Open the window:</strong> <em>Web → QWebMap: Publish Web Map…</em>
+<strong>Open the window:</strong> <em>Web → QWebMap: Publish Web Map…</em> The first time, it asks whether to start in the <strong>Simple</strong> view (the essential settings and one button, see <a href="#simple-view">Simple view</a>) or the <strong>Advanced</strong> one; the steps below are the advanced view's.
 </li><li>
 <strong>Map tab.</strong> Enter a <strong>Title</strong>. Choose the <strong>Extent</strong>: the current map view, a layer's extent, or <strong>Draw…</strong> a rectangle. Tick <strong>Publish</strong> for the layers to put on the web map, or click <strong>Publish the visible layers</strong>.
 </li><li>
@@ -122,6 +123,37 @@ mark { background: #f6e27a; color: #1d2418; }
 <strong>Save the project.</strong> The settings live in the project file. Save it after <strong>Save settings</strong> or <strong>Close</strong>.
 </li></ol>
 <div class="note">If the map is slow when zoomed out, use <strong>Zoomed-out load…</strong> on the Map tab (the export also offers it). For a raster layer (scanned plan, orthophoto), keep <strong>Sharpest detail</strong> at <em>Like the image</em>. Each extra zoom level makes about 4× more tiles.</div>
+<h2 id="simple-view">Simple view</h2>
+<p><strong>Simple</strong> / <strong>Advanced</strong> at the top of the window switch between the two views at any time. Both show the same settings: the simple view only shows fewer of them, so switching never changes or loses anything, and everything set in the advanced view is kept (and used) while the simple one is shown. The choice is remembered for you in QGIS. The window asks once, the first time it is opened; users of earlier versions keep the advanced view.</p>
+<p>The simple view makes the web map <strong>in a folder on this computer</strong>, whatever the advanced view's <em>Destination</em> says. To put it online, copy that folder to any web server, or use <strong>Publish</strong> in the advanced view.</p>
+<ul><li>
+<strong>Title</strong> — The map's title. The address name (slug) is made from it.
+</li><li>
+<strong>Layers</strong> — The project's layers, in the order of the QGIS layer list. <strong>On the map</strong>: the layer is published. <strong>Show its information when clicked</strong>: a click on a feature shows its attributes (all fields except ids and technical ones such as <code>fid</code>); ticking it also puts the layer on the map. Anyone who opens the map can see this information. <strong>Use the layers visible in QGIS</strong> ticks exactly the layers visible in the QGIS layer list.
+</li><li>
+<strong>Area</strong> — <em>What the QGIS map shows now</em> (the map view each time the map is made) or <em>The extent of a layer</em>. Its size and the number of tiles are shown below it. A drawn or frozen area set in the advanced view is shown as such.
+</li><li>
+<strong>How close visitors can zoom</strong> — As a map scale, from 1:100 000 to 1:500, in the scales of your project (its CRS), like the scale box of QGIS. The map always opens showing the whole area; the farthest zoom out follows from the area.
+<ul><li>
+<strong>Choose automatically from the project</strong> (on for new settings) — The scale at which the smallest typical features of the published layers are clearly visible (about 40 pixels), at least the detail a layer needs that only appears when zoomed in (its scale range), and less detail for a very large area so the map stays quick to make. The reasons are written under the slider. The choice is kept with the project. Moving the slider turns it off.
+</li><li>
+The <strong>preview</strong> beside it draws the published layers as QGIS does, at that scale, where the area has most detail: what visitors see when fully zoomed in (without the background map).
+</li></ul>
+</li><li>
+<strong>Background map</strong> — <em>None</em> (only the project's layers) or <em>OpenStreetMap</em> (streets, water and place names under your layers; downloaded for the area while the map is made, so an internet connection is needed then).
+</li><li>
+<strong>Save in folder</strong> — Where the map is written (a folder named after the address inside it).
+</li><li>
+<strong>Also uses advanced settings: …</strong> — Shown when the project uses settings the simple view does not show (a drawn area, the parcel report, web basemaps, an online destination, documents, a description). They are kept and used; <strong>Show them</strong> opens the advanced view.
+</li><li>
+<strong>Make web map</strong> — Makes the web map in the folder. No questions are asked on the way (the area's size is shown beside it); warnings about a heavy map still are.
+</li><li>
+<strong>Open in browser</strong> — Opens the map made in the folder (also one made earlier), served from this computer.
+</li><li>
+<strong>Open folder</strong> — Opens the map's folder.
+</li><li>
+<strong>Make a ZIP to send</strong> — One ZIP file of the map's folder next to it, e.g. to send to a colleague or a web host, and opens the folder holding it.
+</li></ul>
 <h2 id="map-tab">Map tab</h2>
 <h3 id="web-map">Web map</h3>
 <ul><li>
