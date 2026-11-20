@@ -6,8 +6,8 @@ import subprocess
 import json
 
 from os import makedirs
-from os.path import join, basename, exists
-from shutil import copy2, copytree
+from os.path import join, basename, exists, isfile
+from shutil import copy2, copytree, which
 from sys import prefix
 from typing import Optional
 
@@ -39,8 +39,11 @@ class ServerInitializer:
 
     LINUX_ACTIVATOR = r'''
 #!/bin/bash
-# Only the process listening on the port (not browsers connected to it).
-lsof -t -iTCP:18111991 -sTCP:LISTEN | xargs kill 2>/dev/null
+# Only an earlier tile server listening on the port (not browsers connected
+# to it, nor another program using the port, such as MinIO).
+for pid in $(lsof -t -iTCP:18111991 -sTCP:LISTEN 2>/dev/null); do
+    ps -p "$pid" -o args= 2>/dev/null | grep -q tiles_server.py && kill "$pid" 2>/dev/null
+done
 cd "$(dirname "$0")"
 echo "Starting MBTiles server..."
 _Q2VT_PYTHON _Q2VT_UTILS --port 18111991 &
@@ -52,19 +55,20 @@ if command -v xdg-open &>/dev/null; then xdg-open "$URL"; elif command -v open &
 @echo off
 rem UTF-8 from here on: the Python path below may hold non-ASCII letters
 chcp 65001 > nul
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :18111991 ^| findstr LISTENING') do taskkill /PID %%a /F
+rem Only an earlier tile server on the port, not another program using it (MinIO...)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 18111991 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_.OwningProcess) } | Where-Object { $_.CommandLine -like '*tiles_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
 cd /d "%~dp0"
 echo Starting MBTiles server...
 start "MBTiles Server" "_Q2VT_PYTHON" "_Q2VT_UTILS" --port 18111991
 timeout /t 2 /nobreak > nul
 start "" "http://localhost:18111991/viewer/viewer.html?v=10031993"
-pause
 '''
 
     WINDOWS_WRAPPER = r'''
 Set WshShell = CreateObject("WScript.Shell")
 base = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\"))
-WshShell.Run "cmd /c """ & base & "utils\activate_server.bat""", 0
+rem Doubled quotes: cmd /c strips one pair when the path holds & ( ) ^ @
+WshShell.Run "cmd /c """"" & base & "utils\activate_server.bat""""", 0
 Set WshShell = Nothing
 '''
 
@@ -197,9 +201,14 @@ Set WshShell = Nothing
         system = platform.system()
         if system == "Windows":
             return join(prefix, "pythonw3.exe")
-        if system == "Linux":
-            return join(prefix, "bin", "python3")
-        return join(prefix, "python3")
+        # macOS (QGIS.app, Homebrew, conda) has it in bin/ as Linux does:
+        # the first that exists.
+        candidates = [join(prefix, "bin", "python3"), join(prefix, "python3"),
+                      join(prefix, "bin", "python"), which("python3")]
+        for candidate in candidates:
+            if candidate and isfile(candidate):
+                return candidate
+        return candidates[0]
 
     def _configure_server_placeholders(
         self,
@@ -215,12 +224,12 @@ Set WshShell = Nothing
         self.replace_in_file(
             viewer,
             {
+                # First: the numbers inserted below are not searched for it.
+                "18111991": str(self.port),
                 "_Q2VT_MINZOOM": str(self.min_zoom + self.viewer),
                 "_Q2VT_MAXZOOM": str(self.max_zoom),
                 "_Q2VT_BOUNDS": self._get_bounds_wgs84(),
                 "_Q2VT_CENTER": center,
-                "18111991": str(self.port),
-
             },
         )
         self.replace_in_file(
@@ -249,21 +258,15 @@ Set WshShell = Nothing
         )
         self.replace_in_file(
             join(output_folder, 'style', 'style.json'),
+            # Only the tile URL's token: the style holds the layers' values
+            # (a category or an id may be 10031993).
             {
-                "10031993": str(self.viewer + 1),
+                "?v=10031993": f"?v={self.viewer + 1}",
             },
         )
         if self.viewer_dir.endswith("ol_viewer"):
             self.replace_in_file(
                 join(utils_dir, "viewer", "bundle.js"),
-                {
-                    "18111991": str(self.port),
-                    "_Q2VT_MINZOOM": str(self._start_zoom() + self.viewer),
-                    "_Q2VT_CENTER": center,
-                }
-            )
-            self.replace_in_file(
-                join(utils_dir, "viewer", "viewer.js"),
                 {
                     "18111991": str(self.port),
                     "_Q2VT_MINZOOM": str(self._start_zoom() + self.viewer),

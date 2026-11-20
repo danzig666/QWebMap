@@ -167,3 +167,27 @@ def test_parcel_report_without_a_parcel_layer_is_refused(tmp_path):
     with pytest.raises(PublishingError, match="must be a vector layer") as error:
         export_local(project, profile, EXTENT)
     assert error.value.code == "Q2VT_PUB_PROFILE_INVALID"
+
+
+def test_raster_zooms_are_planned_with_this_projects_scales(tmp_path, monkeypatch):
+    """The raster layers were planned with the zoom <-> scale an earlier
+    export left (only the vector exporter set it, after the planning; never
+    for raster layers alone): tile zooms off the style's zoom range."""
+    from qgis.core import QgsCoordinateReferenceSystem  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core.fidelity import zoom as fidelity_zoom  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing import controller  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.zoom_load import zoom_scale_factor  # pylint: disable=import-error
+    from q2vt_plugin.src.utils.zoom_levels import ZoomLevels  # pylint: disable=import-error
+    project, profile, _ = raster_only_project(tmp_path, live=False)
+    project.setCrs(QgsCoordinateReferenceSystem("EPSG:23700"))
+    ZoomLevels.configure(1234.0)  # another project's, exported before
+    seen = []
+    plan = controller._plan_rasters  # pylint: disable=protected-access
+
+    def recording(*args, **kwargs):
+        seen.append(fidelity_zoom.TOP_SCALE)
+        return plan(*args, **kwargs)
+    monkeypatch.setattr(controller, "_plan_rasters", recording)
+    export_local(project, profile, EXTENT)
+    assert seen == [pytest.approx(zoom_scale_factor(project, EXTENT))]
+    assert fidelity_zoom.TOP_SCALE == pytest.approx(seen[0])  # also for the legend's zoom ranges

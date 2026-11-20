@@ -4174,6 +4174,15 @@ class PublishDialog(QDialog):
         self._busy(False)
         if task is None:
             return
+        try:
+            self._report_published(task)
+        finally:
+            # Closed while uploading, or its project closed meanwhile (its
+            # settings are not this project's): the plugin lets go of it now.
+            if not self.isVisible() or self._project_gone:
+                self.done(QDialog.DialogCode.Rejected)
+
+    def _report_published(self, task):
         if task.error:
             self._fail("ERROR", tr("Publishing failed."), task.error)
             return
@@ -4200,8 +4209,10 @@ class PublishDialog(QDialog):
                 self.log(f"⚠ {warning}")
         else:
             self._fail(result.code or result.state.value, result.message or result.state.value)
-        if not self.isVisible():  # closed while uploading: the plugin lets go of it now
-            self.done(QDialog.DialogCode.Rejected)
+        if self._project_gone and self.iface is not None and result.state == ReleaseState.PUBLISHED:
+            # Said outside the window, which closes (see _published).
+            self.iface.messageBar().pushMessage(tr("Web map"), self.status.text(),
+                                                Qgis.MessageLevel.Success, 0)
 
     # Size and position of the window, kept between QGIS sessions (QGIS settings).
     GEOMETRY_KEY = "QGIS2VectorTilesFork/publishDialog/geometry"  # pre-rename key, kept

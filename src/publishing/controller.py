@@ -20,6 +20,7 @@ import hashlib
 import itertools
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -35,7 +36,7 @@ from .progress import Progress
 from .search_index import build_search_index
 from .bundle import walk_files
 from .validation import safe_relative_path
-from .web_builder import ReleaseResult, build_release, write_zip
+from .web_builder import ReleaseResult, apply_retention, build_release, write_zip
 
 STAGES = ["PLAN", "EXPORT_MVT", "RECORDS", "LEGEND", "PARCELS", "RASTER", "BASEMAP", "STREETS", "TILES",
           "BUILD_RELEASE",
@@ -155,6 +156,21 @@ def _copy_logs(export_folder: str, profile: PublicationProfile, base: Optional[s
                 shutil.copyfile(os.path.join(export_folder, name), os.path.join(target, name))
     except OSError:
         pass  # the logs stay in the local work folder
+
+
+# An export run's folder in the work folder (QGIS2VectorTiles._create_temp_directory).
+_RUN_FOLDER = re.compile(r"^[0-9]{2}_[0-9]{2}_[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{6}$")
+# Releases kept in the local folder of an online destination: the new one and
+# the one before (the storage keeps its own; Releases to keep is for it).
+LOCAL_COPIES_KEPT = 2
+
+
+def _remove_earlier_runs(work_dir: str) -> None:
+    """The run folders of earlier exports (their tiles, datasets and the
+    private records): never used again, they only filled the disk."""
+    for name in os.listdir(work_dir):
+        if _RUN_FOLDER.match(name):
+            shutil.rmtree(os.path.join(work_dir, name), ignore_errors=True)
 
 
 def _nothing_to_publish(diagnostics):
@@ -340,9 +356,15 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
                               "terrain are drawn under the published layers.")
     publication_dir, work_dir = publication_dirs(profile, base_dir)
     os.makedirs(work_dir, exist_ok=True)
+    _remove_earlier_runs(work_dir)
     if _local_root(os.path.abspath(base_dir or profile.output.local_directory)):
         progress.info(f"Network output folder: the work files are on this computer, in {work_dir}")
     live_rasters, raster_configs = _live_rasters(project, raster_configs, extent_3857, progress)
+    # This project's zoom <-> scale before the raster zooms are planned (and
+    # for the legend's zoom ranges, also without vector layers): not the one
+    # an earlier export, maybe of another project, left.
+    from .zoom_load import configure_zoom_levels  # pylint: disable=import-outside-toplevel
+    configure_zoom_levels(project, extent_3857)
     raster_plans = _plan_rasters(project, profile, raster_configs, extent_3857, progress)
     if staged is not None:
         staged.weigh(_stage_weights(profile, raster_plans, has_vectors))
@@ -386,6 +408,7 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
             rules, export_path = [], bundle.export_dir
         else:
             if not exporter.convert_project_to_vector_tiles():
+                progress.check()  # cancelled: a cancel, not a failure
                 raise PublishingError("Q2VT_PUB_BUNDLE_INVALID",
                                       "The vector tile export produced no tiles (see the export log).")
             if exporter.diagnostics.by_code("Q2VT_EXPORT_EMPTY"):
@@ -534,6 +557,7 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         if exporter is not None:
             stage("TILES")
             if not exporter.finish_tiles():
+                progress.check()
                 raise PublishingError("Q2VT_PUB_BUNDLE_INVALID",
                                       "The vector tile export produced no tiles (see the export log).")
             bundle.diagnostics_summary = exporter.diagnostics.counts()
@@ -554,6 +578,11 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
             feedback=progress, canaries=canaries, extra_files=extra_files, extra_builders=[indexes],
             extra_validators=[disclosure], stable_entry=not flat, manifest_extra={
                 "themes": themes, "ui": {"accent": profile.accent_color}, "parcelInfo": parcel_manifest})
+        if profile.destination.kind != "local":
+            try:
+                apply_retention(publication_dir, LOCAL_COPIES_KEPT, protect=[release.release_id])
+            except OSError:
+                pass  # a file still open (Windows): removed by a later export
         result = LocalResult(ReleaseState.LOCAL_READY, release, publication_dir, export_path,
                              records.path, dict(records.counts), list(release.warnings))
         if profile.output.archive == "both" and bundle.has_vector_tiles:
