@@ -4864,13 +4864,25 @@ class QgisMapLibreStyleExporter:
                              "q2vt:obstacle-of": layer_def["id"]}})
             owner = self.label_obstacles.get(self._owning_style(layer_def["id"], self.label_obstacles), "")
             copies.setdefault(owner, []).append(obstacle)
-        layers = self.style["layers"]
+        if not copies:
+            return
+        # One pass over the layers (not one per owner): the first label
+        # layer of each owner takes its copies above it.
+        first = {}  # owner -> index of its first label layer
+        for index, other in enumerate(self.style["layers"]):
+            if other.get("type") == "symbol" and "text-field" in (other.get("layout") or {}):
+                owner = self.label_owners.get(self._owning_style(other["id"], self.label_owners))
+                if owner and owner in copies:
+                    first.setdefault(owner, index)
+        before = {index: copies[owner] for owner, index in first.items()}
+        layers = []
+        for index, layer_def in enumerate(self.style["layers"]):
+            layers += before.get(index, [])
+            layers.append(layer_def)
         for owner, items in copies.items():
-            own = [index for index, other in enumerate(layers)
-                   if other.get("type") == "symbol" and "text-field" in (other.get("layout") or {})
-                   and owner and self.label_owners.get(self._owning_style(other["id"], self.label_owners)) == owner]
-            at = min(own) if own else len(layers)
-            layers[at:at] = items
+            if owner not in first:  # no drawn labels: above all of them
+                layers += items
+        self.style["layers"] = layers
 
     @staticmethod
     def _owning_style(style_layer_id: str, names) -> Optional[str]:
