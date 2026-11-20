@@ -316,3 +316,39 @@ def test_the_simple_view_recommends_a_scale_from_the_layers(plugin, monkeypatch,
     page.wait_for_preview()
     assert page.preview.pixmap() is not None and not page.preview.pixmap().isNull()
     dialog.close()
+
+
+def test_the_review_lists_the_feature_labels_and_their_fields(plugin, monkeypatch, tmp_path):
+    """Each feature's display-expression label is published in the feature
+    lookup (deep links, on by default): the review says so, with its fields."""
+    dialog, parcels = _dialog(plugin, monkeypatch, tmp_path)
+    config = dialog.profile.layer(parcels.id())
+    config.included, config.popup_fields, config.deep_links = True, [], True
+    expression = "\"note\" || ' ' || \"hrsz\""
+    if dialog.current_layer_id == parcels.id():
+        dialog.i_display.setText(expression)
+        dialog.i_links.setChecked(True)
+    else:
+        config.display_expression = expression
+    dialog.refresh_review()
+    text = dialog.review.toPlainText()
+    assert f"display expression {expression}), public; fields used: hrsz, note" in text
+    dialog.close()
+
+
+def test_a_relative_or_home_output_folder_is_the_same_for_the_export_and_the_window(plugin, monkeypatch, tmp_path):
+    """"web_maps" is in the project's folder (not QGIS's working folder), "~"
+    is the home folder: where the export writes and Preview looks."""
+    import os  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.publishing.controller import output_folder, publication_dirs  # pylint: disable=import-error
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    assert output_folder("~/x") == os.path.join(os.path.expanduser("~"), "x")
+    assert output_folder("web_maps") == os.path.join(str(tmp_path), "web_maps")
+    dialog.o_dir.setText("web_maps")
+    profile = dialog.collect()
+    folder, _ = publication_dirs(profile)
+    assert folder == os.path.join(str(tmp_path), "web_maps", profile.slug)
+    os.makedirs(folder)
+    open(os.path.join(folder, "index.html"), "w", encoding="utf-8").close()
+    assert dialog._existing_map_dir() == folder  # pylint: disable=protected-access
+    dialog.close()

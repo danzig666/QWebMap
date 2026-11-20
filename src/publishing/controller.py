@@ -15,6 +15,7 @@ Local export never needs credentials; a failed or cancelled stage leaves the
 previous local (and public) release current.
 """
 
+import copy
 import dataclasses
 import hashlib
 import itertools
@@ -115,6 +116,22 @@ def _local_root(base: str) -> Optional[str]:
     return os.path.join(tempfile.gettempdir(), "q2vt-work", digest)
 
 
+def output_folder(base: str) -> str:
+    """The output folder as typed, absolute: ``~`` is the home folder, a
+    relative folder is inside the project's folder (not QGIS's working
+    folder, on Windows often under Program Files)."""
+    base = os.path.expanduser(base)
+    if not os.path.isabs(base):
+        try:
+            from qgis.core import QgsProject  # pylint: disable=import-outside-toplevel
+            home = QgsProject.instance().homePath()
+        except ImportError:
+            home = ""
+        if home:
+            base = os.path.join(home, base)
+    return os.path.abspath(base)
+
+
 def publication_dirs(profile: PublicationProfile, base: Optional[str] = None):
     """(publication folder, work folder). The work folder (the export's
     datasets, tiles and logs) is on this computer when the output folder is a
@@ -122,7 +139,7 @@ def publication_dirs(profile: PublicationProfile, base: Optional[str] = None):
     base = base or profile.output.local_directory
     if not base:
         raise PublishingError("Q2VT_PUB_PROFILE_INVALID", "Choose a local output folder.")
-    base = os.path.abspath(base)
+    base = output_folder(base)
     local = _local_root(base)
     work = os.path.join(local, profile.slug) if local else os.path.join(base, ".q2vt-work", profile.slug)
     return os.path.join(base, profile.slug), work
@@ -134,7 +151,7 @@ def cache_dir(profile: PublicationProfile, base: Optional[str] = None) -> str:
     base = base or profile.output.local_directory
     if not base:
         raise PublishingError("Q2VT_PUB_PROFILE_INVALID", "Choose a local output folder.")
-    base = os.path.abspath(base)
+    base = output_folder(base)
     local = _local_root(base)
     return os.path.join(local, ".q2vt-cache") if local else os.path.join(base, ".q2vt-cache")
 
@@ -145,7 +162,7 @@ _LOG_FILES = ("export_log.txt", "fidelity_report.html", "fidelity_report.json")
 def _copy_logs(export_folder: str, profile: PublicationProfile, base: Optional[str]) -> None:
     """The export log and fidelity report of a local work folder copied next
     to the output, where they are without a local work folder."""
-    base = os.path.abspath(base or profile.output.local_directory)
+    base = output_folder(base or profile.output.local_directory)
     if not export_folder or not os.path.isdir(export_folder) or _local_root(base) is None:
         return
     target = os.path.join(base, ".q2vt-work", profile.slug, os.path.basename(export_folder))
@@ -327,7 +344,10 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         if not isinstance(project.mapLayer(info.parcel_layer_id), QgsVectorLayer):
             raise PublishingError("Q2VT_PUB_PROFILE_INVALID",
                                   "Parcel report: the parcel layer must be a vector layer (Parcel report tab).")
-        config.key_fields = [info.key_field]
+        # On a copy: the caller's settings (saved in the project) keep their own.
+        config = dataclasses.replace(config, key_fields=[info.key_field])
+        profile = copy.copy(profile)
+        profile.layers = [config if c.layer_id == config.layer_id else c for c in profile.layers]
         from .parcel_report import resolve_layers  # pylint: disable=import-outside-toplevel
         resolve_layers(project, info)  # layers and fields exist: fail now, not after tiling
     # Unique feature keys: checked now, not after the (long) tile export.
@@ -354,7 +374,7 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
     exporter = None
     try:
         os.makedirs(work_dir, exist_ok=True)
-        if _local_root(os.path.abspath(base_dir or profile.output.local_directory)):
+        if _local_root(output_folder(base_dir or profile.output.local_directory)):
             progress.info(f"Network output folder: the work files are on this computer, in {work_dir}")
         live_rasters, raster_configs = _live_rasters(project, raster_configs, extent_3857, progress)
         raster_plans = _plan_rasters(project, profile, raster_configs, extent_3857, progress)

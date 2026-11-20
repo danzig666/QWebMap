@@ -4,12 +4,14 @@ publication settings, exported locally or published to their destination
 from a command line). Does what the window's Export locally / Publish
 buttons do, with the settings as saved in the project; nothing is asked."""
 
+import copy
 import datetime as _dt
+import math
 import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsRectangle
+from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsCsException, QgsRectangle
 
 from .errors import PublishingError
 from .models import PublicationProfile
@@ -68,7 +70,38 @@ def find_profile(project, name: str = "") -> PublicationProfile:
 
 def _to_3857(project, crs, rect: QgsRectangle) -> List[float]:
     transform = QgsCoordinateTransform(crs, QgsCoordinateReferenceSystem("EPSG:3857"), project)
-    box = transform.transformBoundingBox(rect)
+    try:
+        box = transform.transformBoundingBox(rect)
+    except QgsCsException as error:
+        raise PublishingError("Q2VT_PUB_PROFILE_INVALID",
+                              f"The extent cannot be converted to Web Mercator: {error}") from error
+    return [box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum()]
+
+
+def layer_extent_3857(project, layer) -> Optional[List[float]]:
+    """The layer's extent in Web Mercator, cut to the area a web map shows
+    (latitudes to ±85.05°: a world layer has no Mercator box beyond); None
+    when it has none (the Publish window and the command take the saved
+    extent then)."""
+    mercator, wgs84 = QgsCoordinateReferenceSystem("EPSG:3857"), QgsCoordinateReferenceSystem("EPSG:4326")
+    half = 20037508.342789244
+    try:
+        box = QgsCoordinateTransform(layer.crs(), mercator, project).transformBoundingBox(layer.extent())
+        values = (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())
+        fits = all(math.isfinite(v) and abs(v) <= half * 1.0001 for v in values)
+    except QgsCsException:
+        fits = False
+    try:
+        if not fits:  # through degrees, cut to the latitudes a web map shows
+            box = QgsCoordinateTransform(layer.crs(), wgs84, project).transformBoundingBox(
+                layer.extent()).intersect(QgsRectangle(-180.0, -85.0511, 180.0, 85.0511))
+            if box.isEmpty():
+                return None
+            box = QgsCoordinateTransform(wgs84, mercator, project).transformBoundingBox(box)
+    except QgsCsException:
+        return None
+    if box.isEmpty():
+        return None
     return [box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum()]
 
 
@@ -85,8 +118,8 @@ def extent_3857(project, profile: PublicationProfile, override: Optional[QgsRect
     layer = project.mapLayer(view.extent_layer) \
         if view.extent_mode == "layer" and view.extent_layer else None
     if layer is not None:
-        box = _to_3857(project, layer.crs(), layer.extent())
-        if box[2] > box[0] and box[3] > box[1]:
+        box = layer_extent_3857(project, layer)
+        if box and box[2] > box[0] and box[3] > box[1]:
             return box
     if view.extent:
         return list(view.extent)
@@ -147,6 +180,9 @@ def run(project, profile: PublicationProfile, extent, feedback=None, upload: boo
     from .controller import export_local, publication_dirs  # pylint: disable=import-outside-toplevel
     from .models import ReleaseState  # pylint: disable=import-outside-toplevel
     from .progress import Progress  # pylint: disable=import-outside-toplevel
+    # The run's own output folder on a copy: the caller saves the settings
+    # (SAVE_PROJECT, for an approval) without it.
+    caller, profile = profile, copy.deepcopy(profile)
     if output_dir:
         profile.output.local_directory = output_dir
     if not profile.output.local_directory:
@@ -168,6 +204,7 @@ def run(project, profile: PublicationProfile, extent, feedback=None, upload: boo
                     "again with APPROVE to approve it here.")
             profile.approval.fingerprint = disclosure_fingerprint(profile, extra)
             profile.approval.approved_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            caller.approval = copy.deepcopy(profile.approval)
         secrets_of = credentials(profile)  # before the export: a missing one fails fast
     local = export_local(project, profile, QgsRectangle(*extent), feedback)
     result = HeadlessResult(local.publication_dir, local.entry_path, warnings=list(local.warnings))

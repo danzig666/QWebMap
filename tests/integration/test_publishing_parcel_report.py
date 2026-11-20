@@ -101,6 +101,7 @@ def build_site(tmp_path, **profile_changes):
                                     project.transformContext())
     extent = to_web.transformBoundingBox(QgsRectangle(X - 50, Y - 50, X + 200, Y + 100))
     result = export_local(project, profile, extent)
+    assert profile.layers[0].key_fields == []  # the parcel id as key: the export's, not saved
     rel = result.release.release_dir
     manifest = json.load(open(os.path.join(rel, "manifest.json"), encoding="utf-8"))
     pm = json.load(open(os.path.join(rel, "parcels", "manifest.json"), encoding="utf-8"))

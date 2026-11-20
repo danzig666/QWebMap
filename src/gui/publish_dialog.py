@@ -25,9 +25,9 @@ import traceback
 from urllib.parse import urlparse
 
 from qgis.core import (Qgis, QgsApplication, QgsCoordinateReferenceSystem, QgsCoordinateTransform,
-                       QgsCsException, QgsGeometry, QgsIconUtils, QgsLayerTreeGroup, QgsLayerTreeLayer,
-                       QgsMessageLog, QgsProcessingFeedback, QgsProject, QgsRasterLayer, QgsRectangle,
-                       QgsSettings, QgsTask, QgsVectorLayer, QgsWkbTypes)
+                       QgsCsException, QgsExpression, QgsGeometry, QgsIconUtils, QgsLayerTreeGroup,
+                       QgsLayerTreeLayer, QgsMessageLog, QgsProcessingFeedback, QgsProject, QgsRasterLayer,
+                       QgsRectangle, QgsSettings, QgsTask, QgsVectorLayer, QgsWkbTypes)
 from qgis.PyQt.QtCore import QCoreApplication, Qt, QTimer, QUrl, pyqtSignal
 from qgis.PyQt.QtGui import QDesktopServices, QGuiApplication
 from qgis.PyQt.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
@@ -1393,28 +1393,9 @@ class PublishDialog(QDialog):
 
     def _layer_extent_3857(self, layer):
         """The layer's extent in Web Mercator, cut to the area a web map shows
-        (latitudes to ±85.05°: a world layer has no Mercator box beyond)."""
-        import math  # pylint: disable=import-outside-toplevel
-        mercator, wgs84 = QgsCoordinateReferenceSystem("EPSG:3857"), QgsCoordinateReferenceSystem("EPSG:4326")
-        half = 20037508.342789244
-        try:
-            box = QgsCoordinateTransform(layer.crs(), mercator, self.project).transformBoundingBox(layer.extent())
-            values = (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())
-            fits = all(math.isfinite(v) and abs(v) <= half * 1.0001 for v in values)
-        except QgsCsException:
-            fits = False
-        try:
-            if not fits:  # through degrees, cut to the latitudes a web map shows
-                box = QgsCoordinateTransform(layer.crs(), wgs84, self.project).transformBoundingBox(
-                    layer.extent()).intersect(QgsRectangle(-180.0, -85.0511, 180.0, 85.0511))
-                if box.isEmpty():
-                    return self.profile.view.extent
-                box = QgsCoordinateTransform(wgs84, mercator, self.project).transformBoundingBox(box)
-        except QgsCsException:
-            return self.profile.view.extent
-        if box.isEmpty():
-            return self.profile.view.extent
-        return [box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum()]
+        (the same as the Processing command's: headless.layer_extent_3857)."""
+        from ..publishing.headless import layer_extent_3857  # pylint: disable=import-outside-toplevel
+        return layer_extent_3857(self.project, layer) or self.profile.view.extent
 
     def web_zoom_scales(self) -> list:
         """The QGIS scale denominators of web zooms 0-22 for this project
@@ -3661,7 +3642,8 @@ class PublishDialog(QDialog):
         slug = self.e_slug.text().strip() or slugify(self.e_title.text().strip())
         if not base or not slug:
             return ""
-        folder = os.path.join(os.path.abspath(os.path.expanduser(base)), slug)
+        from ..publishing.controller import output_folder  # pylint: disable=import-outside-toplevel
+        folder = os.path.join(output_folder(base), slug)
         return folder if os.path.isfile(os.path.join(folder, "index.html")) else ""
 
     def _local_map_dir(self) -> str:
@@ -4019,6 +4001,15 @@ class PublishDialog(QDialog):
                 lines.append("   " + tr("Popup fields: ") + ", ".join(p.field for p in config.popup_fields))
             if config.search_fields:
                 lines.append("   " + tr("Searchable fields: ") + ", ".join(config.search_fields))
+            if config.display_expression and (config.popup_fields or config.deep_links):
+                # Each feature's label goes into the feature lookup files: the
+                # fields the expression reads are public too.
+                names = set(layer.fields().names())
+                used = sorted(c for c in QgsExpression(config.display_expression).referencedColumns()
+                              if c in names)
+                lines.append("   " + tr("Feature label of every feature (display expression {}), public; "
+                                        "fields used: ").format(config.display_expression)
+                             + (", ".join(used) or tr("none")))
             if config.filter_fields:
                 lines.append("   " + tr("Filter fields (also in the tiles): ")
                              + ", ".join(f.field for f in config.filter_fields))
