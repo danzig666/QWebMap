@@ -4,6 +4,8 @@
 // ignores Range sends the whole pack: it is kept and sliced.
 
 const wholePacks = new Map(); // pack URL -> Promise<Uint8Array>
+const ranged = new Set(); // pack URLs a range request was answered (206)
+const probes = new Map(); // pack URL -> the first request's answer awaited
 
 // A shard's identity (the shards of a pack share its path).
 export function shardId(shard) {
@@ -13,15 +15,36 @@ export function shardId(shard) {
 async function packBytes(url, shard) {
   const start = shard.offset;
   const end = shard.offset + shard.length - 1;
-  if (!wholePacks.has(url.href)) {
-    const response = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } });
-    if (response.status === 206) return new Uint8Array(await response.arrayBuffer());
-    if (!response.ok) throw new Error(`${shard.path}: HTTP ${response.status}`);
-    const loading = response.arrayBuffer().then((buffer) => new Uint8Array(buffer));
-    wholePacks.set(url.href, loading);
-    loading.catch(() => wholePacks.delete(url.href));  // tried again next time
+  const href = url.href;
+  // While the first request for a pack is out, the others wait for its
+  // answer: a server that ignores Range sent each of them (a search loads
+  // up to 24 shards at once) the whole pack. Looped: when the first
+  // request failed, one of the waiters probes again, the others wait for it.
+  while (probes.has(href)) await probes.get(href);
+  if (!wholePacks.has(href)) {
+    const first = !ranged.has(href) && !probes.has(href);
+    let answered = () => {};
+    if (first) {
+      const known = new Promise((resolve) => { answered = resolve; });
+      probes.set(href, known);
+      known.then(() => { if (probes.get(href) === known) probes.delete(href); });
+    }
+    try {
+      const response = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } });
+      if (response.status === 206) {
+        ranged.add(href);
+        answered();
+        return new Uint8Array(await response.arrayBuffer());
+      }
+      if (!response.ok) throw new Error(`${shard.path}: HTTP ${response.status}`);
+      const loading = response.arrayBuffer().then((buffer) => new Uint8Array(buffer));
+      wholePacks.set(href, loading);
+      loading.catch(() => wholePacks.delete(href));  // tried again next time
+    } finally {
+      answered();
+    }
   }
-  return (await wholePacks.get(url.href)).subarray(start, end + 1);
+  return (await wholePacks.get(href)).subarray(start, end + 1);
 }
 
 async function gunzipText(bytes) {
