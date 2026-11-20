@@ -117,10 +117,14 @@ class QGIS2VectorTiles:
         if self.dialog is None:
             self.dialog = PublishDialog(self.iface)
             self.dialog.finished.connect(self._dialog_closed)
-            self.dialog.ask_first_view()  # (once per user: simple or advanced view)
+            first = True
+        else:
+            first = False
         self.dialog.show()
         self.dialog.raise_()
         self.dialog.activateWindow()
+        if first:
+            self.dialog.ask_first_view()  # (once per user, over the window: simple or advanced view)
 
     def _dialog_closed(self):
         # Kept while an upload still reports to it (opened again, it shows

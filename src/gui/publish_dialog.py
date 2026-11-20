@@ -510,8 +510,11 @@ class PublishDialog(QDialog):
         simple = box.addButton(tr("Simple"), QMessageBox.ButtonRole.AcceptRole)
         box.addButton(tr("Advanced"), QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(simple)
-        box.exec()
-        self.set_simple_view(box.clickedButton() is simple)
+        # Over the shown window, without waiting for the answer here (closed
+        # unanswered: advanced, the earlier versions' window).
+        box.finished.connect(lambda _result: self.set_simple_view(box.clickedButton() is simple))
+        box.open()
+        self._first_view_box = box
 
     def _title_edited(self, text):
         # Only while the address is still the one made from the title (not typed in).

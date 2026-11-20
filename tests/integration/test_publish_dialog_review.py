@@ -268,7 +268,7 @@ def test_the_first_view_question_only_for_new_users(plugin, monkeypatch, tmp_pat
     dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
     settings = QgsSettings()
     asked = []
-    monkeypatch.setattr(QMessageBox, "exec", lambda box: asked.append(box.text()))
+    monkeypatch.setattr(QMessageBox, "open", lambda box: (asked.append(box.text()), box.done(0)))
     monkeypatch.setattr(QMessageBox, "clickedButton",
                         lambda box: next(b for b in box.buttons() if b.text() == "Simple"))
     try:
