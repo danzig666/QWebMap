@@ -29,6 +29,7 @@ def site(tmp_path_factory):
     profile.output.local_directory = str(base / "out")
     profile.layers = [LayerConfig(layer.id(), initially_visible=True)]
     profile.interaction.panel_closed = True
+    profile.interaction.overview_map = True
     result = export_local(project, profile, EXTENT)
     with PreviewServer(os.path.dirname(result.publication_dir)) as server:
         yield server.url(f"{profile.slug}/index.html")
@@ -71,3 +72,19 @@ def test_reduced_motion_keeps_the_first_frame(site, tmp_path):
     samples = _run(site, [{"wait": 1500}, {"eval": SHOWN}, {"wait": 400}, {"eval": SHOWN}], tmp_path)
     for sample in samples:
         assert [index for index, opacity in sample if opacity not in (0, None)] == [0], sample
+
+
+def test_overview_is_not_restyled_by_the_animation(site, tmp_path, monkeypatch):
+    # The frames change the style (styledata) every frame: the overview
+    # copied the whole style and diffed it into its own every 600 ms.
+    monkeypatch.setenv("Q2VT_MOTION", "1")
+    sys.path.insert(0, HERE)
+    from test_web_viewer_views import _run  # pylint: disable=import-error
+    (out,) = _run(site, [{"wait": 1500}, {"eval": """
+      const overview = q2vtViewer.controls.overview;
+      const set = overview.mini.setStyle.bind(overview.mini);
+      let restyled = 0;
+      overview.mini.setStyle = (...args) => { restyled++; return set(...args); };
+      await new Promise((r) => setTimeout(r, 2500));
+      return { restyled, open: !overview.box.hidden };"""}], tmp_path)
+    assert out["open"] and out["restyled"] == 0

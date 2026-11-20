@@ -48,13 +48,23 @@ export function encodeState(manifest, value, camera, defaults) {
 
 export function decodeState(manifest, hash) {
   const text = (hash || "").replace(/^#/, "");
-  if (!text || text.length > MAX_HASH + MAX_DRAWING) return null;
+  if (!text) return null;
   const params = new URLSearchParams(text);
-  // (Counted apart: a long drawing plus many switched layers or rules is
-  // still a valid link; its drawing lives only in the link.)
-  const drawingLength = (params.get("d") || "").length;
-  if (text.length - drawingLength > MAX_HASH) return null;
   if (params.get("v") !== "1") return null;
+  // Too long (besides the drawing, counted apart: it lives only in the
+  // link): its longest lists (switched rules, filters...) are left out, the
+  // longest first, not the whole link - it opened the default view, the
+  // camera and the selected feature lost without a word.
+  const rest = new URLSearchParams(params);
+  rest.delete("d");
+  const lists = ["f", "r+", "r-", "o", "g+", "g-", "l+", "l-"].filter((key) => params.has(key))
+    .sort((a, b) => params.get(b).length - params.get(a).length);
+  for (const key of lists) {
+    if (rest.toString().length <= MAX_HASH) break;
+    rest.delete(key);
+    params.delete(key);
+  }
+  if (rest.toString().length > MAX_HASH) return null;
   const out = { layers: {}, groups: {}, rules: {}, opacity: {} };
   const ids = {
     layers: new Set(manifest.layers.map((l) => l.id)),

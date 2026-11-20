@@ -133,3 +133,30 @@ def test_strong_etag_changes_with_the_file(site):
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
     changed, _ = _request(site, "/data/map.pmtiles", headers={"Range": "bytes=0-126"})
     assert changed.getheader("ETag") not in (None, etag)
+
+
+def test_request_log_is_bounded(tmp_path, monkeypatch):
+    """A preview tab left open fetches tiles for hours: the log keeps the last ones."""
+    from publishing import preview_server
+    monkeypatch.setattr(preview_server, "REQUEST_LOG", 5)
+    (tmp_path / "index.html").write_text("x", encoding="utf-8")
+    with PreviewServer(str(tmp_path)) as server:
+        for number in range(8):
+            _request(server, f"/index.html?{number}")
+        assert len(server.requests) == 5 and server.requests[-1]["status"] == 200
+
+
+def test_ipv6_loopback(tmp_path):
+    assert PreviewServer(str(tmp_path), port=8123, host="::1").url("a b") == "http://[::1]:8123/a%20b"
+    if not socket.has_ipv6:
+        pytest.skip("no IPv6")
+    try:
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        pytest.skip("no IPv6 loopback")
+    (tmp_path / "index.html").write_text("<p>six</p>", encoding="utf-8")
+    with PreviewServer(str(tmp_path), host="::1") as server:
+        assert server.url("index.html") == f"http://[::1]:{server.port}/index.html"
+        response, body = _request(server, "/index.html")
+        assert response.status == 200 and body == b"<p>six</p>"

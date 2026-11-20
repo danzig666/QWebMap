@@ -11,6 +11,13 @@ Usage::
     python3 tools/build_release.py          # version from metadata.txt
     python3 tools/build_release.py --out /tmp/plugin.zip
     python3 tools/build_release.py --variant variant.json
+    python3 tools/build_release.py --compare releases/QWebMap-4.4.1.zip
+
+The files are read from the working tree, so a zip written into releases/
+(the one that is committed and released) needs the plugin files committed:
+with uncommitted changes in them it is refused. ``--compare`` builds the zip
+of this checkout in a temporary folder and fails when the given zip's files
+differ (the release workflow checks the committed zip with it).
 
 A variant branch (e.g. hu-hesz, see docs/BRANCHES.md) has a ``variant.json``
 at the repository root: ``{"suffix": "hu", "name": "QWebMap HÉSZ"}``.
@@ -24,6 +31,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,9 +49,32 @@ def read_variant(path):
     return variant
 
 
+def zip_differences(built, given):
+    """Entries whose bytes differ between two plugin zips (dates ignored)."""
+    with zipfile.ZipFile(built) as one, zipfile.ZipFile(given) as other:
+        names, others = set(one.namelist()), set(other.namelist())
+        differ = [f"only in the built zip: {name}" for name in sorted(names - others)]
+        differ += [f"not in this commit: {name}" for name in sorted(others - names)]
+        differ += [f"differs: {name}" for name in sorted(names & others)
+                   if one.read(name) != other.read(name)]
+    return differ
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     options = dict(zip(argv[::2], argv[1::2]))
+    if "--compare" in options:
+        given = os.path.abspath(options.pop("--compare"))
+        with tempfile.TemporaryDirectory() as folder:
+            built = os.path.join(folder, "check.zip")
+            main([*sum(options.items(), ()), "--out", built])
+            differ = zip_differences(built, given)
+        if differ:
+            print(f"{given} is not this commit's plugin ({len(differ)} files):", file=sys.stderr)
+            print("\n".join(differ[:50]), file=sys.stderr)
+            return 1
+        print(f"{given}: the same files as this commit")
+        return 0
     metadata = configparser.ConfigParser()
     metadata.read(os.path.join(ROOT, "metadata.txt"), encoding="utf-8")
     version = metadata["general"]["version"]
@@ -55,6 +86,13 @@ def main(argv=None) -> int:
     files = [path for path in files if path]
     out = os.path.abspath(options["--out"]) if "--out" in options else \
         os.path.join(ROOT, "releases", f"{FOLDER}-{version}.zip")
+    if "--out" not in options:
+        # The released zip must be the commit's files: uncommitted edits
+        # would ship under a tag whose code differs.
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no", "--", *CONTENT],
+                               cwd=ROOT, capture_output=True, text=True, check=True).stdout
+        if dirty.strip():
+            raise SystemExit(f"Commit the plugin files first (uncommitted changes):\n{dirty}")
     folders = set()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(zipfile.ZipInfo(f"{FOLDER}/"), "")

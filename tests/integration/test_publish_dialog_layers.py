@@ -454,3 +454,70 @@ def test_scales_of_several_layers_change_only_what_is_edited(setup, monkeypatch)
     assert shown == {"low": 0.0, "high": 0.0, "labels": 0.0, "count": 2}  # labels limits differ
     assert dialog._item_scales(items[parcels.id()]) == (50000.0, 0.0, 10000.0)  # pylint: disable=protected-access
     assert dialog._item_scales(items[zones.id()]) == (50000.0, 0.0, 0.0)  # pylint: disable=protected-access
+
+
+def test_scales_of_several_layers_never_leave_a_layer_no_scale(setup, monkeypatch):
+    """Several rows with different zoomed-out limits and a new zoomed-in
+    limit: a row it would leave visible at no scale stays as it was (and is
+    named), the others take it."""
+    dialog, project, parcels, zones, ortho = setup
+    items = _items(dialog)
+    dialog._set_item_scales(items[parcels.id()], 10000, 0, 0)  # pylint: disable=protected-access
+    dialog._set_item_scales(items[zones.id()], 50000, 0, 0)  # pylint: disable=protected-access
+    from q2vt_plugin.src.gui import scale_range  # pylint: disable=import-error
+
+    class Chosen:  # the user sets only "Hide when zoomed in beyond 1:20 000"
+        def __init__(self, *args):
+            pass
+
+        def exec(self):
+            return True
+
+        def values(self):
+            return 0.0, 20000.0, 0.0
+
+    monkeypatch.setattr(scale_range, "ScaleRangeDialog", Chosen)
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+    dialog.tree.clearSelection()
+    items[parcels.id()].setSelected(True)
+    items[zones.id()].setSelected(True)
+    assert dialog.edit_scales()
+    assert dialog._item_scales(items[parcels.id()]) == (10000.0, 0.0, 0.0)  # pylint: disable=protected-access
+    assert dialog._item_scales(items[zones.id()]) == (50000.0, 20000.0, 0.0)  # pylint: disable=protected-access
+    assert warned and parcels.name() in warned[0]
+
+
+def test_a_fixed_raster_detail_equal_to_the_map_zoom_stays_fixed(setup):
+    """A raster's fixed "Sharpest detail" zoom that equals the map's max zoom
+    (or the image's) is not turned into "like the map" by viewing it."""
+    dialog, project, parcels, zones, ortho = setup
+    _items(dialog)[ortho.id()].setCheckState(1, CHECKED)
+    dialog.e_max_zoom.setValue(13)
+    dialog._fill_interaction_layers()  # pylint: disable=protected-access
+    rows = [dialog.i_layers.item(i).data(Qt.ItemDataRole.UserRole) for i in range(dialog.i_layers.count())]
+    for fixed in (13, 15):  # the map's max zoom; like the image (make_raster: zoom 15)
+        dialog.layer_configs[ortho.id()].raster_max_zoom = fixed
+        dialog.layer_configs[ortho.id()].raster_match_native = False
+        dialog.current_layer_id = None
+        dialog.i_layers.setCurrentRow(rows.index(ortho.id()))
+        assert dialog.r_detail.currentData() == fixed
+        assert "(fixed, zoom {})".format(fixed) in dialog.r_detail.currentText()  # not like "Like the map"
+        dialog.i_layers.setCurrentRow(rows.index(parcels.id()))
+        config = dialog.collect().layer(ortho.id())
+        assert (config.raster_max_zoom, config.raster_match_native) == (fixed, False)
+
+
+def test_an_inverted_scale_range_is_warned_on_the_review_tab(setup):
+    """Visible scales saved inverted by an older version (shown at no zoom):
+    the Review tab says so; the settings still load and save."""
+    dialog, project, parcels, zones, ortho = setup
+    items = _items(dialog)
+    dialog._set_item_scales(items[parcels.id()], 10000, 50000, 0)  # pylint: disable=protected-access
+    dialog._set_item_scales(items[zones.id()], 50000, 10000, 0)  # pylint: disable=protected-access
+    dialog.refresh_review()
+    text = dialog.review.toPlainText()
+    assert text.count("shown at no zoom") == 1, text
+    lines = text.splitlines()
+    header = next(i for i, line in enumerate(lines) if line.startswith("■ " + parcels.name() + " "))
+    assert "shown at no zoom" in lines[header + 1], text

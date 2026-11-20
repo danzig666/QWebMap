@@ -25,6 +25,7 @@ _condition = threading.Condition()
 _shared = 0
 _exclusive = False
 _owner = None  # the thread holding exclusive()
+_local = threading.local()  # .depth: the shared() stretches this thread is inside
 
 
 @contextlib.contextmanager
@@ -34,13 +35,23 @@ def shared():
     if _owner is threading.current_thread():  # inside its own exclusive(): already alone
         yield
         return
+    depth = getattr(_local, "depth", 0)
+    if depth:  # nested in its own shared(): waiting for a pending exclusive() would deadlock
+        _local.depth = depth + 1
+        try:
+            yield
+        finally:
+            _local.depth = depth
+        return
     with _condition:
         while _exclusive:
             _condition.wait()
         _shared += 1
+    _local.depth = 1
     try:
         yield
     finally:
+        _local.depth = 0
         with _condition:
             _shared -= 1
             _condition.notify_all()

@@ -228,3 +228,34 @@ def test_raster_only_settings_are_exported_and_published(plugin, tmp_path, monke
             assert json.load(handle)["releaseId"]
     finally:
         public.stop()
+
+
+def test_a_world_layer_extent_is_cut_to_web_mercator_as_in_the_window(plugin, tmp_path):
+    """The command takes a layer extent as the Publish window does: a world
+    WGS 84 layer is cut to the latitudes a web map shows."""
+    from qgis.core import QgsFeature, QgsGeometry, QgsVectorLayer
+    from q2vt_plugin.src.publishing import headless  # pylint: disable=import-error
+    project, _, profile = _saved_settings(tmp_path)
+    world = QgsVectorLayer("Polygon?crs=EPSG:4326", "Világ", "memory")
+    feature = QgsFeature()
+    feature.setGeometry(QgsGeometry.fromWkt("POLYGON((-180 -90, 180 -90, 180 90, -180 90, -180 -90))"))
+    world.dataProvider().addFeatures([feature])
+    world.updateExtents()
+    project.addMapLayer(world)
+    profile.view.extent_mode, profile.view.extent_layer = "layer", world.id()
+    x0, y0, x1, y1 = headless.extent_3857(project, profile)
+    half = 20037508.342789244
+    assert -half - 1 <= x0 < x1 <= half + 1 and -half - 1 <= y0 < y1 <= half + 1 and y1 > 0.99 * half
+
+
+def test_the_runs_output_folder_is_not_saved_into_the_settings(plugin, tmp_path):
+    """OUTPUT_DIR is the run's: SAVE_PROJECT (for an approval) keeps the
+    settings' own folder."""
+    from q2vt_plugin.src.gui import publication_profiles as store  # pylint: disable=import-error
+    project, _, profile = _saved_settings(tmp_path)
+    project.setFileName(str(tmp_path / "terv.qgz"))
+    results, error = _run({"ACTION": 1, "OUTPUT_DIR": str(tmp_path / "ci-out"), "SAVE_PROJECT": True}, project)
+    assert results, error
+    assert results["OUTPUT_FOLDER"].startswith(str(tmp_path / "ci-out"))
+    saved, _ = store.active_profile(project)
+    assert saved.output.local_directory == profile.output.local_directory == str(tmp_path / "web")

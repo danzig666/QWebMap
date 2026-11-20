@@ -337,3 +337,95 @@ def test_marker_is_drawn_where_its_ink_is_when_its_bounds_are_too_large(sg, monk
     assert right - left == pytest.approx(19, abs=2) and bottom - top == pytest.approx(19, abs=2)
     with pytest.raises(sg.SpriteRenderError, match="px wide"):
         sg.SymbolImage(_marker(size=30), "big", 1)
+
+
+@pytest.mark.parametrize("ratio", [3, 6])
+def test_pixel_stroke_of_a_filled_marker_fill_is_oversampled(sg, ratio):
+    """Pixel sizes in a marker's sub-symbol (a filled marker's fill) were
+    left in pixels, which QGIS draws 1:1: a 2 px outline was 2 device px in
+    sprites declared at pixelRatio 3 and 6, a faint grey line in browsers."""
+    from qgis.core import QgsFilledMarkerSymbolLayer, QgsSimpleFillSymbolLayer
+    fill = QgsSimpleFillSymbolLayer(QColor("white"), Qt.BrushStyle.SolidPattern, QColor("black"))
+    fill.setStrokeWidth(2)
+    fill.setStrokeWidthUnit(Qgis.RenderUnit.Pixels)
+    marker = QgsFilledMarkerSymbolLayer()
+    marker.setShape(Qgis.MarkerShape.Square)
+    marker.setSize(4)
+    marker.setSubSymbol(QgsFillSymbol([fill]))
+    image = sg.SymbolImage(QgsMarkerSymbol([marker]), "m", ratio).img
+    assert _outline_ink(image) == pytest.approx(2 * ratio, rel=0.25)
+
+
+def test_pixel_symbol_buffer_is_converted_for_oversampling(sg):
+    qgis_core = pytest.importorskip("qgis.core")
+    if not hasattr(qgis_core, "QgsSymbolBufferSettings"):
+        pytest.skip("symbol buffers need QGIS 3.40+")
+    buffer = qgis_core.QgsSymbolBufferSettings()
+    buffer.setEnabled(True)
+    buffer.setSize(4)
+    buffer.setSizeUnit(Qgis.RenderUnit.Pixels)
+    symbol = _marker()
+    symbol.setBufferSettings(buffer)
+    sg._pixels_to_millimeters(symbol)  # pylint: disable=protected-access
+    assert symbol.bufferSettings().sizeUnit() == Qgis.RenderUnit.Millimeters
+    assert symbol.bufferSettings().size() == pytest.approx(4 * 25.4 / 96)
+
+
+def test_random_fill_density_area_in_pixels_converts_as_an_area(sg):
+    """densityArea was divided by px/mm once like a length (px² needs the square)."""
+    from qgis.core import QgsRandomMarkerFillSymbolLayer
+    layer = QgsRandomMarkerFillSymbolLayer(10, Qgis.PointCountMethod.DensityBased, 9216)
+    layer.setDensityAreaUnit(Qgis.RenderUnit.Pixels)
+    fill = QgsFillSymbol()
+    fill.changeSymbolLayer(0, layer)
+    sg._pixels_to_millimeters(fill)
+    layer = fill.symbolLayer(0)
+    assert layer.densityAreaUnit() == Qgis.RenderUnit.Millimeters
+    assert layer.densityArea() == pytest.approx(9216 * (25.4 / 96) ** 2)
+
+
+def test_fallback_pattern_previews_are_small_and_agree_at_1x_and_2x(sg, tmp_path):
+    """Fill previews (pattern fallbacks) were drawn on a fixed 1000 / 2000 px
+    canvas: 333 CSS px textures, a dozen made an 8000 px @2x sheet."""
+    from PIL import Image
+    from qgis.core import QgsPointPatternFillSymbolLayer
+    requests = {}
+    for i in range(12):
+        fill = QgsFillSymbol()
+        fill.changeSymbolLayer(0, QgsPointPatternFillSymbolLayer())
+        requests[f"p{i}"] = sg.SpriteRequest(fill, bake_rotation=True)
+    diags = DiagnosticCollector()
+    gen = sg.SpriteGenerator(requests, str(tmp_path), 3, diagnostics=diags)
+    gen.generate()
+    one, two = gen.index[1]["p0"], gen.index[2]["p0"]
+    # Cropped to the ink: the 2x crop may differ by a device pixel.
+    assert 0 < one["width"] / one["pixelRatio"] <= 128
+    assert two["width"] / two["pixelRatio"] == pytest.approx(one["width"] / one["pixelRatio"], abs=1)
+    assert max(Image.open(tmp_path / "sprite" / "sprite@2x.png").size) <= 4096
+    assert not diags.by_code("Q2VT_SPRITE_SHEET_LARGE")
+
+
+def test_large_sprite_sheet_is_reported(sg, tmp_path):
+    from PIL import Image
+    gen = sg.SpriteGenerator({}, str(tmp_path), 1, diagnostics=DiagnosticCollector())
+    gen.pattern_images["big"] = sg.PatternImages(Image.new("RGBA", (5000, 10), "black"),
+                                                 Image.new("RGBA", (10000, 20), "black"))
+    gen.generate()
+    assert gen.diagnostics.by_code("Q2VT_SPRITE_SHEET_LARGE")
+    assert not gen.diagnostics.by_code("Q2VT_SPRITE_SHEET_TOO_LARGE")
+
+
+def test_long_callout_is_whole_in_both_sheets(sg, tmp_path):
+    """A callout reaching 400 CSS px was cut to the 4096 px canvas in the 2x
+    image (683 logical px wide, the 1x one 804): it now lowers the density."""
+    from qgis.core import QgsLineSymbol
+    line = QgsLineSymbol.createSimple({"color": "black", "width": "0.5"})
+    path = ((-400.0, 0.0), (400.0, 0.0))
+    gen = sg.SpriteGenerator({"c": sg.SpriteRequest(line, path=path)}, str(tmp_path), 3)
+    gen.generate()
+    one, two = gen.index[1]["c"], gen.index[2]["c"]
+    assert two["pixelRatio"] == pytest.approx(2 * one["pixelRatio"], rel=1e-3)
+    assert one["width"] / one["pixelRatio"] == pytest.approx(two["width"] / two["pixelRatio"], abs=2)
+    assert one["width"] / one["pixelRatio"] == pytest.approx(802, abs=4)
+    with pytest.raises(sg.SpriteRenderError, match="px wide"):
+        sg.SymbolImage(line, "c", 6, path=path)

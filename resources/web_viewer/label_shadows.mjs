@@ -7,6 +7,8 @@
 
 const KEY = "q2vt_feature_key";
 const INTERVAL_MS = 120;
+const SETTLE_MS = 1500;
+const IDLE_INTERVAL_MS = 2000;
 
 function synced(style) {
   return ((style && style.layers) || []).filter((l) => l.metadata && l.metadata["q2vt:shadow-state"]);
@@ -46,10 +48,22 @@ export function installShadows(map, style) {
       item.shown = now;
     }
   };
-  let timer = null;
+  // An animated marker renders the map every frame, for good: the labels
+  // are queried every INTERVAL_MS only while the view, the tiles or the
+  // label layers change and for SETTLE_MS after (placement fades in), else
+  // every IDLE_INTERVAL_MS (a change not seen here).
+  let timer = null, loads = 0, seen = "", busyUntil = 0, last = 0;
+  map.on("sourcedata", () => { loads++; });
+  const signature = () => [map.getBounds().toArray().flat(), map.getBearing(), map.getPitch(), loads,
+    ...items.map(({ label }) => (map.getLayer(label)
+      ? `${map.getLayoutProperty(label, "visibility")}|${JSON.stringify(map.getFilter(label) ?? null)}` : ""))].join();
   const schedule = () => {
     if (timer) return;
-    timer = setTimeout(() => { timer = null; sync(); }, INTERVAL_MS);
+    const now = performance.now();
+    const current = signature();
+    if (current !== seen) { seen = current; busyUntil = now + SETTLE_MS; }
+    if (now > busyUntil && now - last < IDLE_INTERVAL_MS) return;
+    timer = setTimeout(() => { timer = null; last = performance.now(); sync(); }, INTERVAL_MS);
   };
   map.on("render", schedule);
   map.on("idle", sync);

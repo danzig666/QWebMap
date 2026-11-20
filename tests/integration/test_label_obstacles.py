@@ -112,3 +112,35 @@ def test_no_obstacles_without_labels_with_obstacles_off_or_labels_over_the_point
         _, result = export(points)
         layers = _style(result)["layers"]
         assert not [l for l in layers if (l.get("metadata") or {}).get("q2vt:obstacle-of")], kwargs
+
+
+def test_obstacle_copies_go_under_their_own_labels_in_one_pass(plugin):
+    """Each layer's copies right before its first label layer, a layer
+    without labels' copies last; a large style in well under a second (the
+    layers were scanned once per owner)."""
+    import time  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core import maplibre_converter as mc  # pylint: disable=import-error
+    exporter = mc.QgisMapLibreStyleExporter.__new__(mc.QgisMapLibreStyleExporter)
+    count = 300
+    exporter.label_obstacles = {f"pts{i}": f"L{i}" for i in range(count + 1)}
+    exporter.label_owners = {f"lbl{i}": f"L{i}" for i in range(count)}
+    layers = []
+    for i in range(count + 1):
+        for zoom in range(5):
+            layers.append({"id": f"pts{i}_z{zoom}", "type": "symbol", "source": "s",
+                           "layout": {"icon-image": "m"}, "metadata": {"q2vt:label-obstacle": True}})
+    for i in range(count):
+        for zoom in range(5):
+            layers.append({"id": f"lbl{i}_z{zoom}", "type": "symbol", "source": "s",
+                           "layout": {"text-field": "t"}})
+    exporter.style = {"layers": layers}
+    start = time.perf_counter()
+    exporter._add_label_obstacles()  # pylint: disable=protected-access
+    # Generous for loaded CI runners: one pass takes milliseconds, the old
+    # per-owner scans about 30 s.
+    assert time.perf_counter() - start < 5.0
+    ids = [l["id"] for l in exporter.style["layers"]]
+    assert len(ids) == len(layers) + 5 * (count + 1)
+    first = ids.index("lbl7_z0")
+    assert ids[first - 5:first] == [f"pts7_z{zoom}_obstacle" for zoom in range(5)]
+    assert ids[-5:] == [f"pts{count}_z{zoom}_obstacle" for zoom in range(5)]

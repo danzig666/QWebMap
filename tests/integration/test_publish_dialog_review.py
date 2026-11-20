@@ -4,6 +4,7 @@ imports nothing; the layer list follows the project; the basemap's settings
 are off without a basemap; the layer extent mode without its layer is the
 map view (and asks before the export like it)."""
 
+import os
 import json
 import time
 
@@ -315,4 +316,134 @@ def test_the_simple_view_recommends_a_scale_from_the_layers(plugin, monkeypatch,
     assert dialog.project.readBoolEntry("QWebMap", "simple/autoDetail", False)[0]
     page.wait_for_preview()
     assert page.preview.pixmap() is not None and not page.preview.pixmap().isNull()
+    dialog.close()
+
+
+def test_the_review_lists_the_feature_labels_and_their_fields(plugin, monkeypatch, tmp_path):
+    """Each feature's display-expression label is published in the feature
+    lookup (deep links, on by default): the review says so, with its fields."""
+    dialog, parcels = _dialog(plugin, monkeypatch, tmp_path)
+    config = dialog.profile.layer(parcels.id())
+    config.included, config.popup_fields, config.deep_links = True, [], True
+    expression = "\"note\" || ' ' || \"hrsz\""
+    if dialog.current_layer_id == parcels.id():
+        dialog.i_display.setText(expression)
+        dialog.i_links.setChecked(True)
+    else:
+        config.display_expression = expression
+    dialog.refresh_review()
+    text = dialog.review.toPlainText()
+    assert f"display expression {expression}), public; fields used: hrsz, note" in text
+    dialog.close()
+
+
+def test_a_relative_or_home_output_folder_is_the_same_for_the_export_and_the_window(plugin, monkeypatch, tmp_path):
+    """"web_maps" is in the project's folder (not QGIS's working folder), "~"
+    is the home folder: where the export writes and Preview looks."""
+    import os  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.publishing.controller import output_folder, publication_dirs  # pylint: disable=import-error
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    assert output_folder("~/x") == os.path.join(os.path.expanduser("~"), "x")
+    assert output_folder("web_maps") == os.path.join(str(tmp_path), "web_maps")
+    dialog.o_dir.setText("web_maps")
+    profile = dialog.collect()
+    folder, _ = publication_dirs(profile)
+    assert folder == os.path.join(str(tmp_path), "web_maps", profile.slug)
+    os.makedirs(folder)
+    open(os.path.join(folder, "index.html"), "w", encoding="utf-8").close()
+    assert dialog._existing_map_dir() == folder  # pylint: disable=protected-access
+
+
+def test_showing_the_simple_view_never_replaces_zooms_set_elsewhere(plugin, monkeypatch, tmp_path):
+    """Automatic detail is on for new settings, but zooms set in the advanced
+    view stay when the simple view is shown (it shows "Choose automatically"
+    unticked then); saved settings reopened in the simple view are not
+    changed by showing them; the views cannot be switched while exporting."""
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    dialog.profile.view.extent = [2119000, 6019000, 2123000, 6023000]
+    dialog.profile.view.extent_mode = "fixed"
+    dialog.e_min_zoom.setValue(5)
+    dialog.e_max_zoom.setValue(19)
+    before = dialog._profile_json()  # pylint: disable=protected-access
+    dialog.set_simple_view(True, remember=False)
+    dialog.set_simple_view(False, remember=False)
+    assert (dialog.e_min_zoom.value(), dialog.e_max_zoom.value()) == (5, 19)
+    assert dialog._profile_json() == before  # pylint: disable=protected-access
+    assert not dialog.simple.auto.isChecked() and dialog.simple.zoom.isEnabled()
+    dialog._busy(True)  # pylint: disable=protected-access
+    assert not dialog.btn_simple.isEnabled() and not dialog.btn_advanced.isEnabled()
+    dialog._busy(False)  # pylint: disable=protected-access
+    assert dialog.btn_simple.isEnabled()
+    dialog.simple.auto.setChecked(True)               # ticked again: the automatic choice
+    assert (dialog.e_min_zoom.value(), dialog.e_max_zoom.value()) != (5, 19)
+    dialog.e_min_zoom.setValue(5)
+    dialog.e_max_zoom.setValue(19)
+    assert dialog.save_settings()
+    dialog.close()
+    from qgis.core import QgsSettings  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error,import-outside-toplevel
+    QgsSettings().setValue(PublishDialog.VIEW_KEY, "simple")
+    try:
+        again = PublishDialog(iface=None)                # saved, automatic detail on, opened simple
+    finally:
+        QgsSettings().remove(PublishDialog.VIEW_KEY)
+    assert again.is_simple_view()
+    assert (again.e_min_zoom.value(), again.e_max_zoom.value()) == (5, 19)
+    assert again._profile_json() == again._saved_json  # pylint: disable=protected-access
+    again.close()
+
+
+def test_imported_settings_keep_their_zooms_in_the_simple_view(plugin, monkeypatch, tmp_path):
+    """New settings (automatic detail pending), then a settings file imported:
+    its zooms are kept when the simple view is shown, "Choose automatically"
+    unticked, even when they equal the window's first zooms."""
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    assert dialog.new_settings
+    zooms = (dialog.e_min_zoom.value(), dialog.e_max_zoom.value())
+    path = tmp_path / "s.q2vt.json"
+    assert dialog.export_settings_file(str(path))
+    assert dialog.import_settings_file(str(path), same_map=True)
+    calls = []
+    monkeypatch.setattr(dialog.simple, "apply_auto", lambda: calls.append(1))
+    dialog.set_simple_view(True, remember=False)
+    assert not calls and not dialog.simple.auto.isChecked()
+    assert (dialog.e_min_zoom.value(), dialog.e_max_zoom.value()) == zooms
+    dialog.close()
+
+
+def test_a_zip_that_cannot_be_made_is_said(plugin, monkeypatch, tmp_path):
+    """Make a ZIP to send: a disk or file error is said, no half-written ZIP."""
+    import shutil  # pylint: disable=import-outside-toplevel
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    folder = tmp_path / "web_maps" / "terv"
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(dialog, "_local_map_dir", lambda: str(folder))
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+
+    def full(base, *args, **kwargs):
+        open(base + ".zip", "wb").close()
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(shutil, "make_archive", full)
+    assert dialog.simple.make_zip() == ""
+    assert warned and "No space left" in warned[0] and "No space left" in dialog.status.text()
+    assert not (tmp_path / "web_maps" / "terv.zip").exists()
+    dialog.close()
+
+
+def test_a_zip_of_a_file_dated_before_1980_is_said(plugin, monkeypatch, tmp_path):
+    """A file with an old or zero date (copies from some shares): ZIP cannot
+    store it; said, no half-written ZIP."""
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    folder = tmp_path / "web_maps" / "terv"
+    folder.mkdir(parents=True)
+    old = folder / "index.html"
+    old.write_text("<html></html>", encoding="utf-8")
+    os.utime(old, (0, 0))
+    monkeypatch.setattr(dialog, "_local_map_dir", lambda: str(folder))
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+    assert dialog.simple.make_zip() == ""
+    assert warned and "1980" in warned[0]
+    assert not (tmp_path / "web_maps" / "terv.zip").exists()
     dialog.close()

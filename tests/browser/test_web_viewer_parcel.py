@@ -89,6 +89,29 @@ def test_legend_lists_only_what_is_visible(site, tmp_path):
     assert results[4] is False and results[5] >= 1  # switched off: the full legend again
 
 
+def test_legend_out_of_sight_is_not_listed_after_each_move(site, tmp_path):
+    # "Visible only" queried every feature drawn after each move, the legend
+    # tab not shown (or the panel closed): listed once it shows again.
+    anchor = site["records"]["100/1"]["p"][0]["x"]
+    results = _run(site["url"], [
+        {"eval": """document.getElementById('q2vt-tab-layers').click();
+          const legend = q2vtViewer.controls.legend;
+          const drawn = legend.drawn.bind(legend);
+          window.listed = 0;
+          legend.drawn = (state) => { window.listed++; return drawn(state); };
+          q2vtViewer.map.jumpTo({ center: %s, zoom: 17 }); return 1;""" % json.dumps(anchor)},
+        {"idle": True}, {"wait": 300},
+        {"eval": "q2vtViewer.map.panBy([200, 0], { duration: 0 }); return 1;"},
+        {"idle": True}, {"wait": 300},
+        {"eval": "return window.listed;"},
+        {"eval": """document.getElementById('q2vt-tab-legend').click();
+          await new Promise((r) => setTimeout(r, 300));
+          return [window.listed, document.querySelectorAll('#q2vt-pane-legend .q2vt-legend-item').length];"""},
+    ], tmp_path)
+    assert results[2] == 0
+    assert results[3][0] == 1 and results[3][1] >= 1
+
+
 PRINT_STATE = """const sheet = document.getElementById('q2vt-print-sheet');
   return { classes: document.body.className, title: sheet?.querySelector('h1')?.textContent || '',
     card: !!sheet?.querySelector('article.q2vt-pr'), parts: [...(sheet?.querySelectorAll('.q2vt-pr-part strong') || [])].map((s) => s.textContent),

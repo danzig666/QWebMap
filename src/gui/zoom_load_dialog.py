@@ -157,7 +157,7 @@ class ZoomLoadDialog(QDialog):
         if speed != zoom_load.BALANCED:
             zoom_load.resuggest(self.loads, self.zooms[1], speed)
         self.setWindowTitle(tr("Zoomed-out load of the web map"))
-        self.resize(1000, 540)
+        self.resize(1120, 600)  # (the table's columns, uncut)
         layout = QVBoxLayout(self)
         intro = QLabel(tr(
             "Estimated from a sample of each layer's features in the export extent. Zoomed out, one "

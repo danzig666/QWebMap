@@ -66,14 +66,15 @@ QgsTask. This is intentional:
 
    * Predictable lifecycle: futures complete or raise — no "clock-icon"
      limbo state.
-   * Per-future timeouts prevent any single hung algorithm from stalling
-     the whole export.
+   * No time limit: a hung algorithm (a stalled database read) holds the
+     export until Cancel (a thread cannot be stopped; see _PER_ALG_TIMEOUT_S).
    * Cancellation is a single shared-flag check between processing calls.
    * No QGIS task-manager re-entrancy with the parent processing
      algorithm.
    * No QCoreApplication.processEvents() polling loop.
 """
 
+import contextlib
 import functools
 import json
 import math
@@ -115,6 +116,7 @@ from qgis.core import (
     QgsRuleBasedRenderer,
     QgsCoordinateTransform,
     QgsCsException,
+    QgsDistanceArea,
     QgsVectorFileWriter,
     QgsVectorLayer,
     QgsWkbTypes,
@@ -167,6 +169,17 @@ def _enum_value(value) -> int:
     return int(getattr(value, "value", value))
 
 
+def _file_id(layer_id: str) -> str:
+    """A layer id in a work file name: a long one (the layer name and a
+    UUID, never cut by QGIS) shortened with a digest, as a 230-character
+    name passed the file-name limit (and a 110-character one Windows'
+    260-character path limit) and the layer left the map."""
+    if len(layer_id) <= 56:
+        return layer_id
+    import hashlib  # pylint: disable=import-outside-toplevel
+    return f"{layer_id[:39]}_{hashlib.sha1(layer_id.encode('utf-8')).hexdigest()[:16]}"
+
+
 # Drawing rank of each feature under the renderer's order-by clauses.
 ORDER_FIELD = f"{_FIELD_PREFIX}_draw_order"
 # Stable original-feature key of published layers (string; see
@@ -203,10 +216,10 @@ def callout_leader_expression(label_point: str, source_geometry: int, anchor: in
 # Module-level configuration
 # ============================================================================
 
-# Per processing.run() hard timeout. If a single algorithm exceeds this, the
-# rule that triggered it is dropped from the export rather than allowed to
-# stall the pipeline. Guarantees export() returns in bounded time regardless
-# of bad data, network blips, or upstream bugs.
+# Passed to Future.result() of futures that have already finished
+# (_iter_completed yields only done ones): it bounds nothing. A hung step
+# runs until Cancel; bounding it needs the step in a process that can be
+# killed (export_workers).
 _PER_ALG_TIMEOUT_S = 600  # 10 minutes
 
 # Hard cap on parallel workers, irrespective of cpu_percent. Beyond this
@@ -404,6 +417,58 @@ _RING_CLOCKWISE_EXPRESSION = (
 )
 
 
+def _removed(path: str) -> bool:
+    """Whether ``path`` is gone (deleted now or not there): a file still open
+    elsewhere (a worker process's, Windows) cannot be deleted, and a failed
+    step's half-written file left in place would count as done."""
+    try:
+        if exists(path):
+            os.remove(path)
+        return True
+    except OSError:
+        return False
+
+
+class _CheckedWriter:
+    """A worker's QgsVectorFileWriter whose failures raise with its message
+    (disk full, a path that cannot be written): unchecked, the step returned
+    a missing or short file and a later step failed with "Could not load
+    source layer"."""
+
+    def __init__(self, writer):
+        if writer.hasError() != QgsVectorFileWriter.NoError:
+            raise RuntimeError(f"Cannot write a work file: {writer.errorMessage()}")
+        self._writer = writer
+
+    skipped = 0
+
+    def addFeature(self, feature, *args):  # noqa: N802
+        if not self._writer.addFeature(feature, *args):
+            message = self._writer.errorMessage()
+            if "Mismatched geometry type" in message:
+                # One feature of another type (a multi part into a single
+                # part FlatGeobuf): dropped, as before the check, not the group.
+                if not self.skipped:
+                    crash_log.note(f"Work file feature skipped: {message}")
+                self.skipped += 1
+                return False
+            raise RuntimeError(f"Cannot write a work file: {message}")
+        return True
+
+    def addFeatures(self, features, *args):  # noqa: N802
+        # One by one: QgsVectorFileWriter.addFeatures stops at a failed one.
+        for feature in features:
+            self.addFeature(feature, *args)
+        return True
+
+    def __getattr__(self, name):
+        return getattr(self._writer, name)
+
+
+def _checked(writer) -> "_CheckedWriter":
+    return _CheckedWriter(writer)
+
+
 def _open_file(path: str, name: str, transform_context) -> QgsVectorLayer:
     """A dataset file as a layer, without looking for a default style (the
     datasets have none; the search costs a third of every open)."""
@@ -562,6 +627,9 @@ class RulesExporter:
         # Temp-file tracking for cleanup.
         self._temp_files: set = set()
         self._temp_files_lock = threading.Lock()
+        # The temp files of the base layer or rule group a thread is building
+        # (_own_temp_files).
+        self._owned = threading.local()
 
         # In-memory chains (see _MEM_PREFIX): on in the serial export, inside
         # rule groups only (base layers and final datasets stay files).
@@ -655,11 +723,15 @@ class RulesExporter:
                 rule_outputs = self._export_rules_parallel(pending, base_layers)
             finally:
                 self._stop_workers()
+            if self._is_cancelled():  # the datasets done so far are not the map
+                return [], []
             self._store_cached(pending, rule_outputs)
             rule_outputs.update(cached_outputs)
             # Phase 4 — collect results on caller thread.
             layers, rules = self._collect_results(rule_groups, rule_outputs)
             return layers, self._keep_feature_order(rules)
+        except _Cancelled:  # (raised while the sources are read)
+            return [], []
         finally:
             self._release_all_layers()
             self._cleanup_temp_files()
@@ -1047,15 +1119,19 @@ class RulesExporter:
         its features anew, so the publishing key (``feature_key``, may read
         ``$id``) is computed here, on the project's layer."""
         import hashlib  # pylint: disable=import-outside-toplevel
-        path = join(self.utils_dir, f"memory_{layer.id()}.gpkg")
-        if exists(path):
-            os.remove(path)
+        path = join(self.utils_dir, f"memory_{_file_id(layer.id())}.gpkg")
+        _removed(path)  # (one left open: the writer reports it)
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName, options.layerName = "GPKG", "memory"
-        # A GeoPackage source's own "fid" column would be written as the
-        # copy's key: an unsaved feature's provisional value collides.
+        # The layer's own "fid" (a GeoPackage source's, a Processing
+        # output's) is written as the copy's key: kept when its values can
+        # be keys, so filters and labels reading "fid" see the values QGIS
+        # shows (left out, the copy numbered them 1..n); an unsaved
+        # feature's provisional or empty value would collide.
+        fid_ok = self._unique_ids(layer, "fid")
         keep = [i for i, field in enumerate(layer.fields())
-                if field.name().lower() not in ("fid", "ogc_fid")]
+                if field.name().lower() not in ("fid", "ogc_fid")
+                or field.name() == "fid" and fid_ok]
         fields = QgsFields()
         for i in keep:
             fields.append(layer.fields().at(i))
@@ -1067,13 +1143,17 @@ class RulesExporter:
             key.prepare(context)
         writer = QgsVectorFileWriter.create(path, fields, layer.wkbType(), layer.crs(),
                                             QgsProject.instance().transformContext(), options)
-        if writer.hasError() != QgsVectorFileWriter.NoError:
+        complete = writer.hasError() == QgsVectorFileWriter.NoError
+        if not complete:
             self.feedback.reportError(f"Cannot copy temporary layer '{layer.name()}': "
                                       f"{writer.errorMessage()}")
         digest = hashlib.sha256(self._stable_source(layer.source()).encode("utf-8"))
         digest.update(repr(layer.fields().names()).encode("utf-8"))
         digest.update(feature_key.encode("utf-8"))
-        for feature in layer.getFeatures():
+        for number, feature in enumerate(layer.getFeatures()):
+            if number % 2000 == 0:  # a big joined layer: copied on the GUI thread
+                self._check_cancel()
+                main_thread.keep_responsive()
             digest.update(str(feature.id()).encode())
             digest.update(bytes(feature.geometry().asWkb()))
             digest.update(repr(feature.attributes()).encode("utf-8"))
@@ -1087,9 +1167,31 @@ class RulesExporter:
             out = QgsFeature(fields)
             out.setGeometry(feature.geometry())
             out.setAttributes(values)
-            writer.addFeature(out)
+            if complete and not writer.addFeature(out):
+                complete = False
+                self.feedback.reportError(f"Cannot copy temporary layer '{layer.name()}': "
+                                          f"{writer.errorMessage()}")
         del writer  # (written and closed)
-        return f"{path}|layername=memory", digest.hexdigest()
+        # A copy missing features (disk full) is not cached as the layer.
+        return f"{path}|layername=memory", digest.hexdigest() if complete else None
+
+    @staticmethod
+    def _unique_ids(layer, name: str) -> bool:
+        """Whether the layer's field ``name`` holds whole numbers, each once
+        (usable as GeoPackage feature ids)."""
+        index = layer.fields().indexFromName(name)
+        # (QVariant / QMetaType Int, UInt, LongLong, ULongLong)
+        if index < 0 or enum_int(layer.fields().at(index).type()) not in (2, 3, 4, 5):
+            return False
+        request = QgsFeatureRequest().setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        request.setSubsetOfAttributes([index])
+        seen = set()
+        for feature in layer.getFeatures(request):
+            value = feature.attribute(index)
+            if not isinstance(value, int) or value in seen:
+                return False
+            seen.add(value)
+        return True
 
     @staticmethod
     def _add_order_field(path: str, order_by) -> None:
@@ -1139,7 +1241,7 @@ class RulesExporter:
 
     def _materialize_one(self, src: _SourceSnapshot) -> Optional[str]:
         """One source read into a local file (its path), None when it cannot be."""
-        out_path = join(self.utils_dir, f"materialized_{src.layer_id}.{_TEMP_LAYER_FORMAT}")
+        out_path = join(self.utils_dir, f"materialized_{_file_id(src.layer_id)}.{_TEMP_LAYER_FORMAT}")
         began = time.perf_counter()
         if exists(out_path):
             # Idempotent restart support.
@@ -1208,7 +1310,7 @@ class RulesExporter:
     ) -> Dict[str, str]:
         """Run fix-structure → reproject → clip → singleparts → simplify."""
         target_paths: Dict[str, str] = {
-            lid: join(self.utils_dir, f"map_layer_{lid}.{_TEMP_LAYER_FORMAT}")
+            lid: join(self.utils_dir, f"map_layer_{_file_id(lid)}.{_TEMP_LAYER_FORMAT}")
             for lid in materialized
         }
         # Idempotent skip.
@@ -1229,7 +1331,7 @@ class RulesExporter:
             futures: Dict[Future, str] = {
                 pool.submit(
                     self._build_one_base_layer, src_path, target_paths[lid], lid in keep,
-                    lid in anchored, lid in self._part_layers
+                    lid in anchored, lid in self._part_layers, lid
                 ): lid
                 for lid, src_path in todo.items()
             }
@@ -1251,23 +1353,31 @@ class RulesExporter:
                     )
                     # A file written part way would pass for the finished one
                     # (its rule groups read only the features in it); the
-                    # worker path deletes it too.
-                    try:
-                        if exists(target_paths[lid]):
-                            os.remove(target_paths[lid])
-                    except OSError:
-                        pass
+                    # worker path deletes it too. One that cannot be deleted
+                    # is not a base layer.
+                    if not _removed(target_paths[lid]):
+                        target_paths.pop(lid)
         return target_paths
+
+    # Half the width of the Web Mercator world (EPSG:3857 metres).
+    _WORLD_HALF = 20037508.342789244
 
     def transform_extent(self, src_path):
         """Transforms a QgsRectangle from a source CRS to a destination CRS."""
-        source_crs = QgsCoordinateReferenceSystem(_EPSG_CRS)
+        source_crs = QgsCoordinateReferenceSystem(f"EPSG:{_EPSG_CRS}")
         dest_crs = QgsVectorLayer(src_path).crs()
         if source_crs == dest_crs:
             return self.extent
-        
+        extent = QgsRectangle(self.extent)
+        if extent.xMinimum() < -self._WORLD_HALF or extent.xMaximum() > self._WORLD_HALF:
+            # Past the antimeridian (a world grown by symbol reach, a
+            # zoomed-out canvas): the edges wrapped and the box came back
+            # narrower than the world, dropping Fiji or Chukotka. The whole
+            # width is kept (the geometry clip trims in EPSG:3857).
+            extent.setXMinimum(-self._WORLD_HALF)
+            extent.setXMaximum(self._WORLD_HALF)
         transformer = QgsCoordinateTransform(source_crs, dest_crs, self._transform_context)
-        transformed_extent = transformer.transformBoundingBox(self.extent)
+        transformed_extent = transformer.transformBoundingBox(extent)
         return transformed_extent
     
     def _vertex_sensitive_layers(self) -> set:
@@ -1314,15 +1424,21 @@ class RulesExporter:
 
     def _build_one_base_layer(self, src_path: str, dst_path: str,
                               keep_vertices: bool = False, feature_anchor: bool = False,
-                              number_parts: bool = False) -> None:
+                              number_parts: bool = False, layer_id: str = "") -> None:
         """Worker: run the cleanup chain on a local Parquet file."""
         began = time.perf_counter()
         try:
             self._build_base_layer(src_path, dst_path, keep_vertices, feature_anchor, number_parts)
         finally:
-            self._spent(os.path.basename(dst_path)[len("map_layer_"):].rsplit(".", 1)[0], began)
+            self._spent(layer_id or os.path.basename(dst_path)[len("map_layer_"):].rsplit(".", 1)[0],
+                        began)
 
     def _build_base_layer(self, src_path: str, dst_path: str, keep_vertices: bool,
+                          feature_anchor: bool, number_parts: bool = False) -> None:
+        with self._own_temp_files():
+            self._base_layer_steps(src_path, dst_path, keep_vertices, feature_anchor, number_parts)
+
+    def _base_layer_steps(self, src_path: str, dst_path: str, keep_vertices: bool,
                           feature_anchor: bool, number_parts: bool = False) -> None:
         self._check_cancel()
         crash_log.note(f"Base layer {dst_path}")
@@ -1399,14 +1515,43 @@ class RulesExporter:
         self._check_cancel()
         if keep_vertices:
             self._run_alg_safe("savefeatures", "native", INPUT=singleparted, OUTPUT=dst_path)
+        else:
+            self._run_alg_safe(
+                "simplifygeometries", "native",
+                INPUT=singleparted,
+                METHOD=0,
+                TOLERANCE=self._simplification_tolerance(),
+                OUTPUT=dst_path,
+            )
+        self._restore_fids(dst_path)
+
+    @staticmethod
+    def _restore_fids(path: str) -> None:
+        """The layer's "fid" values back in a base layer: the GeoPackage
+        steps keep them as the feature ids (the orig id) but the split into
+        single parts numbered the features anew, and filters and labels
+        reading "fid" saw 1..n. Left as numbered when a feature was split
+        (its parts would share an id, which the GeoPackage steps refuse)."""
+        layer = QgsVectorLayer(path, "fids", "ogr")
+        if not layer.isValid():
             return
-        self._run_alg_safe(
-            "simplifygeometries", "native",
-            INPUT=singleparted,
-            METHOD=0,
-            TOLERANCE=self._simplification_tolerance(),
-            OUTPUT=dst_path,
-        )
+        fields = layer.fields()
+        index, orig = fields.indexFromName("fid"), fields.indexFromName(f"{_FIELD_PREFIX}_orig_id")
+        # (QVariant / QMetaType Int, UInt, LongLong, ULongLong)
+        if index < 0 or orig < 0 or enum_int(fields.at(index).type()) not in (2, 3, 4, 5):
+            return
+        request = QgsFeatureRequest().setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        request.setSubsetOfAttributes([index, orig])
+        changes, seen = {}, set()
+        for feature in layer.getFeatures(request):
+            value = feature.attribute(orig)
+            if not isinstance(value, (int, float)) or value in seen:
+                return
+            seen.add(value)
+            if feature.attribute(index) != int(value):
+                changes[feature.id()] = {index: int(value)}
+        if changes:
+            layer.dataProvider().changeAttributeValues(changes)
 
     # Vertices per feature from which generated geometry is simplified.
     DENSE_GENERATED_VERTICES = 20000
@@ -1568,7 +1713,8 @@ class RulesExporter:
             return False
         if pool.ready_workers is None:
             from qgis.core import Qgis as _Qgis  # pylint: disable=import-outside-toplevel
-            pool.ready_workers = pool.wait_ready(_Qgis.version(), self._is_cancelled) \
+            pool.ready_workers = pool.wait_ready(_Qgis.version(), self._is_cancelled,
+                                                 main_thread.keep_responsive) \
                 if pool.workers else []
             if pool.ready_workers:
                 self._post("pushInfo", f"   {len(pool.ready_workers)} worker processes export the datasets")
@@ -1633,7 +1779,7 @@ class RulesExporter:
         database, web service or virtual layer read here first, as before);
         what a worker could not do is done here. {layer id: base layer}."""
         self._layer_names = {src.layer_id: src.name for src in sources.values()}
-        targets = {lid: join(self.utils_dir, f"map_layer_{lid}.{_TEMP_LAYER_FORMAT}") for lid in sources}
+        targets = {lid: join(self.utils_dir, f"map_layer_{_file_id(lid)}.{_TEMP_LAYER_FORMAT}") for lid in sources}
         keep = self._vertex_sensitive_layers()
         anchored = {rule.layer.id() for rule in self.flattened_rules or []
                     if self._pattern_anchor(rule, 2) == "feature"}
@@ -1662,26 +1808,30 @@ class RulesExporter:
                 self.layer_seconds[lid] = self.layer_seconds.get(lid, 0.0) + seconds
             if error:  # done again here (the same steps, this QGIS)
                 crash_log.note(f"Layer {lid} failed in a worker:\n{error}")
-                left[lid] = sources[lid]
-                read = join(self.utils_dir, f"materialized_{lid}.{_TEMP_LAYER_FORMAT}")
-                for path in [targets[lid]] + ([read] if lid not in materialized else []):
-                    if exists(path):
-                        os.remove(path)
+                redo(lid)
             return True
+
+        def redo(lid):
+            # A worker that failed or stopped may have left its files half
+            # written: an existing file counts as done further on.
+            read = join(self.utils_dir, f"materialized_{_file_id(lid)}.{_TEMP_LAYER_FORMAT}")
+            if all([_removed(path) for path in [targets[lid]] + ([read] if lid not in materialized else [])]):
+                left[lid] = sources[lid]
+            else:  # still open there: the layer fails, its groups too
+                self.feedback.reportError(f"Layer '{self._layer_names.get(lid, lid)}' failed and its "
+                                          f"work files cannot be removed to redo it.")
+                targets.pop(lid, None)
         for lid in self._run_on_workers(tasks, handle):
-            left[lid] = sources[lid]
-            # A worker that stopped may have left its files half written: an
-            # existing file counts as done further on.
-            read = join(self.utils_dir, f"materialized_{lid}.{_TEMP_LAYER_FORMAT}")
-            for path in [targets[lid]] + ([read] if lid not in materialized else []):
-                if exists(path):
-                    os.remove(path)
+            redo(lid)
         if left and not self._is_cancelled():
             read = {lid: materialized[lid] for lid in left if lid in materialized}
             read.update(self._materialize_sources_serial(
                 {lid: src for lid, src in left.items() if lid not in materialized}))
             self._layer_names = {src.layer_id: src.name for src in sources.values()}
-            self._build_base_layers_parallel(read)
+            built = self._build_base_layers_parallel(read)
+            for lid in read:
+                if lid not in built:
+                    targets.pop(lid, None)
         return targets
 
     def _groups_on_workers(self, rule_groups: List[_RuleGroupSnapshot], base_layers: Dict[str, str],
@@ -1728,10 +1878,7 @@ class RulesExporter:
                 self.layer_seconds[grp.layer_id] = self.layer_seconds.get(grp.layer_id, 0.0) + seconds
             if error:  # done again here: the same steps, this QGIS
                 crash_log.note(f"Rule group {name} failed in a worker:\n{error}")
-                path = join(self.utils_dir, f"{name}.{_TEMP_RULE_FORMAT}")
-                if exists(path):
-                    os.remove(path)
-                here.append(grp)
+                redo(grp)
                 return False
             restored = DiagnosticCollector()
             export_cache.replay_diagnostics(restored, diagnostics, name, name)
@@ -1747,14 +1894,20 @@ class RulesExporter:
                 self._post("pushInfo", f"   Exported {done[0]}/{total} datasets "
                                        f"(last: {grp.layer_name or grp.layer_id})")
             return False
+
+        def redo(grp):
+            # A failed or stopped worker's half-written dataset is not a result.
+            if _removed(join(self.utils_dir, f"{grp.output_dataset}.{_TEMP_RULE_FORMAT}")):
+                here.append(grp)
+            else:  # still open there: the group fails
+                outputs[grp.output_dataset] = None
+                self._failed_groups.add(grp.output_dataset)
+                self.feedback.reportError(f"Rule export failed for '{grp.output_dataset}' "
+                                          "(its work file cannot be removed to redo it).")
         left = self._run_on_workers([(task[0], task[1]) for task in tasks], handle)
         reported = set(outputs)
-        lost = [grp for grp in left if grp.output_dataset not in reported and grp not in here]
-        for grp in lost:  # a stopped worker's half-written dataset is not a result
-            path = join(self.utils_dir, f"{grp.output_dataset}.{_TEMP_RULE_FORMAT}")
-            if exists(path):
-                os.remove(path)
-        here += lost
+        for grp in [grp for grp in left if grp.output_dataset not in reported and grp not in here]:
+            redo(grp)
         self._order_diagnostics(before, rule_groups)
         order = {grp.output_dataset: index for index, grp in enumerate(rule_groups)}
         return sorted(here, key=lambda grp: order[grp.output_dataset])
@@ -1794,10 +1947,12 @@ class RulesExporter:
         began = time.perf_counter()
         try:
             if not self._memory_chains:
-                return self._export_one_rule_group(grp, source_path)
+                with self._own_temp_files():
+                    return self._export_one_rule_group(grp, source_path)
             self._memory_active = True
             try:
-                return self._export_one_rule_group(grp, source_path)
+                with self._own_temp_files():
+                    return self._export_one_rule_group(grp, source_path)
             except _Cancelled:
                 raise
             except Exception as error:  # noqa: BLE001 - redone as before, with files
@@ -1805,10 +1960,11 @@ class RulesExporter:
                                "redone with files")
                 self.diagnostics.truncate(before, grp.output_dataset if self.parallel else None)
                 output_path = join(self.utils_dir, f"{grp.output_dataset}.{_TEMP_RULE_FORMAT}")
-                if exists(output_path):
-                    os.remove(output_path)
+                if not _removed(output_path):
+                    raise  # (an existing output counts as done): the group fails
                 self._memory_active = False
-                return self._export_one_rule_group(grp, source_path)
+                with self._own_temp_files():
+                    return self._export_one_rule_group(grp, source_path)
             finally:
                 self._memory_active = False
                 self._release_group_layers()
@@ -2210,8 +2366,8 @@ class RulesExporter:
         check = self._open(cleaned, "check")
         if not check.isValid() or check.featureCount() <= 0:
             del check
-            if multipoints and exists(output_path):
-                os.remove(output_path)  # an existing output counts as done
+            if multipoints:
+                _removed(output_path)  # an existing output counts as done
             self._report_empty_output(grp, transbase)
             return None
         del check
@@ -2265,12 +2421,21 @@ class RulesExporter:
             fields.append(QgsField(name, kinds.get(enum_int(ftype), QVariant.String)))
         context = self._worker_expression_context()
         context.setFields(layer.fields())
+        # As the Processing steps evaluate them (_run_alg_safe): the layer
+        # for aggregates, and $length / $area measured on the project's
+        # ellipsoid in its units (unmeasured, Web Mercator metres: 2x at 60N).
+        context.appendScope(QgsExpressionContextUtils.layerScope(layer))
         scope = QgsExpressionContextScope()
         context.appendScope(scope)
+        calculator = QgsDistanceArea()
+        calculator.setSourceCrs(layer.crs(), self._transform_context)
+        calculator.setEllipsoid("NONE" if self._planar else self._ellipsoid)
         generator = QgsExpression(self._lean_generator(generator, source))
-        generator.prepare(context)
         expressions = [QgsExpression(expr) for _, expr, _ in part_fields]
-        for expression in expressions:
+        for expression in [generator] + expressions:
+            expression.setGeomCalculator(calculator)
+            expression.setDistanceUnits(self._distance_unit)
+            expression.setAreaUnits(self._area_unit)
             expression.prepare(context)
         wanted = self._OUTPUT_GEOMETRY_TYPES[output_geometry]
         tolerance = self._simplification_tolerance()
@@ -2284,8 +2449,8 @@ class RulesExporter:
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
         single = {Qgis.GeometryType.Polygon: QgsWkbTypes.Polygon,
                   Qgis.GeometryType.Line: QgsWkbTypes.LineString}.get(wanted, QgsWkbTypes.Point)
-        writer = QgsVectorFileWriter.create(out, fields, single, layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, single, layer.crs(),
+                                                     self._transform_context, options))
         source_names = [f.name() for f in fields if f.name() not in names]
         for feature in layer.getFeatures():
             self._check_cancel()
@@ -2391,8 +2556,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
-        writer = QgsVectorFileWriter.create(out, out_fields, layer.wkbType(), layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, out_fields, layer.wkbType(), layer.crs(),
+                                                     self._transform_context, options))
         previous, number = None, 0
         for feature in layer.getFeatures():
             self._check_cancel()
@@ -2492,7 +2657,7 @@ class RulesExporter:
         mat.grid_expression). Written without an index or feature ids, which
         would restore the old order."""
         from qgis.core import (QgsFeature, QgsFields, QgsGeometry, QgsPointXY,  # pylint: disable=import-outside-toplevel
-                               QgsProject, QgsVectorFileWriter, QgsWkbTypes)
+                               QgsVectorFileWriter, QgsWkbTypes)
         layer = self._open(source, "ranked_src")
         if not layer.isValid():
             return None
@@ -2531,8 +2696,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # an index reorders the points
-        writer = QgsVectorFileWriter.create(out, fields, QgsWkbTypes.Point, layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, QgsWkbTypes.Point, layer.crs(),
+                                                     self._transform_context, options))
         for _, _, _, x, y, source_id in points:
             out_feature = QgsFeature(fields)
             out_feature.setAttributes(attributes[source_id])
@@ -2569,7 +2734,7 @@ class RulesExporter:
         order (see materialize.color_bands_recipe). ``max_zoom``: the rule's
         last zoom."""
         from qgis.core import (QgsFeature, QgsField, QgsFields, QgsGeometry,  # pylint: disable=import-outside-toplevel
-                               QgsProject, QgsVectorFileWriter, QgsWkbTypes)
+                               QgsVectorFileWriter, QgsWkbTypes)
         from .fidelity.bands import BandBuilder  # pylint: disable=import-outside-toplevel
         layer = self._open(source, "bands_src")
         if not layer.isValid():
@@ -2593,8 +2758,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # an index reorders the bands
-        writer = QgsVectorFileWriter.create(out, fields, QgsWkbTypes.MultiPolygon, layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, QgsWkbTypes.MultiPolygon, layer.crs(),
+                                                     self._transform_context, options))
         # Band order: the whole layer's band 0 first, then band 1, ...
         # (also fill-sort-key in the style).
         per_band = [[] for _ in colors]
@@ -2667,7 +2832,7 @@ class RulesExporter:
         feature (mat.inside_band_geometry, built in the recipe's CRS); None
         when no feature's band is drawn."""
         from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform,  # pylint: disable=import-outside-toplevel
-                               QgsFeature, QgsFields, QgsProject, QgsVectorFileWriter, QgsWkbTypes)
+                               QgsFeature, QgsFields, QgsVectorFileWriter, QgsWkbTypes)
         layer = self._open(source, "inside_src")
         if not layer.isValid():
             return None
@@ -2675,7 +2840,7 @@ class RulesExporter:
         crs = recipe.param("crs") or export_crs
         to_crs = from_crs = None
         if crs != export_crs:
-            context = QgsProject.instance().transformContext()
+            context = self._transform_context
             to_crs = QgsCoordinateTransform(QgsCoordinateReferenceSystem(export_crs),
                                             QgsCoordinateReferenceSystem(crs), context)
             from_crs = QgsCoordinateTransform(QgsCoordinateReferenceSystem(crs),
@@ -2690,8 +2855,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
-        writer = QgsVectorFileWriter.create(out, fields, QgsWkbTypes.MultiPolygon, layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, QgsWkbTypes.MultiPolygon, layer.crs(),
+                                                     self._transform_context, options))
         written = 0
         for feature in layer.getFeatures():
             self._check_cancel()
@@ -2762,7 +2927,7 @@ class RulesExporter:
           centroid, with CLUSTER_SIZE_FIELD (the first member's attributes);
         * circle / grid: the displacement circle or grid lines."""
         from qgis.core import (QgsFeature, QgsField, QgsFields, QgsGeometry, QgsPointXY,  # pylint: disable=import-outside-toplevel
-                               QgsProject, QgsVectorFileWriter, QgsWkbTypes)
+                               QgsVectorFileWriter, QgsWkbTypes)
         from .fidelity import point_groups as pg  # pylint: disable=import-outside-toplevel
         mode, role, zoom, params = point_group
         params = dict(params)
@@ -2786,8 +2951,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
-        writer = QgsVectorFileWriter.create(out, fields, kind, layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, kind, layer.crs(),
+                                                     self._transform_context, options))
 
         def back(x, y):
             return from_crs.transform(QgsPointXY(x, y))
@@ -2867,8 +3032,7 @@ class RulesExporter:
         merged into continuous lines). "invert" (inverted polygon renderer):
         an area well beyond the export extent minus the union, so its outer
         edge never reaches a tile and only the polygon edges are outlined."""
-        from qgis.core import (QgsFeature, QgsFields, QgsGeometry, QgsProject,  # pylint: disable=import-outside-toplevel
-                               QgsVectorFileWriter, QgsWkbTypes)
+        from qgis.core import (QgsFeature, QgsFields, QgsGeometry, QgsVectorFileWriter, QgsWkbTypes)
         layer = self._open(source, "merge_src")
         if not layer.isValid():
             return None
@@ -2911,8 +3075,8 @@ class RulesExporter:
         for field in layer.fields():
             if field.name().lower() not in ("fid", "ogc_fid"):
                 fields.append(field)
-        writer = QgsVectorFileWriter.create(out, fields, result.wkbType(), layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, result.wkbType(), layer.crs(),
+                                                     self._transform_context, options))
         feature = QgsFeature(fields)
         first = next(iter(layer.getFeatures()), None)
         if first is not None:  # the symbol's own data-defined values (one per group)
@@ -2931,7 +3095,7 @@ class RulesExporter:
         from qgis.core import (QgsExpression,  # pylint: disable=import-outside-toplevel
                                QgsExpressionContextUtils, QgsFeature, QgsField, QgsFields,
                                QgsGeometry, QgsInterpolatedLineColor, QgsInterpolatedLineWidth,
-                               QgsProject, QgsReadWriteContext, QgsSymbolLayerUtils,
+                               QgsReadWriteContext, QgsSymbolLayerUtils,
                                QgsVectorFileWriter, QgsWkbTypes)
         from qgis.PyQt.QtXml import QDomDocument  # pylint: disable=import-outside-toplevel
         layer = self._open(source, "interpolated_src")
@@ -2985,8 +3149,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
-        writer = QgsVectorFileWriter.create(out, fields, QgsWkbTypes.LineString, layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, QgsWkbTypes.LineString, layer.crs(),
+                                                     self._transform_context, options))
         written = 0
         for feature in layer.getFeatures():
             self._check_cancel()
@@ -3047,7 +3211,7 @@ class RulesExporter:
         those pointing back or forward with param "backward"."""
         from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform,  # pylint: disable=import-outside-toplevel
                                QgsFeature, QgsField, QgsFields, QgsGeometry, QgsPointXY,
-                               QgsProject, QgsVectorFileWriter, QgsWkbTypes)
+                               QgsVectorFileWriter, QgsWkbTypes)
         from qgis.PyQt.QtCore import QVariant  # pylint: disable=import-outside-toplevel
         from .fidelity.arrows import arrow_polygons, arrow_skeletons  # pylint: disable=import-outside-toplevel
         layer = self._open(source, "arrows")
@@ -3060,7 +3224,7 @@ class RulesExporter:
         crs = QgsCoordinateReferenceSystem(recipe.param("crs") or f"EPSG:{_EPSG_CRS}")
         to_crs = from_crs = None
         if crs.isValid() and crs != layer.crs():
-            context = QgsProject.instance().transformContext()
+            context = self._transform_context
             to_crs = QgsCoordinateTransform(layer.crs(), crs, context)
             from_crs = QgsCoordinateTransform(crs, layer.crs(), context)
         drawn = recipe.param("part")
@@ -3078,8 +3242,8 @@ class RulesExporter:
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
         kind = {"body": QgsWkbTypes.MultiLineString, "rings": QgsWkbTypes.MultiLineString,
                 "heads": QgsWkbTypes.Point}.get(drawn, QgsWkbTypes.MultiPolygon)
-        writer = QgsVectorFileWriter.create(out, fields, kind, layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, kind, layer.crs(),
+                                                     self._transform_context, options))
         # Opaque multi-layer fills: QGIS fills every arrow with all layers
         # before the next arrow, so a later arrow's shadow covers an earlier
         # arrow. Each layer then keeps only its visible part (painter order).
@@ -3202,7 +3366,7 @@ class RulesExporter:
         falls in the same bucket (mat.DIRECTION_FIELD, 0 = east, clockwise
         on screen), for inner effect strips (fidelity/line_effects.py)."""
         from qgis.core import (QgsFeature, QgsField, QgsFields, QgsGeometry,  # pylint: disable=import-outside-toplevel
-                               QgsLineString, QgsProject, QgsVectorFileWriter, QgsWkbTypes)
+                               QgsLineString, QgsVectorFileWriter, QgsWkbTypes)
         layer = self._open(source, "runs")
         if layer is None or not layer.isValid():
             return None
@@ -3222,8 +3386,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
-        writer = QgsVectorFileWriter.create(out, fields, QgsWkbTypes.LineString, layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, QgsWkbTypes.LineString, layer.crs(),
+                                                     self._transform_context, options))
         written = 0
 
         def write(feature, points, bucket):
@@ -3254,7 +3418,11 @@ class RulesExporter:
                         continue
                     middle = (along[index] + along[index + 1]) / 2
                     start = line.interpolatePoint(max(0.0, middle - window / 2)) if window else a
-                    end = line.interpolatePoint(min(along[-1], middle + window / 2)) if window else b
+                    # Clamped to QGIS's own length: the sum above can be an ulp
+                    # longer, and past the end interpolatePoint gives None.
+                    end = line.interpolatePoint(min(line.length(), middle + window / 2)) if window else b
+                    start = points[0] if start is None else start
+                    end = points[-1] if end is None else end
                     dx, dy = end.x() - start.x(), end.y() - start.y()
                     if dx == 0 and dy == 0:
                         dx, dy = b.x() - a.x(), b.y() - a.y()
@@ -3346,8 +3514,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
-        writer = QgsVectorFileWriter.create(out, fields, QgsWkbTypes.LineString, layer.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, QgsWkbTypes.LineString, layer.crs(),
+                                                     self._transform_context, options))
         world = 2 * math.pi * 6378137.0  # EPSG:3857 metres -> CSS px of the zoom
         pixel, half = world / (512.0 * 2 ** zoom), world / 2
         written = 0
@@ -3510,6 +3678,11 @@ class RulesExporter:
             outputs.append(self._run_alg_safe(
                 "geometrybyexpression", "native", INPUT=angled, OUTPUT_GEOMETRY=2,
                 EXPRESSION="line_interpolate_point(@geometry, length(@geometry) / 2)"))
+        # A FlatGeobuf step that wrote no point (its vertex markers all in
+        # blank segments) is an empty file no Processing step can open.
+        outputs = [out for out in outputs if not (
+            isinstance(out, str) and out.endswith(".fgb") and exists(out) and os.path.getsize(out) == 0)] \
+            or outputs[:1]
         merged = outputs[0] if len(outputs) == 1 else \
             self._run_alg_safe("mergevectorlayers", "native", LAYERS=outputs)
         if recipe.param("blank") and \
@@ -3559,8 +3732,14 @@ class RulesExporter:
             # locally constructed and stays local.
             tmp = self._open(current_input, "tmp")
             if tmp.isValid():
+                # A name already mapped (a property computed on the lines,
+                # _line_geometry_fields) once: refactorfields writes one
+                # value per entry but keeps one field per name, so every
+                # later column took its neighbour's value.
+                taken = {name.lower() for _, _, name in mapping}
                 for f in tmp.fields():
-                    if 'ogc_fid' not in f.name().lower() and f.name() != PART_FIELD:
+                    if 'ogc_fid' not in f.name().lower() and f.name() != PART_FIELD \
+                            and f.name().lower() not in taken:
                         mapping.append((f.type(), QgsExpression.quotedColumnRef(f.name()), f.name()))
 
 
@@ -4025,7 +4204,7 @@ class RulesExporter:
         @geometry_point_num (the vertex, from 1) and @geometry_point_count of
         its part; its ``vertex_offset`` moves each marker."""
         from qgis.core import (QgsExpressionContextScope, QgsFeature, QgsField, QgsFields,  # pylint: disable=import-outside-toplevel
-                               QgsPointXY, QgsProject, QgsVectorFileWriter)
+                               QgsPointXY, QgsVectorFileWriter)
         self._check_cancel()
         source = self._open(lines, "vertex_lines")
         vertex_fields = list(recipe.param("vertex_fields", ()) or ()) if recipe is not None else []
@@ -4081,8 +4260,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
-        writer = QgsVectorFileWriter.create(out, fields, QgsWkbTypes.Point, source.crs(),
-                                            QgsProject.instance().transformContext(), options)
+        writer = _checked(QgsVectorFileWriter.create(out, fields, QgsWkbTypes.Point, source.crs(),
+                                                     self._transform_context, options))
         # "Offset along line" is in the recipe CRS's units (the project's):
         # walked there, the position taken back to the lines' CRS.
         along_crs = recipe.param("crs") if along and recipe is not None else None
@@ -4090,8 +4269,8 @@ class RulesExporter:
         if along_crs and along_crs != crs_ref(source.crs()):
             target = QgsCoordinateReferenceSystem(along_crs)
             if target.isValid():
-                to_crs = QgsCoordinateTransform(source.crs(), target, QgsProject.instance())
-                back = QgsCoordinateTransform(target, source.crs(), QgsProject.instance())
+                to_crs = QgsCoordinateTransform(source.crs(), target, self._transform_context)
+                back = QgsCoordinateTransform(target, source.crs(), self._transform_context)
 
         def moved_along(xs, ys, placement):
             if to_crs is None:
@@ -4190,8 +4369,7 @@ class RulesExporter:
         del writer
         return out
 
-    @staticmethod
-    def _recipe_transforms(source, recipe: Recipe):
+    def _recipe_transforms(self, source, recipe: Recipe):
         """(to, back): transforms between ``source``'s CRS and the recipe CRS
         (the project's, where QGIS measures lengths); (None, None) when they
         are the same."""
@@ -4201,8 +4379,10 @@ class RulesExporter:
         target = QgsCoordinateReferenceSystem(crs)
         if not target.isValid():
             return None, None
-        return (QgsCoordinateTransform(source.crs(), target, QgsProject.instance()),
-                QgsCoordinateTransform(target, source.crs(), QgsProject.instance()))
+        # (The main thread's copy of the transform context: workers never
+        # read the project, which the GUI may be changing.)
+        return (QgsCoordinateTransform(source.crs(), target, self._transform_context),
+                QgsCoordinateTransform(target, source.crs(), self._transform_context))
 
     def _point_writer(self, prefix: str, fields, wkb_type, crs):
         """(path, writer) of a worker's FlatGeobuf output (in feature order)."""
@@ -4212,8 +4392,8 @@ class RulesExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "FlatGeobuf"
         options.layerOptions = ["SPATIAL_INDEX=NO"]  # keep the drawing order
-        return out, QgsVectorFileWriter.create(out, fields, wkb_type, crs,
-                                               QgsProject.instance().transformContext(), options)
+        return out, _checked(QgsVectorFileWriter.create(out, fields, wkb_type, crs,
+                                                        self._transform_context, options))
 
     def _number_parts(self, ref) -> None:
         """Worker: PART_FIELD of a base layer's single parts (1 already)
@@ -4574,7 +4754,7 @@ class RulesExporter:
         self._check_cancel()
         expression = mat.interval_points_expression(recipe, f"EPSG:{_EPSG_CRS}")
         key = json.dumps(["q2vt:interval_points", lines, expression])
-        if key in self._shared:
+        if self._memory_active and key in self._shared:
             self.step_stats["shared"] += 1
             return self._shared[key]
         crash_log.note(f"  interval markers (direct) {dict(recipe.params)}")
@@ -4582,7 +4762,10 @@ class RulesExporter:
         fields, batches = marker_points.interval_points(
             source, recipe, f"EPSG:{_EPSG_CRS}", self._worker_expression_context(), expression)
         self.step_stats["direct"] += 1
-        if self._input_features({"INPUT": lines}) > _MEMORY_MAX_FEATURES:
+        # File chains (blank segments come here in every mode): a file, as
+        # the next Processing step reads it (a memory token is resolved
+        # only in memory chains), and nothing shared between threads.
+        if not self._memory_active or self._input_features({"INPUT": lines}) > _MEMORY_MAX_FEATURES:
             path = self._temp_path("temp")
             options = QgsVectorFileWriter.SaveVectorOptions()
             options.driverName = "GPKG"
@@ -4592,8 +4775,8 @@ class RulesExporter:
             written = QgsFields()
             for i in keep:
                 written.append(fields.at(i))
-            writer = QgsVectorFileWriter.create(path, written, QgsWkbTypes.Point, source.crs(),
-                                                self._transform_context, options)
+            writer = _checked(QgsVectorFileWriter.create(path, written, QgsWkbTypes.Point, source.crs(),
+                                                         self._transform_context, options))
             for batch in batches:
                 self._check_cancel()
                 if len(keep) != fields.count():
@@ -4815,17 +4998,18 @@ class RulesExporter:
             # with their own scale, colour and font.
             html_labels.register_expression_functions()
             base = _format_points(settings.format())
-            base = repr(base) if base else "NULL"
+            # 0, not NULL: a NULL argument makes the function NULL.
+            base = repr(base) if base else "0"
             for index in range(html_labels.MAX_SECTIONS):
-                fields.append((10, f"q2vt_html_text({filter_exp}, {index})",
+                fields.append((10, f"q2vt_html_text({filter_exp}, {index}, {base})",
                                html_labels.TEXT_FIELD.format(index)))
                 fields.append((6, f"q2vt_html_scale({filter_exp}, {index}, {base})",
                                html_labels.SCALE_FIELD.format(index)))
-                fields.append((10, f"q2vt_html_color({filter_exp}, {index})",
+                fields.append((10, f"q2vt_html_color({filter_exp}, {index}, {base})",
                                html_labels.COLOR_FIELD.format(index)))
-                fields.append((10, f"q2vt_html_font({filter_exp}, {index})",
+                fields.append((10, f"q2vt_html_font({filter_exp}, {index}, {base})",
                                html_labels.FONT_FIELD.format(index)))
-            fields.append((2, f"q2vt_html_flags({filter_exp})", html_labels.FLAGS_FIELD))
+            fields.append((2, f"q2vt_html_flags({filter_exp}, {base})", html_labels.FLAGS_FIELD))
         settings.isExpression = False
         settings.fieldName = field_name
         return fields
@@ -5510,7 +5694,35 @@ class RulesExporter:
         p = join(self.utils_dir, f"{prefix}_{uuid4().hex}.{_TEMP_RULE_FORMAT}")
         with self._temp_files_lock:
             self._temp_files.add(p)
+        owned = getattr(self._owned, "paths", None)
+        if owned is not None:
+            owned.append(p)
         return p
+
+    @contextlib.contextmanager
+    def _own_temp_files(self):
+        """The temp files made inside the block (on this thread) deleted
+        when it ends: a big layer's steps write files (over
+        _MEMORY_MAX_FEATURES, file chains), and kept to the end of the
+        export, tens of GB of them filled the disk. Its output is not a
+        temp file, and no step result is shared between groups as a file
+        (shared steps are memory layers)."""
+        outer = getattr(self._owned, "paths", None)
+        self._owned.paths = []
+        try:
+            yield
+        finally:
+            paths, self._owned.paths = self._owned.paths, outer
+            for p in paths:
+                # (A FlatGeobuf step is named after its temp path.)
+                for path in (p, p[:-len(_TEMP_RULE_FORMAT)] + "fgb"):
+                    try:
+                        if exists(path):
+                            os.remove(path)
+                    except OSError:
+                        continue  # still open: removed at the end of the export
+                    with self._temp_files_lock:
+                        self._temp_files.discard(path)
 
     def _cleanup_temp_files(self) -> None:
         with self._temp_files_lock:
@@ -5623,63 +5835,76 @@ def _uses_aggregates(expression: str) -> bool:
 def _capped_smoothing(expression: str) -> str:
     """``expression`` with every smooth() limited to MAX_SMOOTH_ITERATIONS
     passes (a literal iteration count above it is lowered; computed counts
-    stay). Rewritten through QGIS's parser, so nesting and named arguments
-    are respected; the expression is returned unchanged if anything fails."""
-    from qgis.core import QgsExpression, QgsExpressionNode  # pylint: disable=import-outside-toplevel
+    stay). Only the count is replaced, in the expression's own text: rebuilt
+    from QGIS's parse tree, a column named "null" or "true" came back as the
+    literal (unquoted) and one named "and" did not parse (no cap). The
+    expression is returned unchanged if anything fails."""
+    from qgis.core import QgsExpression  # pylint: disable=import-outside-toplevel
     parsed = QgsExpression(expression)
-    if parsed.hasParserError() or parsed.rootNode() is None:
+    if parsed.hasParserError() or "smooth" not in expression.lower():
         return expression
-    text = parsed.rootNode().dump()
-    changed = False
-
-    def visit(node):
-        nonlocal text, changed
-        if node is None:
-            return
-        if node.nodeType() == QgsExpressionNode.ntFunction:
-            function = QgsExpression.Functions()[node.fnIndex()]
-            args = node.args().list() if node.args() else []
-            if function.name().lower() == "smooth" and len(args) >= 2 \
-                    and args[1].nodeType() == QgsExpressionNode.ntLiteral:
-                try:
-                    passes = int(args[1].value())
-                except (TypeError, ValueError):
-                    passes = 0
-                if passes > MAX_SMOOTH_ITERATIONS:
-                    old = node.dump()
-                    parts = [arg.dump() for arg in args]
-                    parts[1] = str(MAX_SMOOTH_ITERATIONS)
-                    text = text.replace(old, f"smooth({', '.join(parts)})")
-                    changed = True
-        for child in _expression_children(node):
-            visit(child)
-
-    visit(parsed.rootNode())
-    if not changed or QgsExpression(text).hasParserError():
+    try:
+        spans = _smooth_counts(expression)
+    except Exception:  # pylint: disable=broad-except
+        return expression  # no cap rather than a failed rule group
+    text = expression
+    for first, last in reversed(spans):
+        count = expression[first:last]
+        try:
+            passes = float(count.strip())
+        except ValueError:
+            continue  # computed: stays
+        if passes > MAX_SMOOTH_ITERATIONS:
+            first += len(count) - len(count.lstrip())
+            last -= len(count) - len(count.rstrip())
+            text = text[:first] + str(MAX_SMOOTH_ITERATIONS) + text[last:]
+    capped = QgsExpression(text)
+    if text == expression or capped.hasParserError() or \
+            set(capped.referencedColumns()) != set(parsed.referencedColumns()):
         return expression
     return text
 
 
-def _expression_children(node) -> list:
-    """The child nodes of an expression node (function arguments, operands,
-    CASE branches, IN lists...)."""
-    from qgis.core import QgsExpressionNode  # pylint: disable=import-outside-toplevel
-    kind = node.nodeType()
-    if kind == QgsExpressionNode.ntFunction:
-        return node.args().list() if node.args() else []
-    if kind == QgsExpressionNode.ntBinaryOperator:
-        return [node.opLeft(), node.opRight()]
-    if kind == QgsExpressionNode.ntUnaryOperator:
-        return [node.operand()]
-    if kind == QgsExpressionNode.ntCondition:
-        out = []
-        for when in node.conditions():
-            out += [when.whenExp(), when.thenExp()]
-        return out + ([node.elseExp()] if node.elseExp() else [])
-    if kind == QgsExpressionNode.ntInOperator:
-        return [node.node()] + (node.list().list() if node.list() else [])
-    if kind == QgsExpressionNode.ntIndexOperator:
-        return [node.container(), node.index()]
-    if kind == getattr(QgsExpressionNode, "ntBetweenOperator", -1):
-        return [node.node(), node.lowerBound(), node.higherBound()]
-    return []
+def _smooth_counts(text: str) -> List[Tuple[int, int]]:
+    """(start, end) in ``text`` of the iteration count argument of every
+    smooth() call (the second, or ``iterations:=``), skipping strings,
+    quoted names and comments."""
+    calls, spans, i = [], [], 0  # calls: [argument number, its start, named?]
+    while i < len(text):
+        char = text[i]
+        if char in "'\"":  # a string or a quoted name ('' / "" escape the quote;
+            i += 1         # a string also takes backslash escapes, a name does not)
+            while i < len(text) and not (text[i] == char and text[i + 1:i + 2] != char):
+                i += 2 if text[i] == char or (char == "'" and text[i] == "\\") else 1
+        elif text.startswith("--", i):
+            while i < len(text) and text[i] != "\n":
+                i += 1
+        elif text.startswith("/*", i):
+            i = text.find("*/", i + 2) + 1 or len(text)
+        elif char.isalpha() or char == "_":
+            # Unicode: QGIS takes unquoted accented names (Név)
+            word = re.match(r"[^\W\d]\w*", text[i:]).group(0)
+            after = re.match(r"\s*\(", text[i + len(word):])
+            if after:
+                i += len(word) + len(after.group(0))
+                calls.append([0, i, word.lower() == "smooth"])
+                continue
+            i += len(word) - 1
+        elif char == "(":
+            calls.append([0, i + 1, False])
+        elif char in ",)" and calls:
+            call = calls[-1]
+            if call[2]:
+                argument = text[call[1]:i]
+                named = re.match(r"\s*iterations\s*:=", argument, re.IGNORECASE)
+                if named:
+                    spans.append((call[1] + named.end(), i))
+                elif call[0] == 1 and ":=" not in argument:
+                    spans.append((call[1], i))
+            if char == ",":
+                call[0] += 1
+                call[1] = i + 1
+            else:
+                calls.pop()
+        i += 1
+    return sorted(spans)

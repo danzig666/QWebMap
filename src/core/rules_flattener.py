@@ -35,7 +35,14 @@ from qgis.core import (
     QgsSimpleFillSymbolLayer,
     QgsProperty,
     QgsFontUtils,
-    QgsUnitTypes
+    QgsUnitTypes,
+    QgsExpressionNodeBetweenOperator,
+    QgsExpressionNodeBinaryOperator,
+    QgsExpressionNodeColumnRef,
+    QgsExpressionNodeCondition,
+    QgsExpressionNodeFunction,
+    QgsExpressionNodeInOperator,
+    QgsExpressionNodeUnaryOperator,
     )
 from qgis.PyQt.QtCore import QPointF
 from qgis.PyQt.QtGui import QFont
@@ -113,6 +120,44 @@ def _drop_inactive_properties(element) -> None:
             child = child.nextSiblingElement("Option")
     for option in inactive:
         option.parentNode().removeChild(option)
+
+
+# Functions evaluating their arguments on another layer's features: the
+# columns there are that layer's (aggregate('other', 'sum', "pop")).
+_OTHER_LAYER_FUNCTIONS = frozenset({
+    "aggregate", "relation_aggregate", "overlay_contains", "overlay_crosses",
+    "overlay_disjoint", "overlay_equals", "overlay_intersects", "overlay_nearest",
+    "overlay_touches", "overlay_within"})
+
+
+def _own_columns(node) -> set:
+    """The columns of the evaluated layer an expression node reads
+    (QgsExpression.referencedColumns also lists those read on another
+    layer's features)."""
+    if node is None:
+        return set()
+    if isinstance(node, QgsExpressionNodeColumnRef):
+        return {node.name()}
+    if isinstance(node, QgsExpressionNodeFunction):
+        functions = QgsExpression.Functions()
+        if 0 <= node.fnIndex() < len(functions) and \
+                functions[node.fnIndex()].name().lower() in _OTHER_LAYER_FUNCTIONS:
+            return set()
+        children = node.args().list() if node.args() is not None else []
+    elif isinstance(node, QgsExpressionNodeBinaryOperator):
+        children = [node.opLeft(), node.opRight()]
+    elif isinstance(node, QgsExpressionNodeUnaryOperator):
+        children = [node.operand()]
+    elif isinstance(node, QgsExpressionNodeCondition):
+        children = [part for condition in node.conditions()
+                    for part in (condition.whenExp(), condition.thenExp())] + [node.elseExp()]
+    elif isinstance(node, QgsExpressionNodeInOperator):
+        children = [node.node()] + list(node.list().list())
+    elif isinstance(node, QgsExpressionNodeBetweenOperator):
+        children = [node.node(), node.lowerBound(), node.higherBound()]
+    else:  # a literal, or a node PyQGIS does not type (index operator)
+        return set(node.referencedColumns())
+    return set().union(*(_own_columns(child) for child in children))
 
 
 class RulesFlattener:
@@ -398,6 +443,11 @@ class RulesFlattener:
         root.appendChild(QgsRuleBasedRenderer.Rule(
             diagrams.placeholder_symbol(spec, layer.geometryType()), int(most_in), int(most_out),
             spec["show"], "Diagram"))
+        # The layer's scale range and the web-only limits, as its symbols
+        # (QGIS draws no diagram where the layer is hidden).
+        system = QgsRuleBasedRenderer(root)
+        self._rule_systems.append(system)
+        root = self._prepare_root_rule(system, layer, 0)
         before = len(self.flattened_rules)
         # Numbered after the layer's renderer rules (the renderer pass left
         # their count in _child_base): a dataset name of its own.
@@ -434,7 +484,6 @@ class RulesFlattener:
                 "map size; QGIS also scales map-unit sizes by the reference scale.",
                 layer_id=layer.id())
 
-    @staticmethod
     @staticmethod
     def _leader_provenance(pinned):
         import dataclasses  # pylint: disable=import-outside-toplevel
@@ -505,7 +554,8 @@ class RulesFlattener:
             if enum_int(prop.propertyType()) == enum_int(field_kind):
                 names = [prop.field()]
             elif enum_int(prop.propertyType()) == enum_int(expression_kind):
-                names = list(QgsExpression(prop.asExpression()).referencedColumns())
+                expression = QgsExpression(prop.asExpression())  # (owns the nodes walked)
+                names = list(_own_columns(expression.rootNode()))
             else:
                 return []
             return [name for name in names if name and not name.startswith("#!")
@@ -917,18 +967,21 @@ class RulesFlattener:
         maximum density per zoom, from the points inside the export extent."""
         from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform,  # pylint: disable=import-outside-toplevel
                                QgsExpressionContext, QgsExpressionContextUtils,
-                               QgsFeatureRequest, QgsPointXY)
+                               QgsCsException, QgsFeatureRequest, QgsPointXY)
         from .fidelity import heatmap as hm  # pylint: disable=import-outside-toplevel
-        from .fidelity.units import normalize_unit  # pylint: disable=import-outside-toplevel
+        from .fidelity.units import MapUnitContext, is_web_mercator, normalize_unit  # pylint: disable=import-outside-toplevel
         from .materializer import _to_mm  # pylint: disable=import-outside-toplevel
         renderer = layer.renderer()
         project = QgsProject.instance()
         crs = project.crs() if project.crs().isValid() else layer.crs()
-        to_project = QgsCoordinateTransform(layer.crs(), crs, project.transformContext())
+        # Densities in Web Mercator units, as the radius per CSS px: points in
+        # degrees or feet against a radius in metres put the whole layer in
+        # one kernel (a heatmap drawn hundreds of times too faint).
+        web = QgsCoordinateReferenceSystem("EPSG:3857")
+        to_web = QgsCoordinateTransform(layer.crs(), web, project.transformContext())
         request = QgsFeatureRequest()
-        latitude = 0.0
+        latitude = None
         if self.extent is not None:
-            web = QgsCoordinateReferenceSystem("EPSG:3857")
             request.setFilterRect(QgsCoordinateTransform(web, layer.crs(), project.transformContext())
                                   .transformBoundingBox(self.extent))
             center = QgsCoordinateTransform(web, QgsCoordinateReferenceSystem("EPSG:4326"),
@@ -953,7 +1006,10 @@ class RulesFlattener:
                 except (TypeError, ValueError):
                     value = 1.0  # as QGIS: a weight that does not convert counts 1
             for part in geometry.constParts():
-                point = to_project.transform(QgsPointXY(part.x(), part.y()))
+                try:
+                    point = to_web.transform(QgsPointXY(part.x(), part.y()))
+                except QgsCsException:
+                    continue  # outside Web Mercator (a pole): not on the web map
                 points.append((point.x(), point.y(), value))
             if len(points) > 200000:
                 break
@@ -976,9 +1032,17 @@ class RulesFlattener:
                                  "Heatmap with an automatic maximum: QGIS scales it to the densest "
                                  "spot in view; the web map uses the densest spot of the exported "
                                  "data at each zoom.", layer_id=layer.id())
-        return hm.build_spec(renderer.colorRamp(), renderer.radius(), "screen" if screen else "map",
+        if latitude is None:  # no extent: the points' middle
+            middle = sum(p[1] for p in points) / len(points) if points else 0.0
+            latitude = math.degrees(2 * math.atan(math.exp(middle / 6378137.0)) - math.pi / 2)
+        radius = renderer.radius()
+        if not screen:  # project CRS units -> Web Mercator units
+            units = "degrees" if crs.isGeographic() else getattr(crs.mapUnits(), "name", "meters")
+            radius *= MapUnitContext.for_project(is_web_mercator(crs), str(units),
+                                                 latitude).mercator_per_map_unit
+        return hm.build_spec(renderer.colorRamp(), radius, "screen" if screen else "map",
                              float(renderer.maximumValue() or 0.0), points, zooms,
-                             latitude=latitude, mercator=crs.authid() == "EPSG:3857",
+                             latitude=latitude, mercator=True,
                              mm_per_unit=_to_mm(1.0, unit) if screen else None)
 
     @staticmethod

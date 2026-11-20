@@ -148,3 +148,100 @@ def test_line_geometry_and_streets_from_the_roads_layer(tmp_path):
     assert all(r["layerId"] == STREETS_LAYER and len(r["anchor"]) == 2 for r in everything)
     assert len({r["featureKey"] for r in everything}) == len(everything)
     assert all(r["bounds"][2] <= 19.0 + 1e-6 for r in west_half)
+
+
+def test_http_reader_retries_a_connection_cut_mid_body():
+    """A download dropped mid-body raises http.client.IncompleteRead (not an
+    OSError): retried like any other network failure, then a PublishingError."""
+    import http.client
+    calls = []
+
+    class Cut(_Response):
+        def read(self, *args):
+            raise http.client.IncompleteRead(b"ab", 2)
+
+    def flaky(request, timeout):
+        calls.append(1)
+        return Cut(b"") if len(calls) < 2 else _Response(b"abcd")
+    reader = basemap.HttpReader("https://example.test/x.pmtiles", opener=flaky, sleep=lambda s: None)
+    assert reader.get(10, 4) == b"abcd" and len(calls) == 2
+    dead = basemap.HttpReader("https://example.test/x.pmtiles", opener=lambda r, timeout: Cut(b""),
+                              retries=1, sleep=lambda s: None)
+    with pytest.raises(PublishingError):
+        dead.get(0, 4)
+
+
+@pytest.mark.parametrize("head", [b"PMTiles\x02", b"NOTATILE", b"PMTiles\x03"])
+def test_unreadable_basemap_sources_are_a_publishing_error(tmp_path, head):
+    """An old PMTiles v2, another kind of file or a damaged v3 archive is a
+    PublishingError (the street step turns it into a warning), never a raw
+    vendor, zlib or index error that aborts the export."""
+    path = tmp_path / "x.pmtiles"
+    path.write_bytes(head + b"\x00" * 200)
+    reader = basemap.LocalReader(str(path))
+    try:
+        with pytest.raises(PublishingError):
+            basemap.street_records(reader, (18.95, 47.45, 19.05, 47.5))
+    finally:
+        reader.close()
+
+
+def test_uncompressed_directories_are_read():
+    """Directories follow the header's internal compression (the vendored
+    parser always gunzipped them)."""
+    import gzip
+    from publishing.vendor.pmtiles.tile import Compression, Entry, serialize_directory
+    entries = [Entry(5, 10, 20, 1), Entry(9, 30, 40, 1)]
+    raw = gzip.decompress(serialize_directory(entries))
+    for data, compression in ((raw, Compression.NONE), (serialize_directory(entries), Compression.GZIP),
+                              # UNKNOWN (0), left by some writers: gzip when it looks like gzip
+                              (serialize_directory(entries), Compression.UNKNOWN), (raw, Compression.UNKNOWN)):
+        assert [(e.tile_id, e.offset, e.length) for e in basemap._directory(data, compression)] == \
+            [(5, 10, 20), (9, 30, 40)]  # pylint: disable=protected-access
+    with pytest.raises(PublishingError):
+        basemap._directory(b"\x01\x02", Compression.GZIP)  # pylint: disable=protected-access
+
+
+def test_disk_errors_are_not_called_a_wrong_archive(tmp_path):
+    """A read error of the disk keeps its own message (it is not a file that
+    is not PMTiles)."""
+    path = tmp_path / "x.pmtiles"
+    path.write_bytes(b"PMTiles\x03" + b"\x00" * 200)
+    reader = basemap.LocalReader(str(path))
+    reader.handle.close()
+    reader.handle = io.BytesIO()
+    reader.handle.read = lambda *_: (_ for _ in ()).throw(OSError(5, "Input/output error"))
+    with pytest.raises(PublishingError) as caught:
+        basemap.street_records(reader, (18.95, 47.45, 19.05, 47.5))
+    assert "could not be read" in str(caught.value) and "Input/output" in str(caught.value)
+
+
+def test_extract_keeps_one_range_in_memory(tmp_path, monkeypatch):
+    """The tiles are written as each merged range arrives: memory is bounded
+    by the range (8 MB, 512 KB here), not by every tile of the area
+    (gigabytes)."""
+    import tracemalloc
+    from publishing.pmtiles_builder import TileSink
+    from publishing.vendor.pmtiles.tile import Compression, TileType
+    from publishing_fixtures import encode_tile
+    detail, overview = basemap.areas(EXTENT, 0.5, 100.0)
+    wanted = basemap.wanted_tiles(detail, overview, 14, 7)
+    path = str(tmp_path / "big.pmtiles")
+    with TileSink(path) as sink:
+        for z, x, y in wanted:  # ~256 KB of incompressible text per tile
+            sink.add(z, x, y, encode_tile({"earth": [("polygon", [[[0, 0], [10, 0], [10, 10], [0, 0]]],
+                                                      {"pad": os.urandom(128 * 1024).hex()}, None)]}))
+        sink.write(TileType.MVT, Compression.NONE, {"vector_layers": [{"id": "earth", "fields": {}}]},
+                   validate_kind="mvt")
+    total = os.path.getsize(path)
+    monkeypatch.setattr(basemap, "_RANGE", 512 * 1024)
+    reader = basemap.LocalReader(path)
+    tracemalloc.start()
+    try:
+        result = _extract(reader, tmp_path / "out.pmtiles")
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+        reader.close()
+    assert result.descriptor.addressed_tiles == len(wanted) and total > 10e6
+    assert peak < total / 2, (peak, total)

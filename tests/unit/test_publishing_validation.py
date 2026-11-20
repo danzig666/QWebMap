@@ -114,3 +114,43 @@ def test_web_addresses_and_approved_attribute_values_are_no_leaks(tmp_path):
     assert scan_bundle(str(tmp_path), ["search/index.json"]) == []
     (tmp_path / "search" / "manifest.json").write_text('{"x": "/home/user/a.gpkg"}')
     assert scan_bundle(str(tmp_path), ["search/manifest.json"]) == ["search/manifest.json: absolute local path"]
+
+
+def test_attribute_files_are_not_parsed_for_paths(tmp_path, monkeypatch):
+    """A large lookup file is not JSON-parsed only to drop its path result."""
+    import publishing.validation as validation  # pylint: disable=import-outside-toplevel
+    parsed = []
+    monkeypatch.setattr(validation, "_json_strings", lambda text: parsed.append(text) or [])
+    (tmp_path / "features").mkdir()
+    (tmp_path / "features" / "a.json").write_text('{"k": "pw-123456"}')
+    assert scan_bundle(str(tmp_path), ["features/a.json"], ["pw-123456"]) == ["features/a.json: credential value"]
+    assert parsed == []
+
+
+def test_line_breaks_in_json_text_are_no_local_paths(tmp_path):
+    """JSON writes a line break or tab as \\n / \\t: "Data source:" before a
+    line break is no "C:\\n..." path. Paths are found in the decoded strings,
+    with forward slashes and network shares too."""
+    for text in ("Data source:\nCity survey 2024", "Zone:\tA", "Tel:\r\n123", 'Note:"x"'):
+        assert not scan_text_for_leaks(json.dumps({"description": text})), text
+        assert not scan_text_for_leaks(json.dumps({"d": text}, ensure_ascii=False, indent=2)), text
+    (tmp_path / "manifest.json").write_text(json.dumps({"description": "Source:\nX"}), encoding="utf-8")
+    assert scan_bundle(str(tmp_path), ["manifest.json"]) == []
+    for path in ("C:\\Users\\me\\map.qgz", "D:/grids/a.gsb", "\\\\fileserver\\gis\\x.gsb", "E:\\x",
+                 "/home/user/a.gpkg", "file:///c/x"):
+        assert scan_text_for_leaks(json.dumps({"p": path})) == ["absolute local path"], path
+    assert scan_text_for_leaks("C:\\Users\\me\\map.qgz")  # not JSON: as before
+    assert not scan_text_for_leaks(json.dumps({"u": "https://example.com/a:/b", "s": "a://b"}))
+
+
+def test_crs_grid_files_are_published_without_their_path():
+    from publishing.crs import public_proj  # pylint: disable=import-outside-toplevel
+    assert public_proj("+proj=somerc +nadgrids=D:/grids/x.gsb +units=m") == \
+        "+proj=somerc +nadgrids=@x.gsb +units=m"
+    assert public_proj("+nadgrids=C:\\g\\a.gsb,@null +geoidgrids=/opt/g/h.gtx") == \
+        "+nadgrids=@a.gsb,@null +geoidgrids=@h.gtx"
+    assert public_proj("+proj=utm +zone=34 +nadgrids=@null") == "+proj=utm +zone=34 +nadgrids=@null"
+    assert not scan_text_for_leaks(json.dumps({"proj": public_proj("+nadgrids=\\\\srv\\g\\a.gsb")}))
+    # A quoted value with a space (PROJ quotes it): the whole path goes.
+    assert public_proj('+nadgrids="C:/Program Files/x.gsb" +x') == "+nadgrids=@x.gsb +x"
+    assert public_proj('+nadgrids="C:/Program Files/my grid.gsb" +x') == '+nadgrids="@my grid.gsb" +x'

@@ -49,6 +49,27 @@ RENDER_TIMEOUT_S = 30    # per QGIS reference render
 TIMED_OUT = set()        # view ids whose QGIS render was given up
 
 
+OUT_MARKER = ".q2vt-out"  # in every --out folder these tools made
+
+
+def fresh_out_dir(out):
+    """Empty ``out`` for a new run and return its absolute path. Only a
+    folder one of these tools made (it has OUT_MARKER) is deleted: a mistyped
+    --out (".", a home or project folder) is refused, not wiped."""
+    out = os.path.abspath(out)
+    if os.path.isdir(out) and os.listdir(out):
+        if not os.path.isfile(os.path.join(out, OUT_MARKER)) or \
+                out in (ROOT, os.path.expanduser("~"), os.path.abspath(os.sep)):
+            raise SystemExit(f"--out {out} is not empty and was not made by this tool: "
+                             "choose a new folder (or empty it yourself; also an output "
+                             "folder of a run older than this check, e.g. a batch_NNN)")
+        shutil.rmtree(out)
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, OUT_MARKER), "w", encoding="utf-8") as handle:
+        handle.write("Output of a QWebMap development tool; deleted by its next run.\n")
+    return out
+
+
 def init_qgis():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from qgis.core import QgsApplication
@@ -608,8 +629,7 @@ def main():
                            QgsRectangle)
     from q2vt_plugin.src.qgis2vectortiles import QGIS2VectorTiles
 
-    out = os.path.abspath(args.out)
-    shutil.rmtree(out, ignore_errors=True)
+    out = fresh_out_dir(args.out)
     data_dir = os.path.join(out, "data")
     os.makedirs(data_dir)
     items = load_items(args)

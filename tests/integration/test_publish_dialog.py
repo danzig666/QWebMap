@@ -773,3 +773,175 @@ def test_zoomed_out_mode_is_set_shown_and_saved(project, messages, tmp_path):
     assert again.edit_zoomed_out(("full", None))
     assert again_item.text(COL_ZOOMED) == "" and again.collect().layer(parcels.id()).zoomed_out == "full"
     again.close()
+
+
+def test_retention_failure_is_a_message(plugin, messages):
+    """'Delete old releases…' offline or with an expired key: a message,
+    not a Python error out of the button's slot."""
+    from q2vt_plugin.src.gui.deployment_history import DeploymentHistoryDialog  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.errors import PublishingError  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.models import PublicationProfile  # pylint: disable=import-error
+
+    class Offline:
+        prefix = "maps/x"
+
+        def read_pointer(self):
+            raise PublishingError("Q2VT_PUB_UPLOAD", "Object storage request failed.")
+
+    dialog = DeploymentHistoryDialog(None, Offline(), PublicationProfile(title="X", slug="x"), [], None)
+    dialog.retention()
+    assert messages == [("warning", "Object storage request failed.")]
+
+
+def test_publish_reuses_the_export_only_while_the_layers_stay_as_exported(project, messages, tmp_path, monkeypatch):
+    """Publish after a local export of the same settings uploads that export,
+    unless a layer's data or style changed since (the window is not modal)."""
+    project, parcels = project
+    exported = []
+    for edit in (False, True):
+        dialog = _dialog()
+        if not edit:  # (then saved by the export)
+            _configure(dialog, parcels, tmp_path)
+            dialog.d_kind.setCurrentIndex(dialog.d_kind.findData("r2"))
+            dialog.d_account.setText("abc123")
+            dialog.d_bucket.setText("maps")
+            dialog.d_public.setText("https://maps.example.org")
+        try:
+            assert dialog.export_locally(), messages
+            dialog.refresh_review()
+            dialog.approve.setChecked(True)
+            monkeypatch.setattr(dialog, "export_locally", lambda: exported.append(edit) and False)
+            if edit:                                                      # data edited in QGIS
+                feature = next(parcels.getFeatures())
+                assert parcels.startEditing()
+                parcels.changeAttributeValue(feature.id(), parcels.fields().indexOf("hrsz"), "999/9")
+                assert parcels.commitChanges()
+            dialog.publish()  # (no keys: stops before the upload)
+            if not edit:
+                assert dialog.status.text().startswith("Q2VT_PUB_CREDENTIALS")
+        finally:
+            dialog.close()
+    assert exported == [True]  # the same export, then a new one
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_a_settings_file_with_the_keys_is_private(project, messages, tmp_path):
+    project, parcels = project
+    dialog = _dialog()
+    _configure(dialog, parcels, tmp_path)
+    dialog.d_kind.setCurrentIndex(dialog.d_kind.findData("r2"))
+    dialog.d_account.setText("abc123")
+    dialog.d_bucket.setText("maps")
+    dialog.d_session_key.setText("AKIATEST")
+    dialog.d_session_secret.setText("session-secret-value")
+    path = tmp_path / "keys.q2vt.json"
+    path.write_text("an older, longer file " * 100, encoding="utf-8")
+    os.chmod(path, 0o644)
+    try:
+        assert dialog.export_settings_file(str(path))
+        assert json.loads(path.read_text(encoding="utf-8"))["credentials"]["secretAccessKey"] == \
+            "session-secret-value"
+        assert os.stat(path).st_mode & 0o077 == 0
+        dialog.d_session_key.clear()
+        dialog.d_session_secret.clear()
+        other = tmp_path / "plain.q2vt.json"
+        assert dialog.export_settings_file(str(other))
+        assert "secret" not in other.read_text(encoding="utf-8").lower()
+    finally:
+        dialog.close()
+
+
+def test_a_settings_file_with_malformed_layer_names_is_not_a_settings_file(project):
+    from q2vt_plugin.src.gui import publication_profiles as store  # pylint: disable=import-error
+    project, _parcels = project
+    for names in ([1], {"a": [1]}, {"a": {"b": 1}}):
+        text = json.dumps({store.FILE_FORMAT: 1, "profile": {}, "layerNames": names})
+        with pytest.raises(ValueError):
+            store.import_document(text, project)
+
+
+class _Upload:
+    """A finished upload as UploadTask leaves it."""
+    error = ""
+
+    def __init__(self):
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        self.result = SimpleNamespace(state=ReleaseState.PUBLISHED, checks=SimpleNamespace(checks=[]),
+                                      stable_url="https://maps.example.test/terv/", versioned_url="",
+                                      warnings=[], message="", code="")
+
+
+def test_window_of_a_closed_project_closes_after_its_upload(project, messages, monkeypatch):
+    """Another project opened during an upload: the window stayed open with
+    the old project's settings and the Web menu showed it for the new one."""
+    from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error
+    import q2vt_plugin  # pylint: disable=import-error
+    monkeypatch.setattr(PublishDialog, "ask_first_view", lambda self: None)
+    plugin = q2vt_plugin.QGIS2VectorTiles(None)
+    plugin.dialog = None
+    plugin.show_publish_dialog()
+    old = plugin.dialog
+    old.task = _Upload()  # uploading
+    old._on_project_cleared()  # pylint: disable=protected-access
+    assert old.isVisible()  # kept while its upload runs
+    plugin.show_publish_dialog()  # Web > Publish in the new project
+    new = plugin.dialog
+    assert new is not old and new.isVisible()
+    finished = []
+    old.finished.connect(finished.append)
+    old._published()  # pylint: disable=protected-access
+    assert finished and not old.isVisible()
+    assert plugin.dialog is new and new.isVisible()  # the old one's end leaves the new one
+    new.close()
+    assert plugin.dialog is None
+
+
+def test_unload_during_a_local_export_keeps_its_window(plugin, monkeypatch):
+    """Plugin reload while a local export ran in the window: it was deleted
+    with the export's code still using it."""
+    import q2vt_plugin  # pylint: disable=import-error
+    from qgis.core import QgsFeedback  # pylint: disable=import-outside-toplevel
+    calls = []
+
+    class Window:
+        task = None
+        feedback = QgsFeedback()
+
+        def close(self):
+            calls.append("close")
+
+        def deleteLater(self):  # noqa: N802
+            calls.append("deleteLater")
+    window = Window()
+    loaded = q2vt_plugin.QGIS2VectorTiles(None)
+    loaded.dialog = window
+    loaded.unload()
+    assert window.feedback.isCanceled() and calls == ["close"]
+    window.feedback = None  # the export has returned: closing it deletes it
+    loaded._dialog_closed(window)  # pylint: disable=protected-access
+    assert calls == ["close", "deleteLater"]
+
+
+def test_unload_during_a_local_export_keeps_the_real_window(project, messages, monkeypatch):
+    """The real window's close() during a local export must not end it
+    (finished would reach _dialog_closed and delete it under the export)."""
+    from qgis.core import QgsFeedback  # pylint: disable=import-outside-toplevel
+    from qgis.PyQt import sip  # pylint: disable=import-outside-toplevel
+    from qgis.PyQt.QtCore import QEvent  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error
+    import q2vt_plugin  # pylint: disable=import-error
+    monkeypatch.setattr(PublishDialog, "ask_first_view", lambda self: None)
+    loaded = q2vt_plugin.QGIS2VectorTiles(None)
+    loaded.dialog = None
+    loaded.show_publish_dialog()
+    window = loaded.dialog
+    window.feedback = QgsFeedback()  # a local export runs in it
+    finished = []
+    window.finished.connect(finished.append)
+    loaded.unload()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not finished and not sip.isdeleted(window) and window.feedback.isCanceled()
+    window.feedback = None  # the export has returned: closing it deletes it
+    window.close()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert finished and sip.isdeleted(window)

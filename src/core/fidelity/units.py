@@ -128,6 +128,18 @@ def metres_per_unit(name: str) -> float:
     return 1.0
 
 
+def is_web_mercator(crs) -> bool:
+    """Whether a QgsCoordinateReferenceSystem is Web Mercator, by definition:
+    ESRI:102100/102113, EPSG:3785 or a custom copy keep their own authid."""
+    if crs is None or not crs.isValid():
+        return False
+    if crs.authid() in ("EPSG:3857", "EPSG:900913"):
+        return True
+    from qgis.core import QgsCoordinateReferenceSystem  # pylint: disable=import-outside-toplevel
+    proj = set((crs.toProj() or "").split())
+    return bool(proj) and proj == set(QgsCoordinateReferenceSystem("EPSG:3857").toProj().split())
+
+
 @dataclass(frozen=True)
 class MapUnitContext:
     """How project map units and ground meters relate to Web Mercator units.

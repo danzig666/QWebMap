@@ -9,7 +9,8 @@ Cloudflare R2 through its S3 API.
 * R2 supports conditional PutObject (If-Match / If-None-Match), used for
   conflict-safe activation of ``current.json``.
 * botocore's default request checksums (CRC32 on every upload, added in
-  1.36) are limited to "when required", as R2 documents for S3 clients.
+  1.36) are limited to "when required", as R2 documents for S3 clients
+  (S3Provider.client_config, for every S3-compatible service).
 """
 
 import re
@@ -67,12 +68,3 @@ class R2Provider(S3Provider):
             from ..errors import PublishingError  # pylint: disable=import-outside-toplevel
             raise PublishingError("Q2VT_PUB_DESTINATION", "Enter the Cloudflare account id.")
         return f"https://{account}.r2.cloudflarestorage.com"
-
-    def client_config(self, Config):  # noqa: N803
-        try:
-            return Config(signature_version="s3v4", retries={"max_attempts": 1, "mode": "standard"},
-                          connect_timeout=20, read_timeout=120, s3={"addressing_style": "path"},
-                          request_checksum_calculation="when_required",
-                          response_checksum_validation="when_required")
-        except TypeError:  # older botocore without these options
-            return super().client_config(Config)

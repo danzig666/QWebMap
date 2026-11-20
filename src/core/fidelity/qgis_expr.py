@@ -78,6 +78,10 @@ def with_map_scale(expression: str, scale) -> str:
 _NUMBER = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _COMPARE = r"<=|>=|<>|!=|=|<|>"
 _ARITHMETIC = "-+*/%^|"
+# Words after which a number starts an operand (else a number after an
+# operand is its tail: level_1, x2, or a sign: "rank" -5).
+_OPERAND_END = re.compile(r"[\w.\"')\]]$")
+_KEYWORD_END = re.compile(r"(?<![\w.\"'])(?:and|or|not|when|then|else|case)$", re.IGNORECASE)
 _THRESHOLD_RES = (
     re.compile(rf"{_SCALE_VARIABLE}\s*({_COMPARE})\s*({_NUMBER})", re.IGNORECASE),
     re.compile(rf"({_NUMBER})\s*({_COMPARE})\s*{_SCALE_VARIABLE}", re.IGNORECASE),
@@ -118,6 +122,10 @@ def scale_thresholds(text: str) -> Optional[List[float]]:
             after = text[match.end():].lstrip()[:1]
             if (before and before in _ARITHMETIC) or (after and after in _ARITHMETIC):
                 continue  # part of a calculation: 2 * @map_scale < 1000
+            head = text[:match.start()].rstrip()
+            if pattern is _THRESHOLD_RES[1] and _OPERAND_END.search(head) and \
+                    not _KEYWORD_END.search(head):
+                continue  # not a number of its own: level_1 <= @zoom_level
             if pattern is _THRESHOLD_RES[0]:
                 name, tests = match.group(1), [(match.group(2), match.group(3))]
             elif pattern is _THRESHOLD_RES[1]:

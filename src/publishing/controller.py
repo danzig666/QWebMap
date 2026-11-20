@@ -15,14 +15,17 @@ Local export never needs credentials; a failed or cancelled stage leaves the
 previous local (and public) release current.
 """
 
+import copy
 import dataclasses
 import hashlib
 import itertools
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -34,8 +37,8 @@ from .models import PublicationProfile, ReleaseState
 from .progress import Progress
 from .search_index import build_search_index
 from .bundle import walk_files
-from .validation import safe_relative_path
-from .web_builder import ReleaseResult, build_release, write_zip
+from .validation import safe_relative_path, scan_text_for_leaks
+from .web_builder import RELEASE_ID, PublicationLock, ReleaseResult, apply_retention, build_release, write_zip
 
 STAGES = ["PLAN", "EXPORT_MVT", "RECORDS", "LEGEND", "PARCELS", "RASTER", "BASEMAP", "STREETS", "TILES",
           "BUILD_RELEASE",
@@ -114,6 +117,22 @@ def _local_root(base: str) -> Optional[str]:
     return os.path.join(tempfile.gettempdir(), "q2vt-work", digest)
 
 
+def output_folder(base: str) -> str:
+    """The output folder as typed, absolute: ``~`` is the home folder, a
+    relative folder is inside the project's folder (not QGIS's working
+    folder, on Windows often under Program Files)."""
+    base = os.path.expanduser(base)
+    if not os.path.isabs(base):
+        try:
+            from qgis.core import QgsProject  # pylint: disable=import-outside-toplevel
+            home = QgsProject.instance().homePath()
+        except ImportError:
+            home = ""
+        if home:
+            base = os.path.join(home, base)
+    return os.path.abspath(base)
+
+
 def publication_dirs(profile: PublicationProfile, base: Optional[str] = None):
     """(publication folder, work folder). The work folder (the export's
     datasets, tiles and logs) is on this computer when the output folder is a
@@ -121,10 +140,30 @@ def publication_dirs(profile: PublicationProfile, base: Optional[str] = None):
     base = base or profile.output.local_directory
     if not base:
         raise PublishingError("Q2VT_PUB_PROFILE_INVALID", "Choose a local output folder.")
-    base = os.path.abspath(base)
+    base = output_folder(base)
     local = _local_root(base)
     work = os.path.join(local, profile.slug) if local else os.path.join(base, ".q2vt-work", profile.slug)
     return os.path.join(base, profile.slug), work
+
+
+# What a release adds under the publication folder at most: releases/<id>/
+# and glyphs/<font stack>/<range>.pbf (two font names, about 120 characters).
+_RELEASE_PATH_RESERVE = 160
+
+
+def long_path_warning(publication_dir: str, windows: bool = os.name == "nt") -> str:
+    """A warning when the release's files would pass Windows' 260-character
+    path limit (QGIS's Python without long paths enabled), else ""."""
+    if not windows:
+        return ""
+    import ntpath  # pylint: disable=import-outside-toplevel
+    # (A Windows path as Windows reads it: "C:\\web" is absolute, also when checked elsewhere.)
+    full = publication_dir if ntpath.isabs(publication_dir) else os.path.abspath(publication_dir)
+    if len(full) + _RELEASE_PATH_RESERVE < 260:
+        return ""
+    return (f"The output folder's path is long ({len(full)} characters): the web map's files "
+            "may pass Windows' 260-character limit and the export fail at the end. Choose a shorter "
+            "output folder or address name if it does.")
 
 
 def cache_dir(profile: PublicationProfile, base: Optional[str] = None) -> str:
@@ -133,7 +172,7 @@ def cache_dir(profile: PublicationProfile, base: Optional[str] = None) -> str:
     base = base or profile.output.local_directory
     if not base:
         raise PublishingError("Q2VT_PUB_PROFILE_INVALID", "Choose a local output folder.")
-    base = os.path.abspath(base)
+    base = output_folder(base)
     local = _local_root(base)
     return os.path.join(local, ".q2vt-cache") if local else os.path.join(base, ".q2vt-cache")
 
@@ -144,7 +183,7 @@ _LOG_FILES = ("export_log.txt", "fidelity_report.html", "fidelity_report.json")
 def _copy_logs(export_folder: str, profile: PublicationProfile, base: Optional[str]) -> None:
     """The export log and fidelity report of a local work folder copied next
     to the output, where they are without a local work folder."""
-    base = os.path.abspath(base or profile.output.local_directory)
+    base = output_folder(base or profile.output.local_directory)
     if not export_folder or not os.path.isdir(export_folder) or _local_root(base) is None:
         return
     target = os.path.join(base, ".q2vt-work", profile.slug, os.path.basename(export_folder))
@@ -155,6 +194,21 @@ def _copy_logs(export_folder: str, profile: PublicationProfile, base: Optional[s
                 shutil.copyfile(os.path.join(export_folder, name), os.path.join(target, name))
     except OSError:
         pass  # the logs stay in the local work folder
+
+
+# An export run's folder in the work folder (QGIS2VectorTiles._create_temp_directory).
+_RUN_FOLDER = re.compile(r"^[0-9]{2}_[0-9]{2}_[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{6}$")
+# Releases kept in the local folder of an online destination: the new one and
+# the one before (the storage keeps its own; Releases to keep is for it).
+LOCAL_COPIES_KEPT = 2
+
+
+def _remove_earlier_runs(work_dir: str) -> None:
+    """The run folders of earlier exports (their tiles, datasets and the
+    private records): never used again, they only filled the disk."""
+    for name in os.listdir(work_dir):
+        if _RUN_FOLDER.match(name):
+            shutil.rmtree(os.path.join(work_dir, name), ignore_errors=True)
 
 
 def _nothing_to_publish(diagnostics):
@@ -304,6 +358,14 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
     stage("PLAN")
     from .crs import project_crs_info  # pylint: disable=import-outside-toplevel
     crs_info = project_crs_info(project)
+    # The manifest's own texts: a path in them is found now, not by the leak
+    # scan after the (long) tile export.
+    for name, value in (("Title", profile.title), ("Description", profile.description),
+                        ("Attribution", profile.attribution),
+                        ("Parcel report disclaimer", profile.parcel_info.disclaimer)):
+        if value and "absolute local path" in scan_text_for_leaks(json.dumps({"v": value})):
+            raise PublishingError("Q2VT_PUB_SECRET_LEAK",
+                                  f"{name}: remove the local file path from it (Publish window).")
     problems = qgis_model.check_profile_against_project(profile, project)
     if problems:
         raise PublishingError("Q2VT_PUB_PROFILE_INVALID", " ".join(problems[:6]),
@@ -318,7 +380,10 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         if not isinstance(project.mapLayer(info.parcel_layer_id), QgsVectorLayer):
             raise PublishingError("Q2VT_PUB_PROFILE_INVALID",
                                   "Parcel report: the parcel layer must be a vector layer (Parcel report tab).")
-        config.key_fields = [info.key_field]
+        # On a copy: the caller's settings (saved in the project) keep their own.
+        config = dataclasses.replace(config, key_fields=[info.key_field])
+        profile = copy.copy(profile)
+        profile.layers = [config if c.layer_id == config.layer_id else c for c in profile.layers]
         from .parcel_report import resolve_layers  # pylint: disable=import-outside-toplevel
         resolve_layers(project, info)  # layers and fields exist: fail now, not after tiling
     # Unique feature keys: checked now, not after the (long) tile export.
@@ -339,53 +404,66 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
                               "Select at least one layer to publish (Map tab); the basemap and the "
                               "terrain are drawn under the published layers.")
     publication_dir, work_dir = publication_dirs(profile, base_dir)
-    os.makedirs(work_dir, exist_ok=True)
-    if _local_root(os.path.abspath(base_dir or profile.output.local_directory)):
-        progress.info(f"Network output folder: the work files are on this computer, in {work_dir}")
-    live_rasters, raster_configs = _live_rasters(project, raster_configs, extent_3857, progress)
-    raster_plans = _plan_rasters(project, profile, raster_configs, extent_3857, progress)
-    if staged is not None:
-        staged.weigh(_stage_weights(profile, raster_plans, has_vectors))
-    keys, _ = qgis_model.feature_keys(vector_profile)
-
-    cache = None
-    if profile.output.reuse_unchanged:
-        from ..core.export_cache import ExportCache  # pylint: disable=import-outside-toplevel
-        cache = ExportCache(cache_dir(profile, base_dir))
-
+    # The folder (and its work folder) is this export's from now: a second
+    # export of it fails here, not after the tile export.
+    lock = PublicationLock(publication_dir).__enter__()
     exporter = None
-    if has_vectors:
-        stage("EXPORT_MVT")
-        exporter = QGIS2VectorTiles(
-            min_zoom=profile.view.min_zoom, max_zoom=profile.view.max_zoom, extent=extent_3857,
-            output_dir=work_dir, include_required_fields_only=1 if profile.output.include_all_fields else 0,
-            cpu_percent=profile.output.cpu_percent, cent_source=profile.output.polygon_labels_base,
-            background_type=2,  # vector-only: never the OSM / Blue Marble raster backgrounds
-            viewer=0, feedback=processing_feedback, fidelity_mode=profile.output.fidelity_mode,
-            overzoom=profile.output.overzoom, serve=False,
-            static_package=profile.output.xyz_package, parallel=False,
-            layer_ids=vector_profile.included_layer_ids(), archive_format="mbtiles",
-            add_result_layer=False, feature_keys=keys,
-            extra_tile_fields=qgis_model.tile_fields(vector_profile), cache=cache,
-            scale_limits={c.layer_id: (c.min_scale, c.max_scale, c.labels_min_scale)
-                          for c in vector_profile.layers
-                          if c.included and (c.min_scale or c.max_scale or c.labels_min_scale)},
-            background_tiles=os.environ.get("Q2VT_FOREGROUND_TILES") != "1",
-            fast_markers=profile.output.fast_markers, thin_hairlines=profile.output.thin_hairlines,
-            view_max_zoom=profile.view.max_view_zoom,
-            min_label_px=profile.output.min_label_px,
-            min_feature_px=profile.output.min_feature_px,
-            cap_tiles=True,
-            zoomed_out=qgis_model.zoomed_out_layers(vector_profile))
-    progress.check()
-    # The tiles are made in the background (ogr2ogr processes) while the
-    # stages after the datasets run: finish_tiles() before BUILD_RELEASE.
     try:
+        os.makedirs(work_dir, exist_ok=True)
+        _remove_earlier_runs(work_dir)
+        too_long = long_path_warning(publication_dir)
+        if too_long:
+            progress.info(f"⚠ {too_long}")
+        if _local_root(output_folder(base_dir or profile.output.local_directory)):
+            progress.info(f"Network output folder: the work files are on this computer, in {work_dir}")
+        live_rasters, raster_configs = _live_rasters(project, raster_configs, extent_3857, progress)
+        # This project's zoom <-> scale before the raster zooms are planned (and
+        # for the legend's zoom ranges, also without vector layers): not the one
+        # an earlier export, maybe of another project, left.
+        from .zoom_load import configure_zoom_levels  # pylint: disable=import-outside-toplevel
+        configure_zoom_levels(project, extent_3857)
+        raster_plans = _plan_rasters(project, profile, raster_configs, extent_3857, progress)
+        if staged is not None:
+            staged.weigh(_stage_weights(profile, raster_plans, has_vectors))
+        keys, _ = qgis_model.feature_keys(vector_profile)
+
+        cache = None
+        if profile.output.reuse_unchanged:
+            from ..core.export_cache import ExportCache  # pylint: disable=import-outside-toplevel
+            cache = ExportCache(cache_dir(profile, base_dir))
+
+        if has_vectors:
+            stage("EXPORT_MVT")
+            exporter = QGIS2VectorTiles(
+                min_zoom=profile.view.min_zoom, max_zoom=profile.view.max_zoom, extent=extent_3857,
+                output_dir=work_dir, include_required_fields_only=1 if profile.output.include_all_fields else 0,
+                cpu_percent=profile.output.cpu_percent, cent_source=profile.output.polygon_labels_base,
+                background_type=2,  # vector-only: never the OSM / Blue Marble raster backgrounds
+                viewer=0, feedback=processing_feedback, fidelity_mode=profile.output.fidelity_mode,
+                overzoom=profile.output.overzoom, serve=False,
+                static_package=profile.output.xyz_package, parallel=False,
+                layer_ids=vector_profile.included_layer_ids(), archive_format="mbtiles",
+                add_result_layer=False, feature_keys=keys,
+                extra_tile_fields=qgis_model.tile_fields(vector_profile), cache=cache,
+                scale_limits={c.layer_id: (c.min_scale, c.max_scale, c.labels_min_scale)
+                              for c in vector_profile.layers
+                              if c.included and (c.min_scale or c.max_scale or c.labels_min_scale)},
+                background_tiles=os.environ.get("Q2VT_FOREGROUND_TILES") != "1",
+                fast_markers=profile.output.fast_markers, thin_hairlines=profile.output.thin_hairlines,
+                view_max_zoom=profile.view.max_view_zoom,
+                min_label_px=profile.output.min_label_px,
+                min_feature_px=profile.output.min_feature_px,
+                cap_tiles=True,
+                zoomed_out=qgis_model.zoomed_out_layers(vector_profile))
+        progress.check()
+        # The tiles are made in the background (ogr2ogr processes) while the
+        # stages after the datasets run: finish_tiles() before BUILD_RELEASE.
         if exporter is None:  # raster layers only: no vector tiles, no records
             bundle = _raster_only_bundle(profile, extent_3857, work_dir)
             rules, export_path = [], bundle.export_dir
         else:
             if not exporter.convert_project_to_vector_tiles():
+                progress.check()  # cancelled: a cancel, not a failure
                 raise PublishingError("Q2VT_PUB_BUNDLE_INVALID",
                                       "The vector tile export produced no tiles (see the export log).")
             if exporter.diagnostics.by_code("Q2VT_EXPORT_EMPTY"):
@@ -534,6 +612,7 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         if exporter is not None:
             stage("TILES")
             if not exporter.finish_tiles():
+                progress.check()
                 raise PublishingError("Q2VT_PUB_BUNDLE_INVALID",
                                       "The vector tile export produced no tiles (see the export log).")
             bundle.diagnostics_summary = exporter.diagnostics.counts()
@@ -552,26 +631,40 @@ def export_local(project, profile: PublicationProfile, extent_3857, feedback=Non
         release = build_release(
             bundle, profile, publication_dir, transport="pmtiles", activate=activate and not flat,
             feedback=progress, canaries=canaries, extra_files=extra_files, extra_builders=[indexes],
-            extra_validators=[disclosure], stable_entry=not flat, manifest_extra={
+            extra_validators=[disclosure], stable_entry=not flat, locked=True, manifest_extra={
                 "themes": themes, "ui": {"accent": profile.accent_color}, "parcelInfo": parcel_manifest})
+        if profile.destination.kind != "local":
+            try:
+                apply_retention(publication_dir, LOCAL_COPIES_KEPT, protect=[release.release_id])
+            except OSError:
+                pass  # a file still open (Windows): removed by a later export
         result = LocalResult(ReleaseState.LOCAL_READY, release, publication_dir, export_path,
                              records.path, dict(records.counts), list(release.warnings))
-        if profile.output.archive == "both" and bundle.has_vector_tiles:
-            result.mbtiles_copy = os.path.join(os.path.dirname(publication_dir),
-                                               f"{profile.slug}-{release.release_id}.mbtiles")
-            shutil.copyfile(bundle.mbtiles_path, result.mbtiles_copy)
+        # The MBTiles ("MBTiles only": the site is built too, for the preview)
+        # and the ZIP next to the folder, one of each: replaced by each export.
+        if profile.output.archive in ("both", "mbtiles") and bundle.has_vector_tiles:
+            result.mbtiles_copy = os.path.join(os.path.dirname(publication_dir), f"{profile.slug}.mbtiles")
+            shutil.copyfile(bundle.mbtiles_path, result.mbtiles_copy + ".tmp")
+            os.replace(result.mbtiles_copy + ".tmp", result.mbtiles_copy)
         if profile.output.zip:
             result.zip_path = write_zip(release.release_dir, os.path.join(
-                os.path.dirname(publication_dir), f"{profile.slug}-{release.release_id}.zip"))
+                os.path.dirname(publication_dir), f"{profile.slug}.zip"))
         if flat:
             flatten_release(release, publication_dir, progress)
         for warning in bundle.warnings:
             result.warnings.append(warning)
         return result
     finally:
-        if exporter is not None:
-            exporter.abort_tiles()  # cancelled or failed before the tiles were finished
-            _copy_logs(exporter.export_folder, profile, base_dir)
+        try:
+            if exporter is not None:
+                exporter.abort_tiles()  # cancelled or failed before the tiles were finished
+                _copy_logs(exporter.export_folder, profile, base_dir)
+        finally:
+            lock.__exit__(None, None, None)
+            try:
+                os.rmdir(publication_dir)  # only an empty one, of an export that failed early
+            except OSError:
+                pass
 
 
 def _raster_only_bundle(profile: PublicationProfile, extent_3857, work_dir: str):
@@ -639,6 +732,36 @@ def _flat_state(path: str) -> set:
     return out
 
 
+def _flat_release(path: str) -> str:
+    """The release id the state file names, "" when none is valid."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            release_id = json.load(handle).get("release")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return release_id if isinstance(release_id, str) and RELEASE_ID.match(release_id) else ""
+
+
+def _write_flat_state(state_path: str, release_id: str, files) -> None:
+    tmp = state_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump({"format": "qwebmap-local-files", "release": release_id, "files": list(files)}, handle)
+    os.replace(tmp, state_path)
+
+
+def _replace(source: str, target: str, waits=(0.2, 0.5, 1.0, 2.0)) -> None:
+    """os.replace, tried again a few times when the target is open (Windows:
+    the preview server, an antivirus or a sync client reading it)."""
+    for wait in tuple(waits) + (None,):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if wait is None:
+                raise
+            time.sleep(wait)
+
+
 def flatten_release(release, publication_dir: str, progress=None) -> None:
     """Local output without versions: the release's site (a whole site with
     its own index.html, as in the offline ZIP) moves straight into
@@ -649,11 +772,21 @@ def flatten_release(release, publication_dir: str, progress=None) -> None:
     files = walk_files(site)
     state_path = os.path.join(publication_dir, FLAT_STATE)
     previous = _flat_state(state_path)
+    # The release an earlier move was moving: still there when that move
+    # failed on its release.json (recover() keeps a release that has one).
+    moved = _flat_release(state_path)
+    if moved and moved != release.release_id:
+        shutil.rmtree(os.path.join(publication_dir, "releases", moved), ignore_errors=True)
     entry = "index.html"
-    for rel in sorted(files, key=lambda r: r == entry):  # the entry page last
+    # Old and new files listed before any is moved: after a move that failed
+    # part-way the next export still removes what this one wrote.
+    _write_flat_state(state_path, release.release_id, sorted(previous | set(files)))
+    # release.json first (the release, incomplete now, is removed by
+    # recover()), the entry page last.
+    for rel in sorted(files, key=lambda r: (r == entry, r != "release.json")):
         target = os.path.join(publication_dir, *rel.split("/"))
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        os.replace(os.path.join(site, *rel.split("/")), target)
+        _replace(os.path.join(site, *rel.split("/")), target)
     # Compared as the file system does (Windows, macOS: no case; Windows:
     # no trailing dots or spaces): never the file just written.
     written = {_fs_name(rel) for rel in files}
@@ -671,10 +804,7 @@ def flatten_release(release, publication_dir: str, progress=None) -> None:
             except OSError:
                 break
             folder = os.path.dirname(folder)
-    tmp = state_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump({"format": "qwebmap-local-files", "release": release.release_id, "files": files}, handle)
-    os.replace(tmp, state_path)
+    _write_flat_state(state_path, release.release_id, files)
     shutil.rmtree(site, ignore_errors=True)
     releases = os.path.join(publication_dir, "releases")
     try:

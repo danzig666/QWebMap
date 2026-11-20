@@ -531,11 +531,16 @@ export function newLabelState() {
 }
 
 // The screen as a world rectangle ([0, 1] Web Mercator, y down).
-function viewRect(map, maplibregl) {
+export function viewRect(map, maplibregl) {
   const bounds = map.getBounds();
   const a = maplibregl.MercatorCoordinate.fromLngLat(bounds.getSouthWest());
   const b = maplibregl.MercatorCoordinate.fromLngLat(bounds.getNorthEast());
-  return [Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y)];
+  // Dragged across the antimeridian, MapLibre keeps the centre unwrapped
+  // (x beyond [0, 1]: a world copy) while the tiles' features lie in the
+  // world [0, 1]: every polygon seemed off the screen. The view is moved to
+  // the world copy its centre is in (the labels written show in every copy).
+  const shift = Math.floor((a.x + b.x) / 2);
+  return [Math.min(a.x, b.x) - shift, Math.min(a.y, b.y), Math.max(a.x, b.x) - shift, Math.max(a.y, b.y)];
 }
 
 // options.state (newLabelState()): keep each label where it was while that
@@ -1770,18 +1775,21 @@ function localDirection(rings, point, radius) {
 
 // Polygon edges of rings, without the edges along their tile cut.
 function realEdges(rings) {
-  const on = (v, w) => Math.abs(v - w) <= 1e-12;
   const edges = [];
   for (const ring of rings) {
-    const cut = ring.cut;
     for (let i = 0, n = ring.length; i < n; i++) {
       const a = ring[i], b = ring[(i + 1) % n];
-      if (cut && ((on(a[0], b[0]) && (on(a[0], cut[0]) || on(a[0], cut[2])))
-          || (on(a[1], b[1]) && (on(a[1], cut[1]) || on(a[1], cut[3]))))) continue;
-      edges.push([a, b]);
+      if (!cutEdge(ring.cut, a, b)) edges.push([a, b]);
     }
   }
   return edges;
+}
+
+// An edge along the tile cut ``cut`` (a ring's cut box).
+function cutEdge(cut, a, b) {
+  const on = (v, w) => Math.abs(v - w) <= 1e-12;
+  return Boolean(cut && ((on(a[0], b[0]) && (on(a[0], cut[0]) || on(a[0], cut[2])))
+    || (on(a[1], b[1]) && (on(a[1], cut[1]) || on(a[1], cut[3])))));
 }
 
 function segmentDistance(x, y, [ax, ay], [bx, by]) {
@@ -1794,10 +1802,141 @@ function segmentDistance(x, y, [ax, ay], [bx, by]) {
   return Math.hypot(x - ax, y - ay);
 }
 
+// (Squared distances, without destructuring: the pole search runs this for
+// thousands of cells over every edge of a long river.)
 function signedRoom(rings, edges, x, y) {
   let min = Infinity;
-  for (const edge of edges) min = Math.min(min, segmentDistance(x, y, edge[0], edge[1]));
+  for (let i = 0, n = edges.length; i < n; i++) {
+    const a = edges[i][0], b = edges[i][1];
+    let ax = a[0], ay = a[1];
+    const dx = b[0] - ax, dy = b[1] - ay;
+    if (dx !== 0 || dy !== 0) {
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
+      ax += dx * t;
+      ay += dy * t;
+    }
+    const d = (x - ax) * (x - ax) + (y - ay) * (y - ay);
+    if (d < min) min = d;
+  }
+  min = Math.sqrt(min);
   return inside(rings, [x, y]) ? min : -min;
+}
+
+// signedRoom of rings (in the box x0..y1) from a bucket grid of their
+// edges: the pole search asks it for thousands of cells, and a long river
+// has thousands of edges. The nearest real edge is searched ring by ring of
+// buckets outwards; inside counts the crossings of a ray to the nearest side
+// of the grid, each edge in the bucket the ray crosses it. Edges longer than
+// a few buckets are checked for every point.
+function edgeGrid(rings, x0, y0, x1, y1) {
+  const edges = [];
+  for (const ring of rings) {
+    for (let i = 0, n = ring.length; i < n; i++) {
+      const a = ring[i], b = ring[(i + 1) % n];
+      edges.push([a, b, !cutEdge(ring.cut, a, b)]);
+    }
+  }
+  const side = Math.max(Math.sqrt((x1 - x0) * (y1 - y0) / edges.length), Math.max(x1 - x0, y1 - y0) / 1024);
+  const cols = Math.max(1, Math.ceil((x1 - x0) / side)), rows = Math.max(1, Math.ceil((y1 - y0) / side));
+  const buckets = new Map(), long = [];
+  const col = (x) => Math.floor((x - x0) / side), row = (y) => Math.floor((y - y0) / side);
+  const clampCol = (c) => Math.max(0, Math.min(cols - 1, c)), clampRow = (r) => Math.max(0, Math.min(rows - 1, r));
+  for (const edge of edges) {
+    const a = edge[0], b = edge[1];
+    const c0 = clampCol(col(Math.min(a[0], b[0]))), c1 = clampCol(col(Math.max(a[0], b[0])));
+    const r0 = clampRow(row(Math.min(a[1], b[1]))), r1 = clampRow(row(Math.max(a[1], b[1])));
+    if ((c1 - c0 + 1) * (r1 - r0 + 1) > 16) { long.push(edge); continue; }
+    for (let c = c0; c <= c1; c++) {
+      for (let r = r0; r <= r1; r++) {
+        const key = r * cols + c;
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(edge);
+      }
+    }
+  }
+  const distance2 = (x, y, list, min) => {
+    for (let i = 0, n = list.length; i < n; i++) {
+      if (!list[i][2]) continue;
+      const a = list[i][0], b = list[i][1];
+      let ax = a[0], ay = a[1];
+      const dx = b[0] - ax, dy = b[1] - ay;
+      if (dx !== 0 || dy !== 0) {
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
+        ax += dx * t;
+        ay += dy * t;
+      }
+      const d = (x - ax) * (x - ax) + (y - ay) * (y - ay);
+      if (d < min) min = d;
+    }
+    return min;
+  };
+  const nearest = (x, y) => {
+    let min = distance2(x, y, long, Infinity);
+    const bc = col(x), br = row(y);
+    const visit = (r, c) => {
+      if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+      const list = buckets.get(r * cols + c);
+      if (list) min = distance2(x, y, list, min);
+    };
+    // Buckets not searched yet before ring k lie at least (k - 1) * side away.
+    const last = Math.max(bc, cols - 1 - bc, br, rows - 1 - br);
+    for (let k = 0; k <= last; k++) {
+      const reach = Math.max(0, k - 1) * side;
+      if (min <= reach * reach) break;
+      for (let r = Math.max(0, br - k); r <= Math.min(rows - 1, br + k); r++) {
+        if (r === br - k || r === br + k) {
+          for (let c = Math.max(0, bc - k); c <= Math.min(cols - 1, bc + k); c++) visit(r, c);
+        } else {
+          visit(r, bc - k);
+          visit(r, bc + k);
+        }
+      }
+    }
+    return Math.sqrt(min);
+  };
+  // Even-odd crossings of the ray from (x, y) along +x / -x (horizontal) or
+  // +y / -y, of the edges in ``list``; with ``bucket``, only those crossed in it.
+  const crossings = (x, y, list, horizontal, sign, bucket) => {
+    let count = 0;
+    for (let i = 0, n = list.length; i < n; i++) {
+      const a = list[i][0], b = list[i][1];
+      if (horizontal) {
+        if ((a[1] > y) === (b[1] > y)) continue;
+        const at = (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0];
+        if (sign > 0 ? !(x < at) : !(at <= x)) continue;
+        // (at clamped to the edge: rounded just past its end, it fell in a
+        // bucket without the edge and the crossing was never counted.)
+        if (bucket !== undefined && clampCol(col(Math.min(Math.max(at, Math.min(a[0], b[0])), Math.max(a[0], b[0])))) !== bucket) continue;
+      } else {
+        if ((a[0] > x) === (b[0] > x)) continue;
+        const at = (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]) + a[1];
+        if (sign > 0 ? !(y < at) : !(at <= y)) continue;
+        if (bucket !== undefined && clampRow(row(Math.min(Math.max(at, Math.min(a[1], b[1])), Math.max(a[1], b[1])))) !== bucket) continue;
+      }
+      count++;
+    }
+    return count;
+  };
+  const inside = (x, y) => {
+    if (!(x >= x0 && x <= x1 && y >= y0 && y <= y1)) return false;
+    const bc = clampCol(col(x)), br = clampRow(row(y));
+    const ways = [[cols - bc, true, 1], [bc + 1, true, -1], [rows - br, false, 1], [br + 1, false, -1]];
+    const [, horizontal, sign] = ways.reduce((p, q) => (q[0] < p[0] ? q : p));
+    let count = crossings(x, y, long, horizontal, sign);
+    if (horizontal) {
+      for (let c = bc; c >= 0 && c < cols; c += sign) {
+        const list = buckets.get(br * cols + c);
+        if (list) count += crossings(x, y, list, true, sign, c);
+      }
+    } else {
+      for (let r = br; r >= 0 && r < rows; r += sign) {
+        const list = buckets.get(r * cols + bc);
+        if (list) count += crossings(x, y, list, false, sign, r);
+      }
+    }
+    return count % 2 === 1;
+  };
+  return (x, y) => (inside(x, y) ? nearest(x, y) : -nearest(x, y));
 }
 
 // The oriented bounding box pal lays its polygon candidates on (QGIS
@@ -1970,8 +2109,10 @@ export function roomiestPoint(rings, precision = 0, extra = null) {
     const room = roomAt(rings, fallback);
     return { point: fallback, room: extra ? Math.min(room, extra(fallback[0], fallback[1])) : room };
   }
+  const roomOf = edgeGrid(rings, minX, minY, maxX, maxY);
   const cell = (x, y, h) => {
-    const d = extra ? Math.min(signedRoom(rings, edges, x, y), extra(x, y)) : signedRoom(rings, edges, x, y);
+    const room = roomOf(x, y);
+    const d = extra ? Math.min(room, extra(x, y)) : room;
     return { x, y, h, d, max: d + h * Math.SQRT2 };
   };
   const heap = [];
@@ -2000,6 +2141,9 @@ export function roomiestPoint(rings, precision = 0, extra = null) {
     }
     return top;
   };
+  // Cells of the short side (no cap along the long one: bigger cells ran
+  // the 600-visit budget out before reaching this resolution, and thin
+  // strips got less room; edgeGrid keeps thousands of cells cheap).
   const half = size / 2;
   for (let x = minX; x < maxX; x += size) {
     for (let y = minY; y < maxY; y += size) push(cell(x + half, y + half, half));
@@ -2898,9 +3042,54 @@ export function evaluate(expression, zoom, properties = {}) {
       }
       return text;
     }
-    default: return undefined;
+    // The export clamps map-unit sizes between their mm limits (max / min)
+    // and guards data-defined divisors (case ==): without them such a label
+    // was sized as 16 px text.
+    case "max": return Math.max(...args.map((value) => Number(ev(value))));
+    case "min": return Math.min(...args.map((value) => Number(ev(value))));
+    case "abs": return Math.abs(Number(ev(args[0])));
+    case "round": return Math.round(Number(ev(args[0])));
+    case "floor": return Math.floor(Number(ev(args[0])));
+    case "ceil": return Math.ceil(Number(ev(args[0])));
+    case "sqrt": return Math.sqrt(Number(ev(args[0])));
+    case "^": return Number(ev(args[0])) ** Number(ev(args[1]));
+    case "%": return Number(ev(args[0])) % Number(ev(args[1]));
+    case "case": {
+      for (let i = 0; i + 1 < args.length; i += 2) if (ev(args[i])) return ev(args[i + 1]);
+      return ev(args[args.length - 1]);
+    }
+    case "match": {
+      const input = ev(args[0]);
+      for (let i = 1; i + 1 < args.length - 1; i += 2) {
+        const labels = Array.isArray(args[i]) ? args[i] : [args[i]];
+        if (labels.includes(input)) return ev(args[i + 1]);
+      }
+      return ev(args[args.length - 1]);
+    }
+    case "==": case "!=": {
+      const same = (ev(args[0]) ?? null) === (ev(args[1]) ?? null);
+      return op === "==" ? same : !same;
+    }
+    case "<": return ev(args[0]) < ev(args[1]);
+    case "<=": return ev(args[0]) <= ev(args[1]);
+    case ">": return ev(args[0]) > ev(args[1]);
+    case ">=": return ev(args[0]) >= ev(args[1]);
+    case "!": return !ev(args[0]);
+    case "all": return args.every((value) => ev(value));
+    case "any": return args.some((value) => ev(value));
+    case "has": return Object.prototype.hasOwnProperty.call(properties, args[0]);  // own keys (not "constructor")
+    case "to-boolean": return Boolean(ev(args[0]));
+    case "to-string": return String(ev(args[0]) ?? "");
+    case "concat": return args.map((value) => String(ev(value) ?? "")).join("");
+    default:
+      if (!unknownOperators.has(op)) {
+        unknownOperators.add(op);
+        console.warn(`visible labels: style operator "${op}" not evaluated (label boxes estimated)`);
+      }
+      return undefined;
   }
 }
+const unknownOperators = new Set();
 
 // The style layer of a group drawn at this zoom: the label itself, not its
 // shadow copy drawn before it (no background frame: framed labels were
@@ -3274,7 +3463,8 @@ function inside(rings, [x, y]) {  // even-odd over every ring
   let result = false;
   for (const ring of rings) {
     for (let i = 0, n = ring.length, j = n - 1; i < n; j = i++) {
-      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      // Indexed, not destructured: called per cell of the pole search.
+      const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
       if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) result = !result;
     }
   }

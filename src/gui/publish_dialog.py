@@ -25,9 +25,9 @@ import traceback
 from urllib.parse import urlparse
 
 from qgis.core import (Qgis, QgsApplication, QgsCoordinateReferenceSystem, QgsCoordinateTransform,
-                       QgsCsException, QgsGeometry, QgsIconUtils, QgsLayerTreeGroup, QgsLayerTreeLayer,
-                       QgsMessageLog, QgsProcessingFeedback, QgsProject, QgsRasterLayer, QgsRectangle,
-                       QgsSettings, QgsTask, QgsVectorLayer, QgsWkbTypes)
+                       QgsCsException, QgsExpression, QgsGeometry, QgsIconUtils, QgsLayerTreeGroup,
+                       QgsLayerTreeLayer, QgsMessageLog, QgsProcessingFeedback, QgsProject, QgsRasterLayer,
+                       QgsRectangle, QgsSettings, QgsTask, QgsVectorLayer, QgsWkbTypes)
 from qgis.PyQt.QtCore import QCoreApplication, Qt, QTimer, QUrl, pyqtSignal
 from qgis.PyQt.QtGui import QDesktopServices, QGuiApplication
 from qgis.PyQt.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
@@ -232,6 +232,7 @@ class PublishDialog(QDialog):
         root = self.project.layerTreeRoot()
         for signal in (root.addedChildren, root.removedChildren, root.nameChanged):
             signal.connect(self._layers_changed)
+        self.simple.settings_loaded(self.new_settings)
         self.set_simple_view(QgsSettings().value(self.VIEW_KEY, "") == "simple", remember=False)
 
     def _layers_changed(self, *_):
@@ -780,12 +781,22 @@ class PublishDialog(QDialog):
             if not dialog.exec():
                 return False
             chosen = [float(v or 0) for v in dialog.values()]
-            for item, row in zip(items, rows):
-                self._set_item_scales(item, *[row[k] if chosen[k] == shown[k] else chosen[k] for k in range(3)])
-            return True
-        for item in items:
-            self._set_item_scales(item, *values)
-        return True
+            merged = [[row[k] if chosen[k] == shown[k] else chosen[k] for k in range(3)] for row in rows]
+        else:
+            merged = [list(values) for _item in items]
+        # A new limit with a row's own other limit can leave no scale at all
+        # (the dialog checks only the limits it shows): such rows stay.
+        conflicts = []
+        for item, row in zip(items, merged):
+            if row[0] and row[1] and row[1] >= row[0]:
+                conflicts.append(item.text(0))
+            else:
+                self._set_item_scales(item, *row)
+        if conflicts:
+            QMessageBox.warning(self, tr("Visible scales"), tr(
+                "Not changed: with this limit, these layers would be shown at no scale (the zoomed-out "
+                "limit must be a smaller scale than the zoomed-in limit):\n{}").format("\n".join(conflicts[:12])))
+        return len(conflicts) < len(items)
 
     def edit_zoomed_out(self, values=None) -> bool:
         """How the selected vector layers are drawn zoomed out (``values``:
@@ -1393,28 +1404,9 @@ class PublishDialog(QDialog):
 
     def _layer_extent_3857(self, layer):
         """The layer's extent in Web Mercator, cut to the area a web map shows
-        (latitudes to ±85.05°: a world layer has no Mercator box beyond)."""
-        import math  # pylint: disable=import-outside-toplevel
-        mercator, wgs84 = QgsCoordinateReferenceSystem("EPSG:3857"), QgsCoordinateReferenceSystem("EPSG:4326")
-        half = 20037508.342789244
-        try:
-            box = QgsCoordinateTransform(layer.crs(), mercator, self.project).transformBoundingBox(layer.extent())
-            values = (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())
-            fits = all(math.isfinite(v) and abs(v) <= half * 1.0001 for v in values)
-        except QgsCsException:
-            fits = False
-        try:
-            if not fits:  # through degrees, cut to the latitudes a web map shows
-                box = QgsCoordinateTransform(layer.crs(), wgs84, self.project).transformBoundingBox(
-                    layer.extent()).intersect(QgsRectangle(-180.0, -85.0511, 180.0, 85.0511))
-                if box.isEmpty():
-                    return self.profile.view.extent
-                box = QgsCoordinateTransform(wgs84, mercator, self.project).transformBoundingBox(box)
-        except QgsCsException:
-            return self.profile.view.extent
-        if box.isEmpty():
-            return self.profile.view.extent
-        return [box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum()]
+        (the same as the Processing command's: headless.layer_extent_3857)."""
+        from ..publishing.headless import layer_extent_3857  # pylint: disable=import-outside-toplevel
+        return layer_extent_3857(self.project, layer) or self.profile.view.extent
 
     def web_zoom_scales(self) -> list:
         """The QGIS scale denominators of web zooms 0-22 for this project
@@ -1969,9 +1961,11 @@ class PublishDialog(QDialog):
         if isinstance(choice, int):
             zooms.add(choice)  # a saved choice outside the range stays
         for zoom in sorted(zooms, reverse=True):
-            if zoom in (best, map_zoom):
-                continue  # the two entries above
+            if zoom in (best, map_zoom) and zoom != choice:
+                continue  # the two entries above (a saved fixed zoom keeps its own: it stays fixed)
             label = tr("{} per pixel").format(_metres(ground_resolution(zoom, lat)))
+            if zoom in (best, map_zoom):  # same size as an entry above: say which one is fixed
+                label = tr("{} (fixed, zoom {})").format(label, zoom)
             self.r_detail.addItem(label + (finer if best is not None and zoom > best else ""), zoom)
         index = self.r_detail.findData(choice)
         self.r_detail.setCurrentIndex(index if index >= 0 else self.r_detail.findData("map"))
@@ -2730,7 +2724,7 @@ class PublishDialog(QDialog):
         self.o_reuse = QCheckBox(tr("Reuse unchanged layers from earlier exports (faster)"))
         self.o_reuse.setToolTip(tr("Layers whose data files, style and export settings did not change "
                                    "since an earlier export in this output folder are not processed "
-                                   "again. Database and web layers are always exported."))
+                                   "again. Database, web and memory layers are always exported."))
         clear_cache = QPushButton(tr("Clear cache…"))
         clear_cache.clicked.connect(self.clear_cache)
         cache_row.addWidget(self.o_reuse, 1)
@@ -3085,6 +3079,9 @@ class PublishDialog(QDialog):
             self.d_auth.setConfigId(dest.credential_ref)
         self._destination_kind_changed()
         self._update_address()
+        # Zooms from a settings file or a preset: showing the simple view
+        # never replaces them (__init__ then says what the opened settings are).
+        self.simple.settings_loaded(False, automatic=False)
         if self.is_simple_view():
             self.simple.refresh()
 
@@ -3452,7 +3449,14 @@ class PublishDialog(QDialog):
                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             keys = None
         try:
-            with open(path, "w", encoding="utf-8") as handle:
+            # With the keys: readable by the owner only (POSIX; an existing
+            # file too, changed before anything is written into it).
+            flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0)  # (Windows: no second newline translation)
+            handle = open(os.open(path, flags, 0o600 if keys else 0o666), "w", encoding="utf-8")
+            with handle:
+                if keys and hasattr(os, "fchmod"):
+                    os.fchmod(handle.fileno(), 0o600)
+                handle.truncate()
                 handle.write(store.export_document(profile, self.project, keys))
         except OSError as error:
             QMessageBox.warning(self, tr("Export settings"), str(error))
@@ -3571,6 +3575,9 @@ class PublishDialog(QDialog):
                 self.progress.setVisible(busy)
         self.btn_settings_file.setEnabled(not busy)
         self.btn_preset.setEnabled(not busy)
+        # (Switching views shows the settings again, a preview render with it.)
+        self.btn_simple.setEnabled(not busy)
+        self.btn_advanced.setEnabled(not busy)
         self.btn_cancel.setEnabled(busy)
 
     def _block_qgis(self, block: bool):
@@ -3636,12 +3643,38 @@ class PublishDialog(QDialog):
             self.feedback = None
         self.local_result = result
         self.local_profile_json = store.dumps_profile(self.profile)
+        self._watch_export()
         self.status.setText(tr("Local web map ready: {} ({} files, {:.1f} MB).").format(
             result.entry_path, len(result.release.files), result.release.total_bytes / 1e6))
+        if result.mbtiles_copy:
+            self.log(tr("MBTiles: {}").format(result.mbtiles_copy))
+        if result.zip_path:
+            self.log(tr("Offline ZIP: {}").format(result.zip_path))
         for warning in result.warnings:
             self.log(f"⚠ {warning}")
         self._update_local_buttons()
         return True
+
+    def _watch_export(self):
+        """Publish reuses the local export only while the project's layers
+        stay as exported: a data, style, source or layer change since (the
+        window is not modal) makes it out of date."""
+        watched = getattr(self, "_watched_layers", None)
+        if watched is None:
+            watched = self._watched_layers = set()
+            for signal in (self.project.layersAdded, self.project.layersRemoved, self.project.crsChanged):
+                signal.connect(self._export_outdated)
+        for layer_id, layer in self.project.mapLayers().items():
+            if layer_id in watched:
+                continue
+            watched.add(layer_id)
+            for name in ("dataChanged", "styleChanged", "rendererChanged", "repaintRequested", "dataSourceChanged"):
+                signal = getattr(layer, name, None)
+                if signal is not None:
+                    signal.connect(self._export_outdated)
+
+    def _export_outdated(self, *_):
+        self.local_profile_json = None  # (the export itself stays for Preview / Open folder)
 
     def _fail(self, code, message, detail=""):
         self.status.setText(f"{code}: {message}")
@@ -3657,7 +3690,8 @@ class PublishDialog(QDialog):
         slug = self.e_slug.text().strip() or slugify(self.e_title.text().strip())
         if not base or not slug:
             return ""
-        folder = os.path.join(os.path.abspath(os.path.expanduser(base)), slug)
+        from ..publishing.controller import output_folder  # pylint: disable=import-outside-toplevel
+        folder = os.path.join(output_folder(base), slug)
         return folder if os.path.isfile(os.path.join(folder, "index.html")) else ""
 
     def _local_map_dir(self) -> str:
@@ -3982,6 +4016,11 @@ class PublishDialog(QDialog):
         DeploymentHistoryDialog(self, provider, self.profile, releases,
                                 pointer.get("releaseId") if pointer else None).exec()
 
+    @staticmethod
+    def _inverted_scales_note():
+        return tr("Visible scales: the zoomed-out limit is not a smaller scale than the zoomed-in "
+                  "limit, so the layer is shown at no zoom (Layers tab: Visible scales).")
+
     def refresh_review(self):
         profile = self.collect()
         dest = profile.destination
@@ -3996,10 +4035,15 @@ class PublishDialog(QDialog):
             layer = self.project.mapLayer(config.layer_id)
             if layer is None:
                 continue
+            # Saved inverted by an older version (not a validate() error: the
+            # settings would not load): the layer shows at no zoom.
+            inverted = bool(config.min_scale and config.max_scale and config.max_scale >= config.min_scale)
             if isinstance(layer, QgsRasterLayer):
                 lines.append(f"■ {config.title or layer.name()} — " + tr(
                     "raster layer: its image as QGIS draws it, inside the extent ({} format)").format(
                     config.raster_format.upper()))
+                if inverted:
+                    lines.append("   ⚠ " + self._inverted_scales_note())
                 if (layer.providerType() or "").lower() in ("wms", "xyz", "arcgismapserver", "wcs"):
                     lines.append("   ⚠ " + tr("Online map service: check that its licence allows republishing."))
                 if not config.toggleable:
@@ -4008,6 +4052,8 @@ class PublishDialog(QDialog):
             lines.append(f"■ {config.title or layer.name()} — {layer.featureCount()} "
                          + tr("features in the layer (published: those inside the extent drawn by "
                               "the exported rules)"))
+            if inverted:
+                lines.append("   ⚠ " + self._inverted_scales_note())
             if not config.toggleable:
                 lines.append("   " + tr("Always shown (visitors cannot switch it off)"))
             lines.append("   " + tr("Geometry and generated label/style values: public"))
@@ -4015,6 +4061,15 @@ class PublishDialog(QDialog):
                 lines.append("   " + tr("Popup fields: ") + ", ".join(p.field for p in config.popup_fields))
             if config.search_fields:
                 lines.append("   " + tr("Searchable fields: ") + ", ".join(config.search_fields))
+            if config.display_expression and (config.popup_fields or config.deep_links):
+                # Each feature's label goes into the feature lookup files: the
+                # fields the expression reads are public too.
+                names = set(layer.fields().names())
+                used = sorted(c for c in QgsExpression(config.display_expression).referencedColumns()
+                              if c in names)
+                lines.append("   " + tr("Feature label of every feature (display expression {}), public; "
+                                        "fields used: ").format(config.display_expression)
+                             + (", ".join(used) or tr("none")))
             if config.filter_fields:
                 lines.append("   " + tr("Filter fields (also in the tiles): ")
                              + ", ".join(f.field for f in config.filter_fields))
@@ -4143,6 +4198,11 @@ class PublishDialog(QDialog):
             return
         # Reuse a valid local export of identical settings (retry/new destination);
         # compared before the approval is recorded: approving changes nothing exported.
+        # The map view now (current map view mode): a pan since the export is a new extent.
+        try:
+            self._current_extent_3857()
+        except Exception:  # noqa: BLE001 - checked again by the export
+            pass
         reuse = self.local_result is not None and self.local_profile_json == store.dumps_profile(profile)
         if needs_review(profile, extra):
             profile.approval.fingerprint = disclosure_fingerprint(profile, extra)
@@ -4174,6 +4234,15 @@ class PublishDialog(QDialog):
         self._busy(False)
         if task is None:
             return
+        try:
+            self._report_published(task)
+        finally:
+            # Closed while uploading, or its project closed meanwhile (its
+            # settings are not this project's): the plugin lets go of it now.
+            if not self.isVisible() or self._project_gone:
+                self.done(QDialog.DialogCode.Rejected)
+
+    def _report_published(self, task):
         if task.error:
             self._fail("ERROR", tr("Publishing failed."), task.error)
             return
@@ -4200,8 +4269,10 @@ class PublishDialog(QDialog):
                 self.log(f"⚠ {warning}")
         else:
             self._fail(result.code or result.state.value, result.message or result.state.value)
-        if not self.isVisible():  # closed while uploading: the plugin lets go of it now
-            self.done(QDialog.DialogCode.Rejected)
+        if self._project_gone and self.iface is not None and result.state == ReleaseState.PUBLISHED:
+            # Said outside the window, which closes (see _published).
+            self.iface.messageBar().pushMessage(tr("Web map"), self.status.text(),
+                                                Qgis.MessageLevel.Success, 0)
 
     # Size and position of the window, kept between QGIS sessions (QGIS settings).
     GEOMETRY_KEY = "QGIS2VectorTilesFork/publishDialog/geometry"  # pre-rename key, kept

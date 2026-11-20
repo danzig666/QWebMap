@@ -298,13 +298,22 @@ def rollback(provider, profile: PublicationProfile, release_id: str,
 
 def retention_plan(provider, keep: int, protect: Iterable[str] = ()) -> List[str]:
     """Releases that retention would delete (oldest first): never the
-    current one or ``protect``-ed ids. Nothing is deleted here."""
+    current one or ``protect``-ed ids. Nothing is deleted here.
+
+    ``keep`` counts complete releases (with release.json) only: an
+    interrupted upload cannot be rolled back to and must not push out one
+    that can. Incomplete releases older than the newest complete one are
+    abandoned and go too; newer ones may still be uploading."""
     pointer, _ = provider.read_pointer()
     protected = set(protect) | ({pointer["releaseId"]} if pointer else set())
     releases = provider.list_releases()
-    removable = [r for r in releases if r not in protected]
-    excess = max(0, len(releases) - max(1, keep))
-    return removable[:excess]
+    complete = [r for r in releases if provider.head(f"releases/{r}/release.json") is not None]
+    excess = max(0, len(complete) - max(1, keep))
+    old = [r for r in complete if r not in protected][:excess]
+    newest = complete[-1] if complete else None
+    abandoned = [r for r in releases if r not in complete and r not in protected
+                 and newest is not None and r < newest]
+    return sorted(old + abandoned)
 
 
 def apply_retention(provider, release_ids: Iterable[str]) -> int:

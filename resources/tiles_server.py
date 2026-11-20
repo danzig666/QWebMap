@@ -22,7 +22,7 @@ import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import quote, unquote, urlsplit
 
 
 # ----------------------------------------------------------------------
@@ -32,6 +32,8 @@ HERE        = Path(__file__).resolve().parent
 ROOT_DIR    = HERE.parent
 STYLE_DIR   = ROOT_DIR / "style"
 VIEWER_DIR  = HERE / "viewer"
+# Names of this computer the viewer may be opened with (no other site).
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 # Pre-built mime map — avoids per-request mimetypes.guess_type() overhead
@@ -62,13 +64,24 @@ def xyz_y_to_tms(zoom: int, y: int) -> int:
     return (1 << zoom) - 1 - y
 
 
+def _sqlite_uri(path: Path) -> str:
+    """Read-only SQLite URI of *path*: '#', '?' and '%' of a folder name
+    escaped (SQLite would end or decode the path there)."""
+    full = path.resolve().as_posix()
+    if not full.startswith("/"):
+        full = "/" + full    # C:/... -> file:///C:/...
+    # Always an empty authority: a mapped drive resolves to UNC
+    # (//server/share/...), and 'file://server/...' is an invalid authority.
+    return "file://" + quote(full, safe="/:") + "?mode=ro&immutable=1"
+
+
 def load_mbtiles(directory: Path) -> dict:
     """Open every .mbtiles in *directory* read-only with aggressive SQLite tuning."""
     layers = {}
     for f in directory.glob("*.mbtiles"):
         try:
             conn = sqlite3.connect(
-                f"file:{f}?mode=ro&immutable=1",
+                _sqlite_uri(f),
                 uri=True,
                 check_same_thread=False,
                 isolation_level=None,
@@ -160,6 +173,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- routing ----
     def do_GET(self):
+        # Only the viewer's own pages: another site open in the browser (or a
+        # DNS-rebound name) must not read the exported data.
+        if not self._local_request():
+            return self._send_status(403)
         path = unquote(self.path).lstrip("/").split("?", 1)[0]
 
         # Root / bare /viewer  → viewer home page
@@ -192,6 +209,9 @@ class Handler(BaseHTTPRequestHandler):
             y = int(parts[4].split(".", 1)[0])
         except ValueError:
             return self._send_status(400)
+        # Before any arithmetic: a huge zoom is a huge integer (1 << z).
+        if not (0 <= z <= 30 and 0 <= x < (1 << z) and 0 <= y < (1 << z)):
+            return self._send_status(400)
 
         layer = self.server.layers.get(parts[1])
         if layer is None:
@@ -217,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control",  "no-cache")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors()
         self.end_headers()
         self.wfile.write(data)
 
@@ -234,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("ETag", etag)
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Content-Length", "0")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._cors()
             self.end_headers()
             return
 
@@ -247,7 +267,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors()
         self.end_headers()
         self.wfile.write(data)
 
@@ -255,8 +275,33 @@ class Handler(BaseHTTPRequestHandler):
     def _send_status(self, code: int):
         self.send_response(code)
         self.send_header("Content-Length", "0")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors()
         self.end_headers()
+
+    def _own_origin(self, value: str) -> bool:
+        """``value`` (a Host or an Origin) names this server on loopback."""
+        try:
+            url = urlsplit(value if "//" in value else "//" + value)
+            host, port = url.hostname, url.port
+        except ValueError:
+            return False
+        if port is None:
+            # No port means the scheme's default (80/443), never this server.
+            port = 443 if url.scheme == "https" else 80
+        return host in LOOPBACK_HOSTS and port == self.server.server_address[1]
+
+    def _local_request(self) -> bool:
+        host, origin = self.headers.get("Host"), self.headers.get("Origin")
+        return (host is None or self._own_origin(host)) and \
+            (origin is None or self._own_origin(origin))
+
+    def _cors(self):
+        # localhost and 127.0.0.1 are two origins (the style's absolute URLs
+        # name localhost): allowed to each other, no other site.
+        origin = self.headers.get("Origin")
+        if origin and self._own_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
 
     def log_message(self, fmt, *args):   # noqa: A002
         # Silence per-request stderr noise

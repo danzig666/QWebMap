@@ -85,6 +85,16 @@ def register_plugin_package():
     return module
 
 
+def missing_tool(reason):
+    """Skip a test whose outside tool (Node, MapLibre's build, moto, the
+    go-pmtiles CLI) is not installed; in CI (Q2VT_REQUIRE_TOOLS=1) fail
+    instead, so a parity test cannot pass by never running."""
+    import pytest  # pylint: disable=import-outside-toplevel
+    if os.environ.get("Q2VT_REQUIRE_TOOLS") == "1":
+        pytest.fail(f"{reason} (Q2VT_REQUIRE_TOOLS=1: required here)", pytrace=False)
+    pytest.skip(reason)
+
+
 def is_qt6() -> bool:
     """Whether QGIS runs on Qt 6 (QGIS 4)."""
     try:

@@ -57,6 +57,32 @@ def test_redaction_removes_paths_and_detail():
     assert redact_paths("C:\\Users\\bob\\x\\y.svg").endswith("y.svg")
 
 
+@pytest.mark.parametrize("path", [
+    "C:\\Users\\Jane Doe\\OneDrive - Org\\My Maps\\parcels.gpkg",
+    "/home/Jane Doe/My Projects/secret client/parcels.gpkg",
+    "\\\\server\\Jane Doe share\\parcels.gpkg",
+    "C:/Users/Jane Doe/parcels.gpkg",
+])
+def test_redaction_of_paths_with_spaces_keeps_only_the_basename(path):
+    """Paths were split at spaces (the user's name stayed in clear), and a
+    Windows path redacted on Linux kept all its folders."""
+    redacted = redact_paths(f"Could not read {path} here; '{path}' again")
+    assert redacted == "Could not read <path>/parcels.gpkg here; '<path>/parcels.gpkg' again"
+
+
+def test_redaction_leaves_ratios_and_separate_paths():
+    assert redact_paths("1/2 of km/h; a / b / c") == "1/2 of km/h; a / b / c"
+    assert redact_paths("uses /usr/share/x.ttf and C:\\Fonts\\b c\\y.ttf.") == \
+        "uses <path>/x.ttf and <path>/y.ttf."
+    # A path no longer runs on to the last separator of the line.
+    assert redact_paths("uses /usr/share/x.ttf and /opt/y.ttf here") == \
+        "uses <path>/x.ttf and <path>/y.ttf here"
+    assert redact_paths("Could not load /home/u/a.svg (expected w/h ratio)") == \
+        "Could not load <path>/a.svg (expected w/h ratio)"
+    assert redact_paths("/home/u/a.svg at 3 km/h, 3 /4") == "<path>/a.svg at 3 km/h, 3 /4"
+    assert redact_paths("C:\\Program Files (x86)\\QGIS 3.44\\svg\\a.svg") == "<path>/a.svg"
+
+
 def test_html_report_escapes_user_text():
     c = DiagnosticCollector()
     c.add("Q2VT_DDP_NO_EMITTER", "<script>alert(1)</script>", severity=Severity.WARNING)

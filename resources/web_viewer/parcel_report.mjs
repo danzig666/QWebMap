@@ -155,12 +155,15 @@ export class ParcelReport {
     block.dataset.zone = zoneKey(code);
     block.append(el("summary", "", t("parcel.fullText", { code: zoneKey(code) })));
     let loading = null;
+    let failed = null;  // the last failure's note, gone on the next try
     // Loads the text into the block once (on opening it, and before a print).
     const load = () => {
       loading ??= fill().catch(() => { loading = null; });
       return loading;
     };
     const fill = async () => {
+      if (failed) failed.remove();
+      failed = null;
       const wait = el("p", "q2vt-muted", t("parcel.textLoading"));
       block.append(wait);
       try {
@@ -182,7 +185,8 @@ export class ParcelReport {
         }));
         wait.replaceWith(bigger, text);
       } catch (error) {
-        wait.replaceWith(el("p", "q2vt-muted", t("parcel.textMissing")));
+        failed = el("p", "q2vt-muted", t("parcel.textMissing"));
+        wait.replaceWith(failed);
         throw error;  // tried again on the next opening
       }
     };

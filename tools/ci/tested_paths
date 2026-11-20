@@ -1,0 +1,18 @@
+# What the tests cover (one git pathspec per line): a change here makes the
+# nightly run (.github/workflows/tests.yml), and the release workflow wants a
+# successful test run of exactly these (.github/workflows/release.yml).
+# Everything in the plugin zip (tools/build_release.py CONTENT) and every
+# workflow the tests run in must be listed (tests/unit/test_ci_workflows.py).
+__init__.py
+metadata.txt
+LICENSE
+icon.png
+icon.svg
+resources
+src
+schemas
+tests
+tools
+pytest.ini
+.github/workflows/tests.yml
+.github/workflows/qt6.yml

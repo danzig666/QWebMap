@@ -71,6 +71,18 @@ def test_scale_thresholds_are_the_scales_where_a_comparison_switches():
     assert scale_thresholds('"map_scale" > 3') == []
 
 
+def test_scale_thresholds_of_a_field_compared_with_the_scale_are_every_scale():
+    """The digits of an unquoted field (level_1) or a signed operand ("rank"
+    -5) were read as a threshold: the rule was cut at a wrong scale and its
+    features never drawn."""
+    from fidelity.qgis_expr import scale_thresholds
+    for text in ("level_1 <= @zoom_level", "x2 < @map_scale", '"rank" -5 < @zoom_level',
+                 '"rank"+2 >= @zoom_level', "(\"a\") 3 < @map_scale", "f(1) 2 < @map_scale"):
+        assert scale_thresholds(text) is None, text
+    assert scale_thresholds('"v" = 1 AND 3000 < @map_scale') == [3000.0]
+    assert scale_thresholds('"v" = 1 or -5 < @zoom_level') is not None
+
+
 def test_in_screen_units_scales_and_mirrors_about_the_centroid():
     from fidelity.qgis_expr import in_screen_units
     out = in_screen_units("buffer($geometry, 5)", 2.0)

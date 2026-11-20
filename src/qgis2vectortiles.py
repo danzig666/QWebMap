@@ -22,6 +22,7 @@ import json
 import queue
 import threading
 import traceback
+import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from os import makedirs, listdir
@@ -60,7 +61,7 @@ from .core.fidelity import tile_budget
 from .core.fidelity.zoom import fit_zoom
 from .core.rules_flattener import RulesFlattener
 from .core.rules_exporter import RulesExporter
-from .core.tiles_generator import GDALTilesGenerator
+from .core.tiles_generator import GDALTilesGenerator, TilesGenerationCancelled
 from .core import export_cache
 from .core.tiles_styler import TilesStyler
 from .core.maplibre_converter import QgisMapLibreStyleExporter, point_symbols_block_labels
@@ -70,7 +71,7 @@ from .core.fidelity.bindings import bindings_report
 from .core.fidelity.diagnostics import (
     DiagnosticCollector, StrictModeError, render_html_report)
 from .core.fidelity.model import ExportProfile, FidelityMode, OverzoomPolicy, ZoomInterval
-from .core.fidelity.units import LengthConverter, MapUnitContext
+from .core.fidelity.units import LengthConverter, MapUnitContext, is_web_mercator
 from .core.fidelity.validation import (
     inspect_mbtiles, tile_layer_fields, validate_archive, validate_glyphs, validate_style)
 
@@ -157,6 +158,11 @@ class _Conversion:
     export_time: float
     has_features: bool
     job: Optional[BackgroundTiles] = None
+
+
+# {utils dir: weak reference to its exporter}: the folders of exports still
+# alive are not swept by the next export's _get_utils_dir.
+_LIVE_UTILS_DIRS: Dict[str, "weakref.ref"] = {}
 
 
 class QGIS2VectorTiles:
@@ -367,6 +373,11 @@ class QGIS2VectorTiles:
             self._log(f". Processing failed: {str(e)}")
             self._clear_project()
             return None
+        except TilesGenerationCancelled:
+            # Cancel pressed while the tiles were cut: a cancel, not a crash.
+            self._log(". Cancelled.")
+            self._clear_project()
+            return None
         except BaseException:
             crash_log.note("Export failed:\n" + traceback.format_exc())
             raise
@@ -389,6 +400,8 @@ class QGIS2VectorTiles:
             archive = self._validate_tiles(temp_dir, style, exporter.sprite_names)
         else:
             self.diagnostics.add("Q2VT_EXPORT_EMPTY")
+        # Strict mode fails on the tiles' errors before any package is written.
+        self._enforce_strict(temp_dir)
         if archive is not None and self.static_package:
             self._write_static_package(temp_dir, style, exporter.source_name)
         if archive is not None and self.archive_format in ("pmtiles", "both"):
@@ -431,6 +444,11 @@ class QGIS2VectorTiles:
             self._clear_project()
             self.output_path = None
             return None
+        except TilesGenerationCancelled:
+            self._log(". Cancelled.")
+            self._clear_project()
+            self.output_path = None
+            return None
         except BaseException:
             crash_log.note("Export failed:\n" + traceback.format_exc())
             raise
@@ -468,7 +486,7 @@ class QGIS2VectorTiles:
 
     def _length_converter(self) -> LengthConverter:
         crs = QgsProject.instance().crs()
-        is_mercator = crs.authid() in ("EPSG:3857", "EPSG:900913")
+        is_mercator = is_web_mercator(crs)
         units = "degrees" if crs.isGeographic() else getattr(crs.mapUnits(), "name", "meters")
         context = MapUnitContext.for_project(is_mercator, str(units), self.profile.reference_latitude)
         if not context.exact:
@@ -487,10 +505,10 @@ class QGIS2VectorTiles:
         self.diagnostics.add("Q2VT_STRICT_FAILED",
                              f"{len(violations)} component(s) cannot be reproduced exactly.")
         self._write_report(temp_dir, {}, None, [])
-        for entry in ("tiles.mbtiles", "style", "utils"):
+        for entry in ("tiles.mbtiles", "tiles.pmtiles", "style", "utils", "web"):
             path = join(temp_dir, entry)
             if exists(path):
-                if entry.endswith(".mbtiles"):
+                if "." in entry:  # the archives
                     from os import remove  # pylint: disable=import-outside-toplevel
                     remove(path)
                 else:
@@ -595,15 +613,20 @@ class QGIS2VectorTiles:
         folder holds other tools' outputs, such as temporary layers that are
         still open in the project.
         """
+        live = {path for path, exporter in list(_LIVE_UTILS_DIRS.items()) if exporter() is not None}
         for entry in listdir(QgsProcessingUtils.tempFolder()):
             if not entry.startswith("q2styledtiles_"):
                 continue
+            if join(QgsProcessingUtils.tempFolder(), entry) in live:
+                continue  # another export still running (its tiles read it)
             try:
                 rmtree(join(QgsProcessingUtils.tempFolder(), entry))
             except OSError:
                 continue
+            _LIVE_UTILS_DIRS.pop(join(QgsProcessingUtils.tempFolder(), entry), None)
         utils_dir = join(QgsProcessingUtils.tempFolder(), f"q2styledtiles_{uuid4().hex}")
         makedirs(utils_dir, exist_ok=True)
+        _LIVE_UTILS_DIRS[utils_dir] = weakref.ref(self)
         return utils_dir
 
     def _create_temp_directory(self) -> str:

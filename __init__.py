@@ -114,9 +114,13 @@ class QGIS2VectorTiles:
     def show_publish_dialog(self):
         """Open (or raise) the Publish Web Map window."""
         from .src.gui.publish_dialog import PublishDialog  # pylint: disable=import-outside-toplevel
+        if self.dialog is not None and getattr(self.dialog, "_project_gone", False):
+            # Kept for an upload of a project closed since: a new window for
+            # this project (the old one closes itself when its upload ends).
+            self.dialog = None
         if self.dialog is None:
-            self.dialog = PublishDialog(self.iface)
-            self.dialog.finished.connect(self._dialog_closed)
+            dialog = self.dialog = PublishDialog(self.iface)
+            dialog.finished.connect(lambda *_, d=dialog: self._dialog_closed(d))
             first = True
         else:
             first = False
@@ -126,12 +130,14 @@ class QGIS2VectorTiles:
         if first:
             self.dialog.ask_first_view()  # (once per user, over the window: simple or advanced view)
 
-    def _dialog_closed(self):
+    def _dialog_closed(self, dialog=None):
         # Kept while an upload still reports to it (opened again, it shows
         # the upload; it closes itself again when the upload ends).
-        if self.dialog is None or getattr(self.dialog, "task", None) is not None:
+        dialog = dialog or self.dialog
+        if dialog is None or getattr(dialog, "task", None) is not None:
             return
-        dialog, self.dialog = self.dialog, None
+        if self.dialog is dialog:
+            self.dialog = None
         dialog.deleteLater()  # with its widgets: their links to the project end
 
     def unload(self):
@@ -150,8 +156,13 @@ class QGIS2VectorTiles:
             action.deleteLater()
         if getattr(self, "dialog", None) is not None:
             dialog, self.dialog = self.dialog, None
+            feedback = getattr(dialog, "feedback", None)
+            if feedback is not None:
+                # A local export runs in it (its code is still on the stack):
+                # stopped, and the window deleted only once it is closed.
+                feedback.cancel()
             dialog.close()
-            if getattr(dialog, "task", None) is None:
+            if getattr(dialog, "task", None) is None and feedback is None:
                 dialog.deleteLater()
         from .src.publishing.preview_server import stop_all  # pylint: disable=import-outside-toplevel
         stop_all()

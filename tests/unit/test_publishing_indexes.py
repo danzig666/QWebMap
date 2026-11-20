@@ -14,11 +14,17 @@ from publishing.feature_index import build_feature_index, fnv1a, shard_key
 from publishing.identifiers import encode_compound, key_expression, validate_keys
 from publishing.search_index import build_search_index, normalize, words
 from publishing.shard_pack import read_shard
+from q2vt_support import missing_tool
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CORE = os.path.join(ROOT, "resources", "web_viewer", "search_core.mjs")
 VECTORS = ["Őrbottyán", "ŐRBOTTYÁN", "Szabályozás  Övezet", "Kőszeg/12-3", "  Ünnep   út ",
            "Árvíztűrő tükörfúrógép", "00123/4", "ʼDéaʼk", "égy", "İzmir"]
+
+
+def _needs_node():
+    if shutil.which("node") is None:
+        missing_tool("needs Node")
 
 
 def node(script):
@@ -44,12 +50,32 @@ def test_hungarian_normalization():
     assert words("Kőszeg/12-3, Ünnep út") == ["koszeg/12-3", "unnep", "ut"]
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
 def test_python_and_javascript_agree():
+    _needs_node()
     js = node(f"import {{ normalize, words, fnv1a }} from {json.dumps('file://' + CORE)};"
               f"const v = {json.dumps(VECTORS)};"
               "console.log(JSON.stringify(v.map((x) => [normalize(x), words(x), fnv1a(x)])));")
     assert js == [[normalize(v), words(v), fnv1a(v)] for v in VECTORS]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
+def test_prefix_shard_keys_agree_in_any_script():
+    """Prefix shard keys are cut by Python and asked for by the viewer: both
+    drop every mark (Devanagari, Thai vowel signs have no combining class),
+    split on the same whitespace and cut by code point (emoji)."""
+    vectors = ["किताब", "नमस्ते", "ไทย", "😀abc", "a\x1cb", "a﻿b", "x\x85y z"]
+    assert normalize("किताब") == "कतब"
+    # The keys Python writes (_prefix_shards: token[:length]); the viewer must
+    # ask for exactly the shard of each word among all of them.
+    keys = [[w[:2] for w in words(v)] for v in vectors]
+    shards = [{"key": k, "bytes": 1} for k in sorted({k for ks in keys for k in ks})]
+    js = node(f"import {{ normalize, words, shardsForQuery }} from {json.dumps('file://' + CORE)};"
+              f"const v = {json.dumps(vectors)};"
+              f"const m = {{mode: 'prefix', prefixLength: 2, shards: {json.dumps(shards)}}};"
+              "console.log(JSON.stringify(v.map((x) => [normalize(x), words(x), words(x).map((w) =>"
+              " shardsForQuery(m, w).map((s) => s.key))])));")
+    assert js == [[normalize(v), words(v), [[k] for k in ks]] for v, ks in zip(vectors, keys)]
+    assert keys[3] == ["😀a"]
 
 
 def _records(n):
@@ -70,10 +96,10 @@ def test_single_file_index(tmp_path):
     assert "secret" not in json.dumps(data)  # only label/terms/anchor/bounds
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
 def test_sharded_index_is_complete_and_searchable(tmp_path):
     """A11: 120,000 records, skewed prefixes, no truncation; every record
     is in a shard reachable from its own key."""
+    _needs_node()
     n = 120000
     manifest = build_search_index(_records(n), {"lyr-a": ["hrsz"], "lyr-b": ["hrsz"]}, str(tmp_path),
                                   budget_records=50000, shard_bytes=256 * 1024)
@@ -130,12 +156,12 @@ def test_feature_index_shards(tmp_path):
     assert set(record) == {"l", "k", "t", "a", "p", "b", "z"}  # no geometry
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
 def test_the_viewer_reads_packed_shards_by_range(tmp_path):
     """A city's search index was tens of thousands of shard files; they are
     one pack now. shards.mjs reads a shard with one range request, and from
     the whole pack when a server ignores Range; the shards of one pack are
     told apart (they share its path)."""
+    _needs_node()
     import functools  # pylint: disable=import-outside-toplevel
     import http.server  # pylint: disable=import-outside-toplevel
     import threading  # pylint: disable=import-outside-toplevel
@@ -170,3 +196,56 @@ def test_the_viewer_reads_packed_shards_by_range(tmp_path):
         assert run(f"http://127.0.0.1:{plain.server_address[1]}/")["first"] == expected
     finally:
         plain.shutdown()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
+def test_shards_of_one_pack_loaded_together_fetch_a_range_ignoring_pack_once(tmp_path):
+    """A search loads up to 24 shards of its pack at once: each sent its own
+    range request before the first answer said the server ignores Range,
+    so each got (and read) the whole pack."""
+    manifest = build_search_index(_records(20000), {"lyr-a": ["hrsz"]}, str(tmp_path),
+                                  budget_records=5000, shard_bytes=64 * 1024)
+    shards = manifest["shards"][:6]
+    expected = [read_shard(str(tmp_path), s)["entries"][0][1] for s in shards]
+    pack = os.path.join(str(tmp_path), "index.pack")
+    script = f"""
+      import {{ readFileSync }} from "node:fs";
+      import {{ fetchShard }} from {json.dumps('file://' + os.path.join(ROOT, 'resources', 'web_viewer', 'shards.mjs'))};
+      const body = readFileSync({json.dumps(pack)});
+      let gets = 0;
+      globalThis.fetch = async () => {{  // a server ignoring Range: 200, the whole pack
+        gets++;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return new Response(body, {{ status: 200 }});
+      }};
+      const shards = {json.dumps(shards)};
+      const loaded = await Promise.all(shards.map((s) => fetchShard("http://pack.test/", s)));
+      console.log(JSON.stringify({{ gets, first: loaded.map((d) => d.entries[0][1]) }}));"""
+    assert node(script) == {"gets": 1, "first": expected}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
+def test_after_a_failed_first_request_one_shard_probes_the_pack_again(tmp_path):
+    """The first request of a pack failing (a transient 503) let every
+    waiting shard fetch at once: against a server ignoring Range, each got
+    the whole pack again. One of them probes, the others wait for it."""
+    manifest = build_search_index(_records(20000), {"lyr-a": ["hrsz"]}, str(tmp_path),
+                                  budget_records=5000, shard_bytes=64 * 1024)
+    shards = manifest["shards"][:6]
+    expected = [read_shard(str(tmp_path), s)["entries"][0][1] for s in shards[1:]]
+    pack = os.path.join(str(tmp_path), "index.pack")
+    script = f"""
+      import {{ readFileSync }} from "node:fs";
+      import {{ fetchShard }} from {json.dumps('file://' + os.path.join(ROOT, 'resources', 'web_viewer', 'shards.mjs'))};
+      const body = readFileSync({json.dumps(pack)});
+      let gets = 0;
+      globalThis.fetch = async () => {{  // the first answer fails, then 200 (Range ignored)
+        gets++;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return gets === 1 ? new Response("busy", {{ status: 503 }}) : new Response(body, {{ status: 200 }});
+      }};
+      const shards = {json.dumps(shards)};
+      const loaded = await Promise.allSettled(shards.map((s) => fetchShard("http://pack.test/", s)));
+      console.log(JSON.stringify({{ gets, failed: loaded[0].status,
+        first: loaded.slice(1).map((r) => r.value.entries[0][1]) }}));"""
+    assert node(script) == {"gets": 2, "failed": "rejected", "first": expected}

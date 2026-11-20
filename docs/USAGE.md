@@ -415,12 +415,12 @@ With several rows selected, a limit appears only if every row has the same value
 
 ## Output tab
 
-- **Archive** — Tile archive format. *PMTiles (vector tiles for static web hosting)* (default) is what the web map uses. *PMTiles + MBTiles copy* also writes `<slug>-<release>.mbtiles` next to the publication folder. *MBTiles only (desktop / preview; not for direct web hosting)* works for local export only.
-- **Local output folder** — Folder for the exported map. It goes in `<folder>/<name>/`. Default: `web_maps` next to the project file, or in your home folder if the project is unsaved. Also used as the work and cache folder for uploads.
+- **Archive** — Tile archive format. *PMTiles (vector tiles for static web hosting)* (default) is what the web map uses. *PMTiles + MBTiles copy* also writes `<slug>.mbtiles` next to the publication folder, replaced by each export. *MBTiles only (desktop / preview; not for direct web hosting)* works for local export only; it writes the same `<slug>.mbtiles`, and the web map is still built for the preview.
+- **Local output folder** — Folder for the exported map. It goes in `<folder>/<name>/`. A relative folder is inside the project's folder; `~` is your home folder. Default: `web_maps` next to the project file, or in your home folder if the project is unsaved. Also used as the work and cache folder for uploads.
 - **…** — Opens a folder picker for the local output folder.
 - **Keep earlier versions in the local folder (releases, rollback)** — Off (default): each export replaces the map in `<folder>/<name>/`, a plain site you can copy to any web server. On: each export is kept as a version in `releases/`, and `index.html` opens the current one, with rollback. Applies to the *Local only* destination only.
 - **Also write the legacy XYZ web package (web/)** — Also writes static XYZ tiles, a style and a viewer in a `web/` folder inside the export's work folder (`.q2vt-work`). Off by default.
-- **Also write an offline ZIP of the release** — Writes `<slug>-<release>.zip` next to the publication folder. The ZIP holds the whole site. Off by default.
+- **Also write an offline ZIP of the release** — Writes `<slug>.zip` next to the publication folder, replaced by each export. The ZIP holds the whole site. Off by default.
 - **CPU limit (%)** — Share of CPU cores used for parallel export, tiling and raster drawing (1–100, default 100).
 - **Fidelity** — *Vector-first: approximate where declared and report* (default) exports what it can and lists the approximations in the fidelity report. *Strict: fail if any component is unsupported or approximated* stops the export before anything is published.
 - **Beyond the maximum zoom** — *Keep showing the last tiles beyond the maximum zoom* (default, overzoom) or *Hide layers beyond the maximum zoom*.

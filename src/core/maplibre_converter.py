@@ -96,8 +96,16 @@ def _label_settings_of(layer) -> list:
     except (AttributeError, RuntimeError):
         return []
     if hasattr(labeling, "rootRule"):
-        return [rule.settings() for rule in labeling.rootRule().descendants()
-                if rule.active() and rule.settings() is not None]
+        # QGIS draws no rule under an inactive parent: its subtree is skipped.
+        found, pending = [], list(labeling.rootRule().children())
+        while pending:
+            rule = pending.pop(0)
+            if not rule.active():
+                continue
+            if rule.settings() is not None:
+                found.append(rule.settings())
+            pending.extend(rule.children())
+        return found
     try:
         return [labeling.settings()]
     except (AttributeError, RuntimeError, TypeError):
@@ -1570,9 +1578,13 @@ class TextPropertyExtractor:
         color_prop = label_settings.dataDefinedProperties().property(
             QgsPalLayerSettings.Property.BufferColor
         )
-        value = PropertyExtractor.get_value_or_expression(base_color, color_prop, "color")
+        # The fallback (a NULL value) without the opacity: it is applied once, below.
+        raw_color = PropertyExtractor.convert_qcolor_to_maplibre(QColor(buffer.color()))
+        value = PropertyExtractor.get_value_or_expression(raw_color, color_prop, "color")
         opacity = float(buffer.opacity())
-        if value == base_color or opacity >= 1.0 or color_prop is None or not color_prop.isActive():
+        if value == raw_color or color_prop is None or not color_prop.isActive():
+            return base_color
+        if opacity >= 1.0:
             return value
         # A data-defined colour replaces the colour only: QGIS still draws
         # the buffer at its opacity.
@@ -1623,6 +1635,23 @@ class TextPropertyExtractor:
     ) -> Union[float, List]:
         """Return ``text-halo-blur`` in pixels (0: QGIS buffers are not blurred)."""
         return 0
+
+    # Data-defined placement the extractors below do not read (static values
+    # only); ddp_fetcher writes no tile fields for them.
+    UNREAD_PLACEMENT_PROPERTIES = ("OffsetQuad", "OffsetXY", "OffsetUnits", "LabelDistance",
+                                   "DistanceUnits")
+
+    @staticmethod
+    def unread_placement_properties(label_settings: QgsPalLayerSettings) -> List[str]:
+        """The active data-defined properties of ``UNREAD_PLACEMENT_PROPERTIES``."""
+        props = label_settings.dataDefinedProperties()
+        names = []
+        for name in TextPropertyExtractor.UNREAD_PLACEMENT_PROPERTIES:
+            key = getattr(QgsPalLayerSettings.Property, name, None)
+            prop = props.property(key) if key is not None else None
+            if prop and prop.isActive():
+                names.append(name)
+        return names
 
     @staticmethod
     def get_text_anchor(label_settings: QgsPalLayerSettings) -> str:
@@ -3620,12 +3649,42 @@ class QgisMapLibreStyleExporter:
     def _distinct_values(self, source_layer: str, fields: List[str]) -> Optional[list]:
         """Distinct value combinations of ``fields`` in an exported dataset
         (None when more than ``MAX_VARIANTS``)."""
+        # Cached: several style layers (and zoom-band copies) ask the same.
+        cache = self.__dict__.setdefault("_distinct_cache", {})
+        key = (source_layer, tuple(fields))
+        if key not in cache:
+            cache[key] = self._scan_distinct_values(source_layer, fields)
+        found = cache[key]
+        return None if found is None else list(found)
+
+    def _scan_distinct_values(self, source_layer: str, fields: List[str]) -> Optional[list]:
         from osgeo import ogr  # pylint: disable=import-outside-toplevel
         path = join(self.utils_dir, f"{source_layer}.gpkg")
         dataset = ogr.Open(path)
         if dataset is None:
             return []
         layer = dataset.GetLayer(0)
+        defn = layer.GetLayerDefn()
+        # Case-insensitive, as OGR's GetFieldIndex in the fallback below.
+        names = {defn.GetFieldDefn(i).GetName().lower(): defn.GetFieldDefn(i).GetName()
+                 for i in range(defn.GetFieldCount())}
+        present = [f for f in fields if f.lower() in names]
+        if not present:
+            return [tuple(None for _ in fields)] if layer.GetNextFeature() is not None else []
+        # SQL, not a Python loop over every feature (millions on big layers).
+        table = layer.GetName().replace('"', '""')
+        columns = ", ".join('"{}"'.format(names[f.lower()].replace('"', '""')) for f in present)
+        result = dataset.ExecuteSQL(f'SELECT DISTINCT {columns} FROM "{table}" '
+                                    f"LIMIT {self.MAX_VARIANTS + 1}")
+        if result is not None:
+            try:
+                rows = [dict(zip(present, (feature.GetField(i) for i in range(len(present)))))
+                        for feature in result]
+            finally:
+                dataset.ReleaseResultSet(result)
+            if len(rows) > self.MAX_VARIANTS:
+                return None
+            return [tuple(row.get(f) for f in fields) for row in rows]
         seen = []
         keys = set()
         for feature in layer:
@@ -4806,13 +4865,25 @@ class QgisMapLibreStyleExporter:
                              "q2vt:obstacle-of": layer_def["id"]}})
             owner = self.label_obstacles.get(self._owning_style(layer_def["id"], self.label_obstacles), "")
             copies.setdefault(owner, []).append(obstacle)
-        layers = self.style["layers"]
+        if not copies:
+            return
+        # One pass over the layers (not one per owner): the first label
+        # layer of each owner takes its copies above it.
+        first = {}  # owner -> index of its first label layer
+        for index, other in enumerate(self.style["layers"]):
+            if other.get("type") == "symbol" and "text-field" in (other.get("layout") or {}):
+                owner = self.label_owners.get(self._owning_style(other["id"], self.label_owners))
+                if owner and owner in copies:
+                    first.setdefault(owner, index)
+        before = {index: copies[owner] for owner, index in first.items()}
+        layers = []
+        for index, layer_def in enumerate(self.style["layers"]):
+            layers += before.get(index, [])
+            layers.append(layer_def)
         for owner, items in copies.items():
-            own = [index for index, other in enumerate(layers)
-                   if other.get("type") == "symbol" and "text-field" in (other.get("layout") or {})
-                   and owner and self.label_owners.get(self._owning_style(other["id"], self.label_owners)) == owner]
-            at = min(own) if own else len(layers)
-            layers[at:at] = items
+            if owner not in first:  # no drawn labels: above all of them
+                layers += items
+        self.style["layers"] = layers
 
     @staticmethod
     def _owning_style(style_layer_id: str, names) -> Optional[str]:
@@ -5724,6 +5795,10 @@ class QgisMapLibreStyleExporter:
                 color = effect.color() if _enum_int(effect.colorType()) == 0 or effect.ramp() is None \
                     else effect.ramp().color(0.0)
                 paint["line-color"] = color.name()
+                # QGIS's glow keeps its colour's alpha (a drop shadow's colour
+                # is drawn opaque: QgsImageOperation::overlayColor).
+                if color.alphaF() < 1.0:
+                    paint["line-opacity"] = ex.mul(paint["line-opacity"], round(color.alphaF(), 4))
             else:
                 angle = math.radians(effect.offsetAngle())
                 distance = PropertyExtractor.static_pixels(effect.offsetDistance(), effect.offsetUnit())
@@ -5954,6 +6029,12 @@ class QgisMapLibreStyleExporter:
             # wrapped already (RulesExporter._label_lines_over_parts).
             layer_def["layout"]["text-max-width"] = 999
         self._report_label_modes(modes)
+        unread = TextPropertyExtractor.unread_placement_properties(label_settings)
+        if unread:
+            self.context.report(
+                "Q2VT_DDP_NO_EMITTER",
+                f"Data-defined label placement ({', '.join(unread)}) is not available in the web "
+                "style; the static values are used.", detail=", ".join(unread))
 
         # Emit only the placement properties that apply to this placement
         # mode; MapLibre lets some of them override each other.
@@ -7515,6 +7596,19 @@ class QgisMapLibreStyleExporter:
             images = names([(layer_def.get("layout") or {}).get("icon-image"),
                             (layer_def.get("paint") or {}).get("fill-pattern"),
                             (layer_def.get("paint") or {}).get("line-pattern")])
+            layout = layer_def.get("layout") or {}
+            if layout.get("text-field") and names(layout.get("icon-image")) & set(failed):
+                # A label's frame, balloon or callout: the label is kept without it.
+                for part in ("layout", "paint"):
+                    for key in [k for k in (layer_def.get(part) or {}) if k.startswith("icon-")]:
+                        del layer_def[part][key]
+                self.diagnostics.add(
+                    "Q2VT_SPRITE_RENDER_FAILED",
+                    f"Style layer '{layer_def['id']}': its background or callout image could not "
+                    "be rendered; the labels are drawn without it.",
+                    component=layer_def["id"], layer_id=layer_def.get("source-layer", ""))
+                kept.append(layer_def)
+                continue
             if images & set(failed):
                 self.diagnostics.add(
                     "Q2VT_SPRITE_RENDER_FAILED",

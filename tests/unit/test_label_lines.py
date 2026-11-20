@@ -11,6 +11,7 @@ import subprocess
 import pytest
 
 import label_lines as ll
+from q2vt_support import missing_tool
 
 # MapLibre's readable build (tools/maplibre: npm ci), which the bundle is built from.
 READABLE_MJS = os.path.join(os.path.dirname(__file__), "..", "..", "tools", "maplibre", "node_modules",
@@ -150,9 +151,9 @@ def test_check_max_angle_is_maplibre_s(tmp_path):
     random lines, labels and anchors."""
     node = shutil.which("node")
     if node is None:
-        pytest.skip("Node is not installed")
+        missing_tool("Node is not installed")
     if not os.path.exists(READABLE_MJS):
-        pytest.skip("MapLibre's readable build is not installed (tools/maplibre: npm ci)")
+        missing_tool("MapLibre's readable build is not installed (tools/maplibre: npm ci)")
     functions, check, center, anchor, interpolate = _maplibre_functions()
     rng = random.Random(3)
     cases = []

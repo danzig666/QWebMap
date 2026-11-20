@@ -1485,6 +1485,33 @@ class SymbolMaterializer:
             return None
         return value * QgsUnitTypes.fromUnitToUnitFactor(Qgis.DistanceUnit.Meters, crs.mapUnits())
 
+    def _metre_at_centre(self, flat_rule: FlattenedRule) -> Optional[float]:
+        """A metre in project map units as QGIS converts "meters at scale" in
+        a geographic CRS (QgsRenderContext::convertMetersToMapUnits: eastwards
+        on the ellipsoid from the map's centre), at the export extent's
+        centre (else the layer's). None: no valid CRS or centre."""
+        from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, \
+            QgsDistanceArea  # pylint: disable=import-outside-toplevel
+        crs = QgsCoordinateReferenceSystem(self.project_crs) if self.project_crs else QgsProject.instance().crs()
+        if not crs.isValid():
+            return None
+        if self.extent is not None:
+            centre, source = self.extent.center(), QgsCoordinateReferenceSystem("EPSG:3857")
+        else:
+            centre, source = flat_rule.layer.extent().center(), flat_rule.layer.crs()
+        try:
+            if source != crs:
+                centre = QgsCoordinateTransform(source, crs, QgsProject.instance()).transform(centre)
+        except Exception:  # pylint: disable=broad-except
+            return None
+        area = QgsDistanceArea()
+        area.setSourceCrs(crs, QgsProject.instance().transformContext())
+        ellipsoid = QgsProject.instance().ellipsoid()
+        if not ellipsoid or ellipsoid == "NONE" or not area.setEllipsoid(ellipsoid):
+            area.setEllipsoid(crs.ellipsoidAcronym() or "EPSG:7030")
+        distance = area.measureLineProjected(centre, 1000.0, math.pi / 2)[0] / 1000.0
+        return distance if math.isfinite(distance) and distance > 0 else None
+
     def _offset_in_map_units(self, layer) -> Optional[float]:
         """A line layer's offset in project map units when it scales with the
         map: map units as they are, "meters at scale" (military symbols:
@@ -1626,7 +1653,9 @@ class SymbolMaterializer:
             return None
         quantile = zooms[min(len(zooms) - 1, int(len(zooms) * self.OFFSET_LOOP_QUANTILE))]
         loop_zoom = quantile + math.log2(abs(offset_px))
-        cut = min(high + 1, int(math.ceil(loop_zoom)))  # native from this zoom
+        # Native from this zoom; a near-reversing vertex (a digitizing spike)
+        # loops at every zoom: inf, offset curves throughout.
+        cut = high + 1 if not math.isfinite(loop_zoom) else min(high + 1, int(math.ceil(loop_zoom)))
         first = max(low, self._offset_in_extent_zoom(offset_px))
         if cut <= first:
             return None
@@ -3485,6 +3514,26 @@ class SymbolMaterializer:
                   (layer.offset(), layer.offsetUnit())]
         screen = any(abs(v or 0.0) > 1e-12 and normalize_unit(u) not in ("map", "m")
                      for v, u in values)
+        # "Meters at scale" in project map units; in a geographic CRS at the
+        # map's centre, as QGIS converts them (the arrow sizes and the
+        # painter fill offsets below).
+        metres = any(normalize_unit(u) == "m" for _, u in values) or any(
+            normalize_unit(l.offsetUnit()) == "m" for l in fill_layers
+            if l.layerType() == "SimpleFill")
+        per_metre = self._scaled_map_distance(1.0, Qgis.RenderUnit.MetersInMapUnits)
+        if per_metre is None:
+            per_metre = self._metre_at_centre(flat_rule)
+            # QGIS converts at each view's centre: one factor, the export's.
+            if per_metre is not None and metres:
+                self._report("Q2VT_SYMBOL_APPROXIMATE",
+                             "Arrow sizes in meters at scale in a geographic CRS are converted "
+                             "at the export extent's centre (QGIS: at each view's centre).", flat_rule)
+        if per_metre is None:
+            if metres:
+                self._report("Q2VT_SYMBOL_APPROXIMATE",
+                             "Arrow sizes in meters at scale without a valid project CRS; "
+                             "read as map units.", flat_rule)
+            per_metre = 1.0
         crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         base = (("crs", crs), ("curved", bool(layer.isCurved())),
                 ("repeated", bool(layer.isRepeated())), ("head_type", _enum_value(layer.headType())),
@@ -3499,7 +3548,9 @@ class SymbolMaterializer:
             and not l.dataDefinedProperties().hasActiveProperties() for l in fill_layers)
 
         def to_map(value, unit, per_mm):
-            if normalize_unit(unit) in ("map", "m"):
+            if normalize_unit(unit) == "m":
+                return float(value or 0.0) * per_metre
+            if normalize_unit(unit) == "map":
                 return float(value or 0.0)
             return (_to_mm(value or 0.0, unit) or 0.0) * per_mm
 
@@ -3754,18 +3805,34 @@ class SymbolMaterializer:
     def _filled_line(self, flat_rule: FlattenedRule, layer) -> List[FlattenedRule]:
         fill = layer.subSymbol()
         fill_layer = fill.symbolLayer(0) if fill and fill.symbolLayerCount() else None
-        if fill_layer is None or fill_layer.layerType() != "SimpleFill":
+        if fill_layer is None:  # nothing to fill the line with: QGIS draws nothing
+            return []
+        if fill_layer.layerType() != "SimpleFill":
             self._report("Q2VT_UNSUPPORTED_SYMBOL_LAYER",
                          "Filled line with a non-simple fill is drawn with its first colour.",
                          flat_rule)
-        line = QgsSimpleLineSymbolLayer(fill_layer.color() if fill_layer else None, layer.width())
+        line = QgsSimpleLineSymbolLayer(QColor(fill_layer.color()), layer.width())
         line.setWidthUnit(layer.widthUnit())
+        line.setWidthMapUnitScale(layer.widthMapUnitScale())
+        line.setOffset(layer.offset())
+        line.setOffsetUnit(layer.offsetUnit())
+        line.setOffsetMapUnitScale(layer.offsetMapUnitScale())
         for getter, setter in (("penCapStyle", "setPenCapStyle"),
                                ("penJoinStyle", "setPenJoinStyle")):
             if hasattr(layer, getter):
                 getattr(line, setter)(getattr(layer, getter)())
+        # The filled line's data-defined width and offset, its fill's colour.
+        P = QgsSymbolLayer.Property
+        for source, key, target in ((layer, P.PropertyStrokeWidth, P.PropertyStrokeWidth),
+                                    (layer, P.PropertyOffset, P.PropertyOffset),
+                                    (fill_layer, P.PropertyFillColor, P.PropertyStrokeColor)):
+            prop = source.dataDefinedProperties().property(key)
+            if prop is not None and prop.isActive():
+                line.setDataDefinedProperty(target, QgsProperty(prop))
         symbol = QgsLineSymbol([line])
-        symbol.setOpacity(fill.opacity() if fill else 1.0)
+        symbol.setOpacity(fill.opacity())
+        # The parent symbol's opacity (static or data-defined) multiplies in.
+        inherit_opacity(flat_rule.rule.symbol(), symbol)
         return [self._with_symbol(flat_rule, symbol, 1, 1)]
 
     def _interpolated_line(self, flat_rule: FlattenedRule, layer) -> List[FlattenedRule]:
@@ -4141,17 +4208,29 @@ class SymbolMaterializer:
         sub = layer.subSymbol()
         if sub is None:
             return []
+        # Spacing and offset in project map units ("meters at scale"
+        # converted); metres in a geographic CRS stay a texture.
+        spacing = self._scaled_map_distance(float(layer.distance()), layer.distanceUnit())
+        if spacing is None:
+            return None
         offset = layer.offset()
         if offset and normalize_unit(layer.offsetUnit()) not in ("map", "m"):
             self._report("Q2VT_PATTERN_APPROXIMATE",
                          "Hatch offset in screen units is ignored for map-unit hatches.",
                          flat_rule)
             offset = 0.0
+        elif offset:
+            offset = self._scaled_map_distance(float(offset), layer.offsetUnit())
+            if offset is None:
+                self._report("Q2VT_PATTERN_APPROXIMATE",
+                             "Hatch offset in meters at scale in a geographic CRS is ignored.",
+                             flat_rule)
+                offset = 0.0
         mus = layer.distanceMapUnitScale()
         if mus.minScale or mus.maxScale or mus.minSizeMMEnabled or mus.maxSizeMMEnabled:
             self._report("Q2VT_PATTERN_APPROXIMATE",
                          "Hatch spacing scale limits are ignored.", flat_rule)
-        if layer.distance() <= 0:
+        if spacing <= 0:
             return None
         # Lines generated per feature (mat.hatch_expression): at most its
         # bounding box diagonal / spacing + 5. Past the budget the hatch is a
@@ -4159,7 +4238,7 @@ class SymbolMaterializer:
         # get no hatch at all). Counted over the whole layer, also for a rule
         # drawing some of its features: on the safe side.
         _, _, count, diagonals = self._layer_totals(flat_rule.layer)
-        if self._over_budget(flat_rule, diagonals / layer.distance() + 5 * count, "Hatch"):
+        if self._over_budget(flat_rule, diagonals / spacing + 5 * count, "Hatch"):
             return None
         crs = self.project_crs or crs_ref(flat_rule.layer.crs())
         symbol = sub.clone()
@@ -4176,13 +4255,13 @@ class SymbolMaterializer:
         by_line = sub.hasDataDefinedProperties() or not painter
         if by_line:
             recipe = mat.hatch_recipe(
-                layer.lineAngle(), layer.distance(), offset, crs, "feature", layout="lines",
+                layer.lineAngle(), spacing, offset, crs, "feature", layout="lines",
                 bleed=self._hatch_bleed(flat_rule, sub),
                 # A data-defined clip mode is read as clipped to the shape.
                 clip="none" if mode == _enum_value(Qgis.LineClipMode.NoClipping) and not clip_by_data
                 else "shape")
         else:
-            recipe = mat.hatch_recipe(layer.lineAngle(), layer.distance(), offset, crs, "feature")
+            recipe = mat.hatch_recipe(layer.lineAngle(), spacing, offset, crs, "feature")
             inherit_opacity(flat_rule.rule.symbol(), symbol)
         if painter:
             # Clipped at the painter, QGIS paints nothing of the hatch
@@ -4195,7 +4274,7 @@ class SymbolMaterializer:
         lines = self._with_symbol(flat_rule, symbol, 1, 1, recipe)
         if by_line:
             return [lines]
-        return self._hatch_strips(flat_rule, layer, lines, offset, crs) or [lines]
+        return self._hatch_strips(flat_rule, layer, lines, spacing, offset, crs) or [lines]
 
     def _hatch_bleed(self, flat_rule: FlattenedRule, sub) -> float:
         """QgsSymbolLayerUtils::estimateMaxSymbolBleed of a hatch's line
@@ -4218,7 +4297,7 @@ class SymbolMaterializer:
     HATCH_STRIP_MIN_PX = 2.0
 
     def _hatch_strips(self, flat_rule: FlattenedRule, layer, lines: FlattenedRule,
-                      offset: float, crs: str) -> Optional[List[FlattenedRule]]:
+                      spacing: float, offset: float, crs: str) -> Optional[List[FlattenedRule]]:
         """A painter-clipped map-unit hatch of plain solid lines as what QGIS
         paints: the strips the lines cover, clipped to the polygon - exact
         at every zoom, where a flat-capped line still leaves its corners
@@ -4254,11 +4333,11 @@ class SymbolMaterializer:
                                                        Qt.PenStyle.NoPen)])
         fill.setOpacity(sub.opacity())
         inherit_opacity(flat_rule.rule.symbol(), fill)
-        if width >= layer.distance():
+        if width >= spacing:
             # The lines overlap: QGIS paints the whole polygon.
             return [self._with_symbol(flat_rule, fill, 2, 1)]
         strips = self._with_symbol(flat_rule, fill, 2, 1, mat.hatch_recipe(
-            layer.lineAngle(), layer.distance(), offset, crs, "feature", width=width))
+            layer.lineAngle(), spacing, offset, crs, "feature", width=width))
         px_at_zero = width / (self._map_units_per_mm(flat_rule, 0.0) * 25.4 / 96.0)
         first = math.ceil(math.log2(self.HATCH_STRIP_MIN_PX / px_at_zero) - 1e-9)
         low, high = self._zoom_range(flat_rule)
@@ -4274,7 +4353,7 @@ class SymbolMaterializer:
             # Past the last tiles: the strips are a dataset of their own in
             # them, charged to their budget.
             _, _, count, diagonals = self._layer_totals(flat_rule.layer)
-            if not self._overzoom_take(flat_rule, [diagonals / layer.distance() + 5 * count]):
+            if not self._overzoom_take(flat_rule, [diagonals / spacing + 5 * count]):
                 return None
             strips.set_attr("o", high)
             strips.set_attr("v", first)

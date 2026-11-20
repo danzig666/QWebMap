@@ -41,14 +41,19 @@ DEFAULT_SHARD_BYTES = 512 * 1024
 PACK_NAME = "index.pack"  # the prefix shards, one after another (shard_pack)
 _MANIFEST_LINE_BYTES = 150  # a shard's line in the manifest
 NORMALIZATION = "NFKD, combining marks removed, lower case, whitespace collapsed"
-_SPACE = re.compile(r"\s+")
-_WORD = re.compile(r"[\s,;:()\"'\[\]]+")
+# The same characters as search_core.mjs (Python's and JavaScript's \s differ:
+# prefix shard keys made here must be the ones the viewer asks for).
+_WHITESPACE = "\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_SPACE = re.compile(f"[{_WHITESPACE}]+")
+_WORD = re.compile(f"[{_WHITESPACE},;:()\"'\\[\\]]+")
 
 
 def normalize(text) -> str:
     text = unicodedata.normalize("NFKD", str(text if text is not None else ""))
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return _SPACE.sub(" ", text.lower()).strip()
+    # Every mark (JavaScript's \p{M}), not only those with a combining class:
+    # Devanagari or Thai vowel signs have none.
+    text = "".join(ch for ch in text if not unicodedata.category(ch).startswith("M"))
+    return _SPACE.sub(" ", text.lower()).strip(" ")
 
 
 def words(text: str) -> List[str]:
