@@ -128,6 +128,14 @@ def _open_gpkg(path: str, update: bool = False):
     except RuntimeError:
         return None
 
+def _file_size(path: str) -> int:
+    """Size of ``path`` (0 when missing: a job's cost only)."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
 class TilesGenerationCancelled(RuntimeError):
     """Raised when the user cancels while ogr2ogr is running."""
 
@@ -296,6 +304,7 @@ class GDALTilesGenerator:
         # With a cache: one tile set per QGIS layer (its datasets), reused
         # while the layer's datasets are unchanged, then merged.
         self.cache = cache
+        self._fell_back: set = set()  # (_tile_layer_groups)
         self.dataset_keys = dataset_keys or {}
         self.layer_groups = layer_groups or {}
         # Datasets tiled without simplification: colour bands that do not
@@ -846,6 +855,9 @@ class GDALTilesGenerator:
     def _tile_layer_groups(self, work: str, output: str, min_zoom: int, max_zoom: int):
         """_generate_per_layer's tiles, their pieces made in ``work``."""
         parts, groups = [], []
+        # Groups whose merged/cut/joined copies could not be made (a dataset
+        # unreadable for a moment): not cached, made again on the next export.
+        self._fell_back = set()
         for number, (owner, key, members) in enumerate(self._tile_groups()):
             cached = self.cache.get_tiles(key) if key and self.cache is not None else None
             if cached:
@@ -956,7 +968,7 @@ class GDALTilesGenerator:
         # A group without a single tile has no file: left out (not cached).
         stored = {target: self.cache.put_tiles(key, target)
                   for key, target, *_ in groups if key and self.cache is not None
-                  and os.path.exists(target)}
+                  and os.path.exists(target) and target not in self._fell_back}
         merge_mbtiles([stored.get(path, path) for path in parts
                        if path in stored or os.path.exists(path)], output, min_zoom, max_zoom,
                       workers=cpu)
@@ -1041,6 +1053,7 @@ class GDALTilesGenerator:
             except TilesGenerationCancelled:
                 raise
             except RuntimeError:  # unreadable (GDAL exceptions on): filtered as it is
+                self._fell_back.add(target)
                 continue
             out[name] = {z: outputs[z][0] for z, count in written.items() if count}
             counts.append(f"{name} ({written.get(last, 0)} lines at zoom {last})")
@@ -1090,6 +1103,7 @@ class GDALTilesGenerator:
             except TilesGenerationCancelled:
                 raise
             except RuntimeError:  # unreadable: those zooms tiled from the dataset as it is
+                self._fell_back.add(target)
                 copies[name] = {z: source for z in outputs}
                 continue
             copies[name] = {z: path for z, path in outputs.items() if written.get(z)}
@@ -1110,7 +1124,7 @@ class GDALTilesGenerator:
                 ET.SubElement(node, "LayerSRS").text = f"EPSG:{_EPSG_CRS}"
                 ET.SubElement(node, "GeometryType").text = "wkbUnknown"
                 conf[name] = {"minzoom": zoom, "maxzoom": zoom}
-                cost += os.path.getsize(copies[name][zoom]) + _TILE_COST * self._tiles_at(zoom)
+                cost += _file_size(copies[name][zoom]) + _TILE_COST * self._tiles_at(zoom)
             ET.ElementTree(root).write(piece_vrt, encoding="utf-8", xml_declaration=True)
             with open(piece_conf, "w", encoding="utf-8") as handle:
                 json.dump(conf, handle)
@@ -1175,6 +1189,7 @@ class GDALTilesGenerator:
                 except TilesGenerationCancelled:
                     raise
                 except RuntimeError:  # unreadable: tiled from the dataset as it is (uncut)
+                    self._fell_back.add(target)
                     cut, written = source, 1
                 if not written:
                     continue
@@ -1185,7 +1200,7 @@ class GDALTilesGenerator:
                 ET.SubElement(node, "LayerSRS").text = f"EPSG:{_EPSG_CRS}"
                 ET.SubElement(node, "GeometryType").text = "wkbUnknown"
                 conf[name] = {"minzoom": zoom, "maxzoom": zoom}
-                cost += os.path.getsize(cut) + _TILE_COST * written
+                cost += _file_size(cut) + _TILE_COST * written
             if not conf:
                 continue
             ET.ElementTree(root).write(piece_vrt, encoding="utf-8", xml_declaration=True)
@@ -1571,6 +1586,8 @@ def merge_per_tile(path: str, table: Optional[str], outputs: Dict[int, str], out
         for count, (key, geometry, merged) in enumerate(shapes):
             if count % 2000 == 0 and cancelled is not None and cancelled():
                 out.RollbackTransaction()
+                out = None
+                target = None  # closed: the work folder is removed (Windows)
                 raise TilesGenerationCancelled("Tile generation cancelled")
             if geometry is None or geometry.IsEmpty():
                 continue
@@ -1863,6 +1880,8 @@ def join_lines(path: str, table: Optional[str], outputs: Dict[int, Tuple[str, fl
         for count, (order, group, key, points) in enumerate(lines):
             if count % 2000 == 0 and cancelled is not None and cancelled():
                 out.RollbackTransaction()
+                out = None
+                target = None  # closed: the work folder is removed (Windows)
                 raise TilesGenerationCancelled("Tile generation cancelled")
             if min_size > 0:
                 xs, ys = [p[0] for p in points], [p[1] for p in points]

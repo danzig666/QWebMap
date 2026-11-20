@@ -754,3 +754,9 @@ def test_the_tiles_of_an_unreadable_merged_or_long_line_dataset_are_made_from_it
     for _index, piece, _command, _cost, _owner in merged + cut:
         with open(piece[:-8] + ".vrt", encoding="utf-8") as handle:
             assert source in handle.read()
+    # Not cached: the next export makes the merged and cut copies again.
+    assert target in generator._fell_back  # pylint: disable=protected-access
+    # A dataset gone rather than locked: no OSError while the jobs are costed.
+    gone = QgsVectorLayer(f"{tmp_path / 'gone' / name}.gpkg|layername={name}", name, "ogr")
+    generator._merged_jobs(0, target, [gone], {name: (5, 6, False)}, "o", 80, 2)  # pylint: disable=protected-access
+    generator._long_line_jobs(0, target, [gone], {name: (12, 13)}, {}, "o", 80, 2)  # pylint: disable=protected-access
