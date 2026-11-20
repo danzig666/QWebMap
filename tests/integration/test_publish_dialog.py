@@ -791,3 +791,70 @@ def test_retention_failure_is_a_message(plugin, messages):
     dialog = DeploymentHistoryDialog(None, Offline(), PublicationProfile(title="X", slug="x"), [], None)
     dialog.retention()
     assert messages == [("warning", "Object storage request failed.")]
+
+
+def test_publish_reuses_the_export_only_while_the_layers_stay_as_exported(project, messages, tmp_path, monkeypatch):
+    """Publish after a local export of the same settings uploads that export,
+    unless a layer's data or style changed since (the window is not modal)."""
+    project, parcels = project
+    exported = []
+    for edit in (False, True):
+        dialog = _dialog()
+        if not edit:  # (then saved by the export)
+            _configure(dialog, parcels, tmp_path)
+            dialog.d_kind.setCurrentIndex(dialog.d_kind.findData("r2"))
+            dialog.d_account.setText("abc123")
+            dialog.d_bucket.setText("maps")
+            dialog.d_public.setText("https://maps.example.org")
+        try:
+            assert dialog.export_locally(), messages
+            dialog.refresh_review()
+            dialog.approve.setChecked(True)
+            monkeypatch.setattr(dialog, "export_locally", lambda: exported.append(edit) and False)
+            if edit:                                                      # data edited in QGIS
+                feature = next(parcels.getFeatures())
+                assert parcels.startEditing()
+                parcels.changeAttributeValue(feature.id(), parcels.fields().indexOf("hrsz"), "999/9")
+                assert parcels.commitChanges()
+            dialog.publish()  # (no keys: stops before the upload)
+            if not edit:
+                assert dialog.status.text().startswith("Q2VT_PUB_CREDENTIALS")
+        finally:
+            dialog.close()
+    assert exported == [True]  # the same export, then a new one
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_a_settings_file_with_the_keys_is_private(project, messages, tmp_path):
+    project, parcels = project
+    dialog = _dialog()
+    _configure(dialog, parcels, tmp_path)
+    dialog.d_kind.setCurrentIndex(dialog.d_kind.findData("r2"))
+    dialog.d_account.setText("abc123")
+    dialog.d_bucket.setText("maps")
+    dialog.d_session_key.setText("AKIATEST")
+    dialog.d_session_secret.setText("session-secret-value")
+    path = tmp_path / "keys.q2vt.json"
+    path.write_text("an older, longer file " * 100, encoding="utf-8")
+    os.chmod(path, 0o644)
+    try:
+        assert dialog.export_settings_file(str(path))
+        assert json.loads(path.read_text(encoding="utf-8"))["credentials"]["secretAccessKey"] == \
+            "session-secret-value"
+        assert os.stat(path).st_mode & 0o077 == 0
+        dialog.d_session_key.clear()
+        dialog.d_session_secret.clear()
+        other = tmp_path / "plain.q2vt.json"
+        assert dialog.export_settings_file(str(other))
+        assert "secret" not in other.read_text(encoding="utf-8").lower()
+    finally:
+        dialog.close()
+
+
+def test_a_settings_file_with_malformed_layer_names_is_not_a_settings_file(project):
+    from q2vt_plugin.src.gui import publication_profiles as store  # pylint: disable=import-error
+    project, _parcels = project
+    for names in ([1], {"a": [1]}, {"a": {"b": 1}}):
+        text = json.dumps({store.FILE_FORMAT: 1, "profile": {}, "layerNames": names})
+        with pytest.raises(ValueError):
+            store.import_document(text, project)

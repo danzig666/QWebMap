@@ -17,7 +17,7 @@ import shutil
 from qgis.core import QgsMapLayer, QgsRasterLayer
 from qgis.PyQt.QtCore import QCoreApplication, QSize, Qt, QTimer
 from qgis.PyQt.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
-                                 QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
+                                 QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                  QRadioButton, QScrollArea, QSlider, QTableWidget,
                                  QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -198,6 +198,13 @@ class SimplePage(QWidget):
         self._auto_timer.setInterval(400)
         self._auto_timer.timeout.connect(self.apply_auto)
         self._reasons = []
+        # (min zoom, max zoom) the automatic detail gave (or new settings'
+        # defaults, nobody's choice): "Choose automatically" is ticked only
+        # while the window's zooms are these, so zooms set elsewhere (the
+        # advanced view, a settings file) are never replaced just by showing
+        # this page. ``_auto_pending``: new settings, not chosen yet.
+        self._auto_zooms = None
+        self._auto_pending = False
 
         # 5. Background map
         layout.addWidget(_heading(5, tr("Background map")))
@@ -284,6 +291,7 @@ class SimplePage(QWidget):
             self._fill_area_layers()
             self.zoom.setValue(nearest_index(scale_of_zoom(self._factor(), dialog.e_max_zoom.value())))
             auto, _found = dialog.project.readBoolEntry(AUTO_SCOPE, AUTO_KEY, bool(getattr(dialog, "new_settings", False)))
+            auto = auto and self._auto_zooms == self._zooms()
             self.auto.setChecked(auto)
             self.zoom.setEnabled(not auto)
             (self.bg_osm if dialog.b_kind.currentData() == "protomaps" else self.bg_none).setChecked(True)
@@ -291,7 +299,8 @@ class SimplePage(QWidget):
         finally:
             self._updating = False
         self._show_area()
-        if self.auto.isChecked():
+        # Showing changes nothing: only new settings get their first choice here.
+        if self.auto.isChecked() and self._auto_pending:
             self.apply_auto()
         else:
             self._show_zoom()
@@ -415,6 +424,17 @@ class SimplePage(QWidget):
         self.zoom_info.setText(text)
         self._preview_timer.start()
 
+    def _zooms(self):
+        return self.dialog.e_min_zoom.value(), self.dialog.e_max_zoom.value()
+
+    def settings_loaded(self, new: bool, automatic: bool = True):
+        """The window's zooms as loaded are the automatic ones (if it is on);
+        ``new`` settings get the automatic choice when first shown. Not
+        ``automatic``: zooms from elsewhere (a settings file, a preset), shown
+        with "Choose automatically" unticked and kept."""
+        self._auto_zooms = self._zooms() if automatic else None
+        self._auto_pending = new
+
     def apply_auto(self):
         """The recommended detail for the layers on the map and the area."""
         from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
@@ -431,6 +451,7 @@ class SimplePage(QWidget):
             self._updating = False
         dialog.e_max_zoom.setValue(zoom_for_scale(factor, scale))
         self._fit_min_zoom()
+        self._auto_zooms, self._auto_pending = self._zooms(), False
         self._show_zoom()
         self._show_area()
 
@@ -568,6 +589,7 @@ class SimplePage(QWidget):
     def _use_visible_layers(self):
         self.dialog.publish_visible_layers()
         self.refresh()
+        self._changed_layers_or_area()
 
     def _area_changed(self, *_):
         if self._updating:
@@ -582,6 +604,8 @@ class SimplePage(QWidget):
         if mode != dialog.profile.view.extent_mode:
             dialog.e_extent_mode.setCurrentIndex(max(0, dialog.e_extent_mode.findData(mode)))
         self._fit_min_zoom()
+        if self.auto.isChecked():  # (the automatic choice follows in a moment)
+            self._auto_zooms = self._zooms()
         self._show_area()
         self._changed_layers_or_area()
 
@@ -646,8 +670,18 @@ class SimplePage(QWidget):
         folder = self.dialog._local_map_dir()  # pylint: disable=protected-access
         if not folder:
             return ""
-        archive = shutil.make_archive(folder.rstrip(os.sep), "zip", os.path.dirname(folder.rstrip(os.sep)),
-                                      os.path.basename(folder.rstrip(os.sep)))
+        base = folder.rstrip(os.sep)
+        try:
+            archive = shutil.make_archive(base, "zip", os.path.dirname(base), os.path.basename(base))
+        except (OSError, ValueError) as error:  # disk full, write-protected, a file locked
+            # (antivirus, OneDrive); ValueError: a file dated before 1980 (ZIP cannot store it)
+            try:
+                os.remove(base + ".zip")  # (no half-written archive left)
+            except OSError:
+                pass
+            self.dialog.status.setText(tr("The ZIP could not be made: {}").format(error))
+            QMessageBox.warning(self, tr("Make a ZIP to send"), tr("The ZIP could not be made:\n{}").format(error))
+            return ""
         self.dialog.status.setText(tr("ZIP ready: {}").format(archive))
         from qgis.PyQt.QtCore import QUrl  # pylint: disable=import-outside-toplevel
         from qgis.PyQt.QtGui import QDesktopServices  # pylint: disable=import-outside-toplevel
