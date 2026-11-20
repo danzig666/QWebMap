@@ -501,6 +501,59 @@ def test_a_border_in_another_unit_than_the_buffer_joins_it_per_zoom(mc, at):
         assert padding[1] == pytest.approx(_mu(3, zoom + 0.5) + 0.25 * MM, rel=1e-3)
 
 
+def test_data_defined_label_placement_is_reported_without_tile_fields(plugin, tmp_path):
+    """Data-defined quadrant and offset: the style keeps the static
+    values, so the export says so and writes no tile fields for them (a
+    data-defined size still gets its field)."""
+    import json  # pylint: disable=import-outside-toplevel
+    import sys  # pylint: disable=import-outside-toplevel
+    from qgis.core import (QgsFeature, QgsGeometry, QgsMarkerSymbol,  # pylint: disable=import-outside-toplevel
+                           QgsSingleSymbolRenderer, QgsVectorLayer, QgsVectorLayerSimpleLabeling)
+    from q2vt_fixtures import reset_project, to_geopackage  # pylint: disable=import-outside-toplevel
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from test_end_to_end import EXTENT, Feedback  # pylint: disable=import-outside-toplevel,import-error
+    from q2vt_plugin.src.qgis2vectortiles import QGIS2VectorTiles  # pylint: disable=import-error,import-outside-toplevel
+    layer = QgsVectorLayer("Point?crs=EPSG:3857&field=name:string&field=q:integer&field=s:double",
+                           "sites", "memory")
+    feature = QgsFeature(layer.fields())
+    feature.setAttributes(["Site", 2, 12.0])
+    feature.setGeometry(QgsGeometry.fromWkt("POINT(2121000 6021000)"))
+    layer.dataProvider().addFeatures([feature])
+    layer = to_geopackage(layer, str(tmp_path / "sites.gpkg"))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsMarkerSymbol.createSimple({"size": "2"})))
+    settings = _settings(Qgis.LabelPlacement.OverPoint, 10, Qgis.RenderUnit.Points)
+    settings.fieldName = "name"
+    props = settings.dataDefinedProperties()
+    P = QgsPalLayerSettings.Property
+    props.setProperty(P.OffsetQuad, QgsProperty.fromField("q"))
+    props.setProperty(P.OffsetXY, QgsProperty.fromExpression("'1,' || \"q\""))
+    props.setProperty(P.Size, QgsProperty.fromField("s"))
+    settings.setDataDefinedProperties(props)
+    assert _unread(settings) == ["OffsetQuad", "OffsetXY"]
+    layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
+    layer.setLabelsEnabled(True)
+    reset_project(layer)
+    out = tmp_path / "out"
+    out.mkdir()
+    result = QGIS2VectorTiles(min_zoom=10, max_zoom=12, extent=EXTENT, output_dir=str(out),
+                              feedback=Feedback(), serve=False).convert_project_to_vector_tiles()
+    report = json.load(open(os.path.join(result, "fidelity_report.json"), encoding="utf-8"))
+    messages = [d.get("message", "") for d in report["diagnostics"]
+                if d["code"] == "Q2VT_DDP_NO_EMITTER"]
+    assert any("OffsetQuad, OffsetXY" in m for m in messages), messages
+    from qgis.core import QgsRuleBasedLabeling  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.core.ddp_fetcher import DataDefinedPropertiesFetcher  # pylint: disable=import-error,import-outside-toplevel
+    fields = [name for _, _, name in
+              DataDefinedPropertiesFetcher(QgsRuleBasedLabeling.Rule(settings.__class__(settings)),
+                                           1000).fetch()]
+    assert len(fields) == 1 and "size" in fields[0], fields
+
+
+def _unread(settings):
+    from q2vt_plugin.src.core.maplibre_converter import TextPropertyExtractor  # pylint: disable=import-error,import-outside-toplevel
+    return TextPropertyExtractor.unread_placement_properties(settings)
+
+
 def test_the_bundled_maplibre_fits_flagged_frames_around_their_shape():
     """The bundle was built with the frame fit patch (tools/maplibre); its
     worker lays out the labels."""

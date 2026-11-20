@@ -1624,6 +1624,23 @@ class TextPropertyExtractor:
         """Return ``text-halo-blur`` in pixels (0: QGIS buffers are not blurred)."""
         return 0
 
+    # Data-defined placement the extractors below do not read (static values
+    # only); ddp_fetcher writes no tile fields for them.
+    UNREAD_PLACEMENT_PROPERTIES = ("OffsetQuad", "OffsetXY", "OffsetUnits", "LabelDistance",
+                                   "DistanceUnits")
+
+    @staticmethod
+    def unread_placement_properties(label_settings: QgsPalLayerSettings) -> List[str]:
+        """The active data-defined properties of ``UNREAD_PLACEMENT_PROPERTIES``."""
+        props = label_settings.dataDefinedProperties()
+        names = []
+        for name in TextPropertyExtractor.UNREAD_PLACEMENT_PROPERTIES:
+            key = getattr(QgsPalLayerSettings.Property, name, None)
+            prop = props.property(key) if key is not None else None
+            if prop and prop.isActive():
+                names.append(name)
+        return names
+
     @staticmethod
     def get_text_anchor(label_settings: QgsPalLayerSettings) -> str:
         """Return ``text-anchor``.
@@ -5983,6 +6000,12 @@ class QgisMapLibreStyleExporter:
             # wrapped already (RulesExporter._label_lines_over_parts).
             layer_def["layout"]["text-max-width"] = 999
         self._report_label_modes(modes)
+        unread = TextPropertyExtractor.unread_placement_properties(label_settings)
+        if unread:
+            self.context.report(
+                "Q2VT_DDP_NO_EMITTER",
+                f"Data-defined label placement ({', '.join(unread)}) is not available in the web "
+                "style; the static values are used.", detail=", ".join(unread))
 
         # Emit only the placement properties that apply to this placement
         # mode; MapLibre lets some of them override each other.
