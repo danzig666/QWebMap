@@ -835,3 +835,28 @@ def test_unload_during_a_local_export_keeps_its_window(plugin, monkeypatch):
     window.feedback = None  # the export has returned: closing it deletes it
     loaded._dialog_closed(window)  # pylint: disable=protected-access
     assert calls == ["close", "deleteLater"]
+
+
+def test_unload_during_a_local_export_keeps_the_real_window(project, messages, monkeypatch):
+    """The real window's close() during a local export must not end it
+    (finished would reach _dialog_closed and delete it under the export)."""
+    from qgis.core import QgsFeedback  # pylint: disable=import-outside-toplevel
+    from qgis.PyQt import sip  # pylint: disable=import-outside-toplevel
+    from qgis.PyQt.QtCore import QEvent  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.gui.publish_dialog import PublishDialog  # pylint: disable=import-error
+    import q2vt_plugin  # pylint: disable=import-error
+    monkeypatch.setattr(PublishDialog, "ask_first_view", lambda self: None)
+    loaded = q2vt_plugin.QGIS2VectorTiles(None)
+    loaded.dialog = None
+    loaded.show_publish_dialog()
+    window = loaded.dialog
+    window.feedback = QgsFeedback()  # a local export runs in it
+    finished = []
+    window.finished.connect(finished.append)
+    loaded.unload()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not finished and not sip.isdeleted(window) and window.feedback.isCanceled()
+    window.feedback = None  # the export has returned: closing it deletes it
+    window.close()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert finished and sip.isdeleted(window)

@@ -47,6 +47,28 @@ def test_mbtiles_opens_in_folders_with_uri_characters(tmp_path, name):
             layer["conn"].close()
 
 
+def test_mbtiles_uri_of_a_network_share_has_no_authority():
+    """A mapped drive resolves to UNC (//server/share): 'file://server/...'
+    made 'server' the URI authority and SQLite refused it."""
+    from urllib.parse import urlsplit
+
+    module = _module()
+
+    class Unc:
+        def resolve(self):
+            return self
+
+        def as_posix(self):
+            return "//server/share/web #2/tiles.mbtiles"
+
+    uri = module._sqlite_uri(Unc())
+    assert urlsplit(uri).netloc == ""
+    assert uri.startswith("file:////server/share/web%20%232/")
+    drive = Unc()
+    drive.as_posix = lambda: "C:/web/tiles.mbtiles"
+    assert module._sqlite_uri(drive).startswith("file:///C:/web/tiles.mbtiles?")
+
+
 @pytest.fixture
 def server(tmp_path):
     module = _module()
@@ -85,6 +107,13 @@ def test_other_sites_cannot_read_tiles_or_style(server):
         status, headers, body = _get(server, path, {"Origin": "http://evil.example"})
         assert status == 403 and body == b"", (path, status)
         assert "Access-Control-Allow-Origin" not in headers
+        # Another web app of this computer on port 80/443 (no port in Origin).
+        for origin in ("http://localhost", "https://localhost", "http://127.0.0.1"):
+            status, headers, body = _get(server, path, {"Origin": origin})
+            assert status == 403 and body == b"", (path, origin, status)
+            assert "Access-Control-Allow-Origin" not in headers
+        status, _, body = _get(server, path, {"Host": "localhost"})
+        assert status == 403 and body == b"", (path, status)
         # A DNS-rebound name reaching 127.0.0.1.
         status, _, body = _get(server, path, {"Host": f"evil.example:{server}"})
         assert status == 403 and body == b"", (path, status)

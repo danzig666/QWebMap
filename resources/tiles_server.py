@@ -69,8 +69,10 @@ def _sqlite_uri(path: Path) -> str:
     escaped (SQLite would end or decode the path there)."""
     full = path.resolve().as_posix()
     if not full.startswith("/"):
-        full = "/" + full    # C:/... -> file:/C:/...
-    return "file:" + quote(full, safe="/:") + "?mode=ro&immutable=1"
+        full = "/" + full    # C:/... -> file:///C:/...
+    # Always an empty authority: a mapped drive resolves to UNC
+    # (//server/share/...), and 'file://server/...' is an invalid authority.
+    return "file://" + quote(full, safe="/:") + "?mode=ro&immutable=1"
 
 
 def load_mbtiles(directory: Path) -> dict:
@@ -283,7 +285,10 @@ class Handler(BaseHTTPRequestHandler):
             host, port = url.hostname, url.port
         except ValueError:
             return False
-        return host in LOOPBACK_HOSTS and port in (None, self.server.server_address[1])
+        if port is None:
+            # No port means the scheme's default (80/443), never this server.
+            port = 443 if url.scheme == "https" else 80
+        return host in LOOPBACK_HOSTS and port == self.server.server_address[1]
 
     def _local_request(self) -> bool:
         host, origin = self.headers.get("Host"), self.headers.get("Origin")

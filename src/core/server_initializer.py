@@ -56,7 +56,13 @@ if command -v xdg-open &>/dev/null; then xdg-open "$URL"; elif command -v open &
 rem UTF-8 from here on: the Python path below may hold non-ASCII letters
 chcp 65001 > nul
 rem Only an earlier tile server on the port, not another program using it (MinIO...)
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 18111991 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_.OwningProcess) } | Where-Object { $_.CommandLine -like '*tiles_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 18111991 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_.OwningProcess) } | Where-Object { $_.CommandLine -like '*tiles_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" || (
+    rem PowerShell blocked by AppLocker or GPO: netstat for the PID, wmic for its
+    rem command line. Without wmic either, an earlier server keeps the port.
+    for /f "tokens=5" %%p in ('netstat -ano -p tcp ^| findstr /r /c:":18111991 .*LISTENING"') do (
+        wmic process where "ProcessId=%%p" get CommandLine 2>nul | findstr /c:"tiles_server.py" >nul && taskkill /f /pid %%p >nul
+    )
+)
 cd /d "%~dp0"
 echo Starting MBTiles server...
 start "MBTiles Server" "_Q2VT_PYTHON" "_Q2VT_UTILS" --port 18111991

@@ -77,7 +77,11 @@ def test_windows_launcher_survives_special_characters_and_does_not_wait(server_i
     batch = init.WINDOWS_ACTIVATOR
     assert not re.search(r"^\s*pause\b", batch, re.MULTILINE | re.IGNORECASE), batch
     # Only a process whose command line is the tile server is stopped.
-    assert "taskkill" not in batch and "*tiles_server.py*" in batch
+    assert "*tiles_server.py*" in batch
+    # The fallback without PowerShell too: taskkill only after the check.
+    for line in batch.splitlines():
+        if "taskkill" in line:
+            assert 'findstr /c:"tiles_server.py" >nul && taskkill' in line, line
 
 
 def test_macos_python_is_found_in_bin(server_initializer, tmp_path, monkeypatch):
