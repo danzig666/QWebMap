@@ -5782,6 +5782,10 @@ class QgisMapLibreStyleExporter:
                 color = effect.color() if _enum_int(effect.colorType()) == 0 or effect.ramp() is None \
                     else effect.ramp().color(0.0)
                 paint["line-color"] = color.name()
+                # QGIS's glow keeps its colour's alpha (a drop shadow's colour
+                # is drawn opaque: QgsImageOperation::overlayColor).
+                if color.alphaF() < 1.0:
+                    paint["line-opacity"] = ex.mul(paint["line-opacity"], round(color.alphaF(), 4))
             else:
                 angle = math.radians(effect.offsetAngle())
                 distance = PropertyExtractor.static_pixels(effect.offsetDistance(), effect.offsetUnit())
