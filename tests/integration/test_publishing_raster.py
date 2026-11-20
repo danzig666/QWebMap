@@ -11,10 +11,9 @@ import sys
 import numpy as np
 import pytest
 from osgeo import gdal, osr
-from qgis.core import QgsProject, QgsRasterLayer, QgsRectangle
+from qgis.core import QgsRasterLayer, QgsRectangle
 
 from publishing.controller import export_local
-from publishing.errors import PublishingError
 from publishing.models import LayerConfig
 from publishing.provenance import layer_logical_id
 from publishing.validation import open_pmtiles, validate_pmtiles, vector_only_violations
@@ -497,3 +496,51 @@ def test_no_copy_where_qgis_reprojects_a_raster_fast(tmp_path):
     assert layer.isValid() and not raster_tiles._curved_to_mercator(layer)  # pylint: disable=protected-access
     plan = raster_tiles.RasterPlan(layer.id(), 10, 16, 100, (8.2e6, 6.0e6, 8.3e6, 6.1e6))
     assert raster_tiles.warped_copy(layer, plan, 256, str(tmp_path / "w.tif")) is None
+
+
+def test_vector_image_cache_key_follows_filter_table_and_attributes(tmp_path):
+    """A vector layer drawn as images is cached by its whole dataset: a new
+    filter, another table of the same GeoPackage or an attribute edit (only
+    the .dbf changes) render it again instead of reusing old images."""
+    from q2vt_plugin.src.publishing import raster_tiles  # pylint: disable=import-error
+    from qgis.core import QgsVectorFileWriter, QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY
+    project = reset_project()
+    mem = QgsVectorLayer("Point?crs=EPSG:3857&field=v:integer", "pts", "memory")
+    feats = []
+    for value in (1, 2, 3):
+        feat = QgsFeature(mem.fields())
+        feat.setAttributes([value])
+        feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(2120000 + value * 100, 6020000)))
+        feats.append(feat)
+    mem.dataProvider().addFeatures(feats)
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "ESRI Shapefile"
+    shp = str(tmp_path / "pts.shp")
+    QgsVectorFileWriter.writeAsVectorFormatV3(mem, shp, project.transformContext(), options)
+    gpkg = str(tmp_path / "two.gpkg")
+    options.driverName = "GPKG"
+    for name in ("a", "b"):
+        options.layerName = name
+        options.actionOnExistingFile = (QgsVectorFileWriter.CreateOrOverwriteFile if name == "a"
+                                        else QgsVectorFileWriter.CreateOrOverwriteLayer)
+        QgsVectorFileWriter.writeAsVectorFormatV3(mem, gpkg, project.transformContext(), options)
+    plan = raster_tiles.RasterPlan("x", 0, 10, 1, (2119000.0, 6019000.0, 2123000.0, 6023000.0))
+    config = LayerConfig("x", title="Pts")
+
+    def key(layer):
+        assert layer.isValid()
+        return raster_tiles.raster_cache_key(project, layer, config, plan, "normal")
+    layer = QgsVectorLayer(shp, "pts", "ogr")
+    first = key(layer)
+    assert first and key(layer) == first
+    assert layer.setSubsetString('"v" = 1')
+    assert key(layer) != first  # filtered
+    layer.setSubsetString("")
+    assert key(layer) == first
+    stat = os.stat(shp)
+    dbf = str(tmp_path / "pts.dbf")
+    os.utime(dbf, ns=(os.stat(dbf).st_atime_ns, os.stat(dbf).st_mtime_ns + 10 ** 9))
+    assert os.stat(shp).st_mtime_ns == stat.st_mtime_ns
+    assert key(QgsVectorLayer(shp, "pts", "ogr")) != first  # attributes edited
+    assert key(QgsVectorLayer(gpkg + "|layername=a", "pts", "ogr")) != \
+        key(QgsVectorLayer(gpkg + "|layername=b", "pts", "ogr"))

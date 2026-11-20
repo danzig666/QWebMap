@@ -25,7 +25,7 @@ import os
 import shutil
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsMapRendererParallelJob,
                        QgsMapSettings, QgsRasterLayer, QgsRectangle, QgsSettings)
@@ -803,9 +803,18 @@ def raster_cache_key(project, layer, config: LayerConfig, plan: RasterPlan, blen
     if files is None:
         return None
     sources = []
-    for path in files:
-        stat = os.stat(path)
-        sources.append([os.path.abspath(path), stat.st_size, stat.st_mtime_ns])
+    subset = ""
+    if layer.providerType() == "ogr":
+        # A vector layer drawn as images: its whole dataset (a shapefile's
+        # .dbf, a GeoPackage table's edit stamps) and its filter.
+        sources.append(export_cache.source_fingerprint("ogr", layer.source()))
+        if sources[0] is None:
+            return None
+        subset = layer.subsetString()
+    else:
+        for path in files:
+            stat = os.stat(path)
+            sources.append([os.path.abspath(path), stat.st_size, stat.st_mtime_ns])
     style = QgsMapLayerStyle()
     style.readFromLayer(layer)
     here = os.path.dirname(os.path.abspath(__file__))
@@ -818,7 +827,7 @@ def raster_cache_key(project, layer, config: LayerConfig, plan: RasterPlan, blen
     except AttributeError:
         operations = []
     return export_cache.make_key(
-        "raster", code, sources, style.xmlData(), layer.crs().toWkt(), operations,
+        "raster", code, sources, layer.source(), subset, style.xmlData(), layer.crs().toWkt(), operations,
         [plan.min_zoom, plan.max_zoom, list(plan.extent_3857)],
         [tile_format(config.raster_format), int(config.raster_quality), bool(config.raster_hidpi)],
         config.title or layer.name(), blend)
