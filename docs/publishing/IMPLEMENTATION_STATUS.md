@@ -2435,3 +2435,18 @@ Reimplemented, no code copied.
   `preview_centre` (densest grid cell of the preview's size); the automatic choice per project
   (`QWebMap/simple/autoDetail`, default on for new settings).
 * tests/integration/test_publish_dialog_review.py (views, export, first run, recommendation, preview).
+
+## 4.61.0 — audit fixes
+
+* Full adversarial audit of 4.60.0 (122 findings) fixed in 13 groups: flattener (heatmap units,
+  scale thresholds, DDPs, diagrams, Web Mercator by definition), exporter (antimeridian, cancel,
+  fid, step files, writer errors, direction runs), materializer, converter (HTML labels, glyphs,
+  DD label placement diagnostics, distinct values by SQL), tiles/workers (cache key, cancel,
+  re-entrant `gdal_guard.shared`), local server/Processing (loopback CORS, launchers, URI escaping),
+  sprites, publishing core (lock from PLAN, safe site move, MBTiles only, leak scan on decoded JSON,
+  grid paths), remote (S3 SDK choice, checksums, error classes, retention), data (raster cache key,
+  terrain pyramid, search shards, basemap reads), GUI (simple view zooms, scale ranges, export reuse,
+  ZIP), viewer JS (pole search, evaluate operators, pack fetch) and CI (tested zip, QGIS 3.44).
+* Not fixed: port 9000 taken by another program, synchronous network calls in upload dialogs,
+  archive re-hashing, long Windows paths only warned, process-wide S3 SDK choice, some global state
+  shared by simultaneous exports, repeated fid values in multipart sources.

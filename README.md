@@ -588,7 +588,10 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.60.0**. Newest first:
+This README describes QWebMap **4.61.0**. Newest first:
+
+**4.61.0** — bug fixes after a full code audit
+- About 120 problems fixed: no false “absolute local path” stops at the end of an export, online publishing with old system S3 SDKs, antimeridian features, heatmaps in geographic projects, HTML labels, stale raster images, safe replacing of a local map, and a local tile server that only answers this computer.
 
 **4.60.0** — Simple view
 - The Publish window has a **Simple** view for first web maps: title, layers (with “show its information when clicked”), area, how close visitors can zoom, background map and folder, and one **Make web map** button that makes it on this computer. **Advanced** shows every setting; switch at any time, nothing is lost. Asked once on first use.
