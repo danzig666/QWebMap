@@ -3620,12 +3620,41 @@ class QgisMapLibreStyleExporter:
     def _distinct_values(self, source_layer: str, fields: List[str]) -> Optional[list]:
         """Distinct value combinations of ``fields`` in an exported dataset
         (None when more than ``MAX_VARIANTS``)."""
+        # Cached: several style layers (and zoom-band copies) ask the same.
+        cache = self.__dict__.setdefault("_distinct_cache", {})
+        key = (source_layer, tuple(fields))
+        if key not in cache:
+            cache[key] = self._scan_distinct_values(source_layer, fields)
+        found = cache[key]
+        return None if found is None else list(found)
+
+    def _scan_distinct_values(self, source_layer: str, fields: List[str]) -> Optional[list]:
         from osgeo import ogr  # pylint: disable=import-outside-toplevel
         path = join(self.utils_dir, f"{source_layer}.gpkg")
         dataset = ogr.Open(path)
         if dataset is None:
             return []
         layer = dataset.GetLayer(0)
+        defn = layer.GetLayerDefn()
+        names = {defn.GetFieldDefn(i).GetName() for i in range(defn.GetFieldCount())}
+        present = [f for f in fields if f in names]
+        if not present:
+            return [tuple(None for _ in fields)] if layer.GetNextFeature() is not None else []
+        if present:
+            # SQL, not a Python loop over every feature (millions on big layers).
+            table = layer.GetName().replace('"', '""')
+            columns = ", ".join('"{}"'.format(f.replace('"', '""')) for f in present)
+            result = dataset.ExecuteSQL(f'SELECT DISTINCT {columns} FROM "{table}" '
+                                        f"LIMIT {self.MAX_VARIANTS + 1}")
+            if result is not None:
+                try:
+                    rows = [dict(zip(present, (feature.GetField(i) for i in range(len(present)))))
+                            for feature in result]
+                finally:
+                    dataset.ReleaseResultSet(result)
+                if len(rows) > self.MAX_VARIANTS:
+                    return None
+                return [tuple(row.get(f) for f in fields) for row in rows]
         seen = []
         keys = set()
         for feature in layer:

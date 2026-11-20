@@ -314,3 +314,35 @@ def test_rules_drawing_the_same_hash_lengths_share_their_sprites(exporter, monke
     other.symbolLayer(0).setStrokeWidth(0.9)
     third = _convert(exporter, other)[-1]["layout"]["icon-image"]
     assert not set(third[3:-1:2]) & set(first[3:-1:2])  # another pen: its own sprites
+
+
+def test_distinct_values_by_sql_and_cached(exporter, tmp_path, monkeypatch):
+    """Variant values come from one SQL query per (layer, fields), not a
+    Python loop over every feature on every call."""
+    from osgeo import ogr
+    path = str(tmp_path / "pts.gpkg")
+    dataset = ogr.GetDriverByName("GPKG").CreateDataSource(path)
+    layer = dataset.CreateLayer("pts", geom_type=ogr.wkbPoint)
+    layer.CreateField(ogr.FieldDefn("c", ogr.OFTString))
+    layer.CreateField(ogr.FieldDefn("n", ogr.OFTInteger))
+    layer.CreateField(ogr.FieldDefn("many", ogr.OFTInteger))
+    for i in range(300):
+        feature = ogr.Feature(layer.GetLayerDefn())
+        if i % 3:
+            feature.SetField("c", "#ff0000" if i % 3 == 1 else "#0000ff")
+        feature.SetField("n", i % 2)
+        feature.SetField("many", i)
+        feature.SetGeometry(ogr.CreateGeometryFromWkt("POINT(1 1)"))
+        layer.CreateFeature(feature)
+    dataset = layer = None
+    exporter.utils_dir = str(tmp_path)
+    combos = exporter._distinct_values("pts", ["c", "missing"])  # pylint: disable=protected-access
+    assert sorted(combos, key=str) == sorted([(None, None), ("#ff0000", None), ("#0000ff", None)],
+                                             key=str)
+    assert len(exporter._distinct_values("pts", ["c", "n"])) == 6  # pylint: disable=protected-access
+    assert exporter._distinct_values("pts", ["many"]) is None  # pylint: disable=protected-access
+    opened = []
+    monkeypatch.setattr(ogr, "Open", lambda *a: opened.append(a))
+    assert len(exporter._distinct_values("pts", ["c", "missing"])) == 3  # pylint: disable=protected-access
+    assert exporter._distinct_values("pts", ["many"]) is None  # pylint: disable=protected-access
+    assert not opened
