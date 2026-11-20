@@ -588,3 +588,24 @@ def test_meters_at_scale_marker_sprite_in_degrees_and_feet(plugin, crs, units):
         assert sprite_px * _curve_at(icon_size, 16.0) == pytest.approx(expected, rel=0.08, abs=1.5)
     finally:
         project.setCrs(previous)
+
+
+@pytest.mark.parametrize("crs", ["ESRI:102100", "ESRI:102113", "EPSG:3785", "EPSG:900913"])
+def test_web_mercator_under_another_authid_is_web_mercator(crs):
+    """ESRI:102100 and its kin are EPSG:3857 under another name: they were
+    taken for a projected CRS (map units 1/cos(latitude) too large, scale
+    breaks about half a zoom off)."""
+    from qgis.core import QgsProject
+    from q2vt_plugin.src.core.fidelity.units import is_web_mercator  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.zoom_load import zoom_scale_factor  # pylint: disable=import-error
+    from q2vt_plugin.src.core.fidelity.zoom import WEB_MERCATOR_TOP_SCALE  # pylint: disable=import-error
+    assert is_web_mercator(QgsCoordinateReferenceSystem(crs))
+    assert not is_web_mercator(QgsCoordinateReferenceSystem("EPSG:3395"))
+    assert not is_web_mercator(QgsCoordinateReferenceSystem("EPSG:4326"))
+    project = QgsProject.instance()
+    previous = project.crs()
+    project.setCrs(QgsCoordinateReferenceSystem(crs))
+    try:
+        assert zoom_scale_factor(project, EXTENT) == pytest.approx(WEB_MERCATOR_TOP_SCALE)
+    finally:
+        project.setCrs(previous)

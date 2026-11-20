@@ -626,3 +626,53 @@ def test_glow_keeps_its_colour_alpha_a_shadow_does_not(mc):
     assert opacity(QgsOuterGlowEffect, 128) == pytest.approx(
         opacity(QgsOuterGlowEffect, 255) * 128 / 255, rel=0.01)
     assert opacity(QgsDropShadowEffect, 128) == opacity(QgsDropShadowEffect, 255)
+
+
+def _label_rule(prop_key, expression, on_format=False):
+    from qgis.core import QgsPalLayerSettings, QgsRuleBasedLabeling, QgsTextFormat
+    settings = QgsPalLayerSettings()
+    settings.fieldName = "name"
+    if on_format:
+        text_format = QgsTextFormat()
+        text_format.dataDefinedProperties().setProperty(prop_key,
+                                                        QgsProperty.fromExpression(expression))
+        settings.setFormat(text_format)
+    else:
+        settings.dataDefinedProperties().setProperty(prop_key, QgsProperty.fromExpression(expression))
+    return QgsRuleBasedLabeling.Rule(settings)
+
+
+@pytest.mark.parametrize("scale,expected", [(5000.0, True), (50000.0, False)])
+def test_a_boolean_property_reading_the_map_scale_is_bound_to_it(plugin, scale, expected):
+    """Bold = @map_scale < 10000: the field's expression kept @map_scale,
+    which no export context sets (NULL at every zoom: never bold)."""
+    from qgis.core import QgsExpression, QgsPalLayerSettings
+    from q2vt_plugin.src.core.ddp_fetcher import DataDefinedPropertiesFetcher  # pylint: disable=import-error
+    rule = _label_rule(QgsPalLayerSettings.Property.Bold, "@map_scale < 10000")
+    fields = DataDefinedPropertiesFetcher(rule, scale).fetch()
+    assert len(fields) == 1
+    assert bool(QgsExpression(fields[0][1]).evaluate()) is expected
+
+
+def test_a_data_defined_colour_is_evaluated_once(plugin):
+    """The hex wrapper's own arrays put every colour into
+    try(array_to_string(X), X): X evaluated twice per feature."""
+    from qgis.core import QgsPalLayerSettings
+    from q2vt_plugin.src.core.ddp_fetcher import DataDefinedPropertiesFetcher  # pylint: disable=import-error
+    rule = _label_rule(QgsPalLayerSettings.Property.Color, "if(\"a\" = 1, 'red', 'blue')")
+    fields = DataDefinedPropertiesFetcher(rule, 1000).fetch()
+    assert len(fields) == 1 and not fields[0][1].startswith("try(array_to_string")
+
+
+def test_a_text_format_property_makes_no_field_and_is_reported(plugin):
+    """A text format's own property: the field ref was set on a copy of the
+    format (the label kept its expression) and nothing in the style read
+    the computed field."""
+    from qgis.core import QgsPalLayerSettings
+    from fidelity.diagnostics import DiagnosticCollector
+    from q2vt_plugin.src.core.ddp_fetcher import DataDefinedPropertiesFetcher  # pylint: disable=import-error
+    diagnostics = DiagnosticCollector()
+    rule = _label_rule(QgsPalLayerSettings.Property.Color, "if(\"a\" = 1, 'red', 'blue')",
+                       on_format=True)
+    assert DataDefinedPropertiesFetcher(rule, 1000, diagnostics=diagnostics).fetch() == []
+    assert diagnostics.by_code("Q2VT_DDP_NO_EMITTER")

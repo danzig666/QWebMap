@@ -49,7 +49,7 @@ from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform, Qgs
                        QgsExpressionContext, QgsExpressionContextUtils, QgsFeatureRequest,
                        QgsRectangle, QgsUnitTypes, QgsVectorLayer)
 
-from ..core.fidelity.units import MapUnitContext
+from ..core.fidelity.units import MapUnitContext, is_web_mercator
 
 EARTH = 40075016.68557849          # Web Mercator x-extent
 TILE_PX = 512                      # MapLibre draws a tile of zoom z at 512 px at map zoom z
@@ -185,7 +185,7 @@ def zoom_scale_factor(project, extent_3857: QgsRectangle) -> float:
     except Exception:  # noqa: BLE001 - a broken extent: the equator
         latitude = 0.0
     units = "degrees" if crs.isGeographic() else getattr(crs.mapUnits(), "name", "meters")
-    context = MapUnitContext.for_project(crs.authid() in ("EPSG:3857", "EPSG:900913"), str(units),
+    context = MapUnitContext.for_project(is_web_mercator(crs), str(units),
                                          latitude)
     return context.top_scale
 

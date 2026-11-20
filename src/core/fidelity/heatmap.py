@@ -245,8 +245,8 @@ def build_spec(ramp, radius: float, radius_unit: str, explicit_max: float,
                points: Sequence[Tuple[float, float, float]], zooms: Sequence[int],
                latitude: float = 0.0, mercator: bool = True, mm_per_unit: Optional[float] = None,
                opacity: float = 1.0) -> Dict:
-    """Heatmap spec for the style. ``radius_unit``: "map" (project CRS units,
-    ``points`` in the same CRS) or "screen" (``mm_per_unit`` mm per unit);
+    """Heatmap spec for the style. ``radius_unit``: "map" (in the units of
+    ``points``: Web Mercator units when ``mercator``) or "screen" (``mm_per_unit`` mm per unit);
     ``zooms``: the integer zooms the layer is shown at."""
     spec: Dict = {"colors": color_stops(ramp), "opacity": opacity}
     radius_at = {}
