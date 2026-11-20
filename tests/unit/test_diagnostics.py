@@ -74,6 +74,13 @@ def test_redaction_leaves_ratios_and_separate_paths():
     assert redact_paths("1/2 of km/h; a / b / c") == "1/2 of km/h; a / b / c"
     assert redact_paths("uses /usr/share/x.ttf and C:\\Fonts\\b c\\y.ttf.") == \
         "uses <path>/x.ttf and <path>/y.ttf."
+    # A path no longer runs on to the last separator of the line.
+    assert redact_paths("uses /usr/share/x.ttf and /opt/y.ttf here") == \
+        "uses <path>/x.ttf and <path>/y.ttf here"
+    assert redact_paths("Could not load /home/u/a.svg (expected w/h ratio)") == \
+        "Could not load <path>/a.svg (expected w/h ratio)"
+    assert redact_paths("/home/u/a.svg at 3 km/h, 3 /4") == "<path>/a.svg at 3 km/h, 3 /4"
+    assert redact_paths("C:\\Program Files (x86)\\QGIS 3.44\\svg\\a.svg") == "<path>/a.svg"
 
 
 def test_html_report_escapes_user_text():

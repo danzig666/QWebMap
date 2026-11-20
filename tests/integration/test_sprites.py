@@ -371,6 +371,19 @@ def test_pixel_symbol_buffer_is_converted_for_oversampling(sg):
     assert symbol.bufferSettings().size() == pytest.approx(4 * 25.4 / 96)
 
 
+def test_random_fill_density_area_in_pixels_converts_as_an_area(sg):
+    """densityArea was divided by px/mm once like a length (px² needs the square)."""
+    from qgis.core import QgsRandomMarkerFillSymbolLayer
+    layer = QgsRandomMarkerFillSymbolLayer(10, Qgis.PointCountMethod.DensityBased, 9216)
+    layer.setDensityAreaUnit(Qgis.RenderUnit.Pixels)
+    fill = QgsFillSymbol()
+    fill.changeSymbolLayer(0, layer)
+    sg._pixels_to_millimeters(fill)
+    layer = fill.symbolLayer(0)
+    assert layer.densityAreaUnit() == Qgis.RenderUnit.Millimeters
+    assert layer.densityArea() == pytest.approx(9216 * (25.4 / 96) ** 2)
+
+
 def test_fallback_pattern_previews_are_small_and_agree_at_1x_and_2x(sg, tmp_path):
     """Fill previews (pattern fallbacks) were drawn on a fixed 1000 / 2000 px
     canvas: 333 CSS px textures, a dozen made an 8000 px @2x sheet."""
@@ -385,7 +398,9 @@ def test_fallback_pattern_previews_are_small_and_agree_at_1x_and_2x(sg, tmp_path
     gen = sg.SpriteGenerator(requests, str(tmp_path), 3, diagnostics=diags)
     gen.generate()
     one, two = gen.index[1]["p0"], gen.index[2]["p0"]
-    assert 0 < one["width"] / one["pixelRatio"] == two["width"] / two["pixelRatio"] <= 128
+    # Cropped to the ink: the 2x crop may differ by a device pixel.
+    assert 0 < one["width"] / one["pixelRatio"] <= 128
+    assert two["width"] / two["pixelRatio"] == pytest.approx(one["width"] / one["pixelRatio"], abs=1)
     assert max(Image.open(tmp_path / "sprite" / "sprite@2x.png").size) <= 4096
     assert not diags.by_code("Q2VT_SPRITE_SHEET_LARGE")
 

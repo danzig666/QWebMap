@@ -257,8 +257,12 @@ class Diagnostic:
 # A drive or a separator not inside a word (not "1/2", "km/h"), folders that
 # may contain spaces ("C:\Users\Jane Doe\My Maps": split at the spaces,
 # the user's name was left in clear; no ":", which starts the next path),
-# then a basename without spaces.
-_PATH_RE = re.compile(r"(?:(?<![\w.])[A-Za-z]:|(?<![\w.]))(?:[\\/][^\\/:'\"\r\n]*)+[\\/][^\\/\s'\"]+")
+# then a basename without spaces. A folder stops at ",;", an unbalanced
+# parenthesis or a "name.ext " token: otherwise the match ran on to the last
+# separator of the line ("/a.svg (w/h ratio)", "/x.ttf and /opt/y.ttf"),
+# eating the basename and the sentence. "Program Files (x86)" still matches.
+_SEGMENT = r"(?:(?!\.[A-Za-z]\w{0,4}\s)[^\\/:'\"\r\n,;()]|\([^\\/:'\"\r\n()]*\))*"
+_PATH_RE = re.compile(r"(?:(?<![\w.])[A-Za-z]:|(?<![\w.]))(?:[\\/]" + _SEGMENT + r")+[\\/][^\\/\s'\"]+")
 
 
 def redact_paths(text: str) -> str:

@@ -161,14 +161,16 @@ def _object_pixels_to_millimeters(layer) -> None:
         unit_setter = f"set{unit_getter[:1].upper()}{unit_getter[1:]}"
         if not all(hasattr(layer, name) for name in (base, setter, unit_setter)):
             continue
+        # A random fill's densityArea is an area: px² to mm².
+        per_mm = _PX_PER_MM ** 2 if base == "densityArea" else _PX_PER_MM
         try:
             if getattr(layer, unit_getter)() != pixels:
                 continue
             value = getattr(layer, base)()
             if isinstance(value, QPointF):
-                value = QPointF(value.x() / _PX_PER_MM, value.y() / _PX_PER_MM)
+                value = QPointF(value.x() / per_mm, value.y() / per_mm)
             elif isinstance(value, (int, float)):
-                value = value / _PX_PER_MM
+                value = value / per_mm
             else:
                 continue
             getattr(layer, setter)(value)
