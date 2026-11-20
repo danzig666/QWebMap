@@ -61,7 +61,8 @@ def fresh_out_dir(out):
         if not os.path.isfile(os.path.join(out, OUT_MARKER)) or \
                 out in (ROOT, os.path.expanduser("~"), os.path.abspath(os.sep)):
             raise SystemExit(f"--out {out} is not empty and was not made by this tool: "
-                             "choose a new folder (or empty it yourself)")
+                             "choose a new folder (or empty it yourself; also an output "
+                             "folder of a run older than this check, e.g. a batch_NNN)")
         shutil.rmtree(out)
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, OUT_MARKER), "w", encoding="utf-8") as handle:

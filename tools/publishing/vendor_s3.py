@@ -8,8 +8,8 @@ hash-checked wheels. Development tool; the plugin never runs pip.
 
 Pinned wheels (PyPI) are listed in WHEELS, their SHA-256 in vendor_s3.sha256;
 the script refuses a wheel whose hash differs or is not pinned (``--record``
-writes the hashes of the downloaded wheels instead). All wheels are checked
-before the vendored copy is replaced. Licences are copied next to the code.
+adds the hashes of the unpinned wheels; the pinned ones are still checked).
+All wheels are checked before the vendored copy is replaced. Licences are copied next to the code.
 """
 
 import hashlib
@@ -72,10 +72,12 @@ def main(argv=None) -> int:
     for name in WHEELS:
         data = urllib.request.urlopen(_pypi_url(name), timeout=120).read()
         digest = hashlib.sha256(data).hexdigest()
-        if not record and expected[name] != digest:
+        # Checked with --record too: adding a wheel must not re-trust (and
+        # silently re-pin) a changed payload of an already pinned one.
+        if name in expected and expected[name] != digest:
             raise SystemExit(f"{name}: SHA-256 {digest} != pinned {expected[name]}")
         downloads[name] = data
-        recorded.append(f"{digest}  {name}")
+        recorded.append(f"{expected.get(name, digest)}  {name}")
     # Only now, every wheel at hand and checked: a failed download leaves the
     # vendored SDK as it was.
     shutil.rmtree(TARGET, ignore_errors=True)

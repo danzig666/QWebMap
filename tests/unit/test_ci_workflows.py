@@ -19,10 +19,15 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "publishing"))
 sys.path.insert(0, os.path.join(ROOT, "tools", "gallery"))
 import build_release  # noqa: E402  pylint: disable=wrong-import-position,import-error
 
-yaml = pytest.importorskip("yaml")
-
 
 def _workflow(name):
+    # Imported here, not skipped at module level: the tests without YAML
+    # still run, and with Q2VT_REQUIRE_TOOLS a missing PyYAML fails.
+    try:
+        import yaml  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        from q2vt_support import missing_tool  # pylint: disable=import-outside-toplevel,import-error
+        missing_tool("needs PyYAML")
     with open(os.path.join(WORKFLOWS, name), encoding="utf-8") as handle:
         doc = yaml.safe_load(handle)
     doc["on"] = doc.pop(True, doc.get("on"))  # YAML 1.1 reads the key `on` as True
@@ -199,6 +204,41 @@ def test_vendored_wheels_are_all_pinned(tmp_path, monkeypatch):
     assert (target / "kept.py").exists()
 
 
+def test_vendor_record_still_checks_the_pinned_wheels(tmp_path, monkeypatch):
+    """--record rewrote every pin from the downloads: adding one wheel
+    re-trusted (and re-pinned) a changed payload of a pinned one."""
+    import hashlib  # pylint: disable=import-outside-toplevel
+    import io  # pylint: disable=import-outside-toplevel
+    import vendor_s3  # pylint: disable=import-outside-toplevel,import-error
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as wheel:
+        wheel.writestr("pkg/__init__.py", "")
+    payload = buffer.getvalue()
+    pins = tmp_path / "pins.sha256"
+    old = f"{hashlib.sha256(payload).hexdigest()}  old-1.0-py3-none-any.whl\n"
+    pins.write_text(old)
+    monkeypatch.setattr(vendor_s3, "HASHES_FILE", str(pins))
+    monkeypatch.setattr(vendor_s3, "TARGET", str(tmp_path / "s3"))
+    monkeypatch.setattr(vendor_s3, "WHEELS", {"old-1.0-py3-none-any.whl": None,
+                                              "new-1.0-py3-none-any.whl": None})
+    monkeypatch.setattr(vendor_s3, "_pypi_url", lambda name: name)
+    served = {"old-1.0-py3-none-any.whl": payload + b"x", "new-1.0-py3-none-any.whl": payload}
+
+    class Response:  # pylint: disable=too-few-public-methods
+        def __init__(self, data):
+            self.data = data
+
+        def read(self):
+            return self.data
+    monkeypatch.setattr(vendor_s3.urllib.request, "urlopen", lambda url, timeout: Response(served[url]))
+    with pytest.raises(SystemExit, match="old-1.0.*!= pinned"):
+        vendor_s3.main(["--record"])
+    assert pins.read_text() == old and not (tmp_path / "s3").exists()
+    served["old-1.0-py3-none-any.whl"] = payload
+    assert vendor_s3.main(["--record"]) == 0
+    assert pins.read_text() == old + f"{hashlib.sha256(payload).hexdigest()}  new-1.0-py3-none-any.whl\n"
+
+
 def test_pmtiles_cli_downloads_are_pinned():
     import fetch_pmtiles_cli  # pylint: disable=import-outside-toplevel,import-error
     assert set(fetch_pmtiles_cli.ASSETS.values()) <= set(fetch_pmtiles_cli.SHA256)
@@ -209,7 +249,7 @@ def test_tools_refuse_to_wipe_a_folder_they_did_not_make(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     (work / "thesis.txt").write_text("keep me")
-    with pytest.raises(SystemExit, match="not made by this tool"):
+    with pytest.raises(SystemExit, match="not made by this tool.*older than this check"):
         build_gallery.fresh_out_dir(str(work))
     assert (work / "thesis.txt").read_text() == "keep me"
     out = build_gallery.fresh_out_dir(str(tmp_path / "out"))
@@ -218,3 +258,22 @@ def test_tools_refuse_to_wipe_a_folder_they_did_not_make(tmp_path):
     assert os.listdir(out) == [build_gallery.OUT_MARKER]
     with pytest.raises(SystemExit):
         build_gallery.fresh_out_dir(ROOT)
+
+
+def test_ci_jobs_do_not_download_the_release_zips():
+    """blob:none alone still downloads every file at HEAD (all release zips,
+    hundreds of MB) for the nightly plan, every sync and every release."""
+    def checkout(job):
+        return next(step for step in job["steps"] if str(step.get("uses", "")).startswith("actions/checkout"))
+    plan = checkout(_workflow("tests.yml")["jobs"]["plan"])["with"]
+    assert plan["sparse-checkout"].split() == ["tools/ci"]
+    assert plan.get("sparse-checkout-cone-mode", True) is True
+    decide = _step(_workflow("tests.yml")["jobs"]["plan"], "Decide whether to run the tests")["run"]
+    assert "tools/ci/tested_paths" in decide and "git diff --name-only" in decide
+    for name, job in (("sync-variants.yml", "sync"), ("release.yml", "release")):
+        options = checkout(_workflow(name)["jobs"][job])["with"]
+        assert "!/releases/" in options["sparse-checkout"].split(), name
+        assert options["sparse-checkout-cone-mode"] is False, name
+    resolve = _step(_workflow("release.yml")["jobs"]["release"], "Resolve the variant, zip and notes")["run"]
+    added = resolve.index('git sparse-checkout add "/${ZIP}" "/${NOTES}"')
+    assert added < resolve.index('[ -f "${NOTES}" ]') < resolve.index("--compare")

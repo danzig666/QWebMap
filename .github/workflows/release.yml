@@ -11,7 +11,11 @@
 # branch's last successful Tests run, with no change in tools/ci/tested_paths
 # since ("untested" skips this check). "replace" moves an existing release's
 # tag to this commit and replaces its zip, title and notes (the release is
-# never deleted, so a failed upload leaves it in place; run it again).
+# never deleted, so a failed upload leaves it in place; run it again). It
+# may not move a tag to a commit whose .github/workflows files differ from
+# the tagged one's (GitHub refuses such ref updates to the Actions token
+# without the workflows permission: the step fails, the old release stays):
+# publish a new version instead.
 # "notes_only" only rewrites the title and notes of
 # an existing release (no zip, no tag change, "Latest" left as it is). Only generic releases become
 # the repository's "Latest" release; variant releases never do, so the
@@ -49,7 +53,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # the last tested commit
-          filter: blob:none  # older release zips are not downloaded
+          # Without releases/: only this release's zip and notes are added
+          # below (blob:none alone still downloads every zip at HEAD).
+          filter: blob:none
+          sparse-checkout: |
+            /*
+            !/releases/
+          sparse-checkout-cone-mode: false
       - name: Resolve the variant, zip and notes
         env:
           VERSION: ${{ inputs.version }}
@@ -69,6 +79,7 @@ jobs:
           FOLDER="QWebMap"
           ZIP="releases/QWebMap-${VERSION}${SUFFIX}.zip"
           NOTES="releases/RELEASE_NOTES_${VERSION}${SUFFIX}.md"
+          git sparse-checkout add "/${ZIP}" "/${NOTES}" "/releases/RELEASE_NOTES_${VERSION}.md"
           [ -f "${NOTES}" ] || NOTES="releases/RELEASE_NOTES_${VERSION}.md"
           test -f "${NOTES}"
           if [ "${NOTES_ONLY}" != "true" ]; then
@@ -111,7 +122,8 @@ jobs:
             echo "No release ${TAG} yet: it is created."
             exit 0
           fi
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null \
+            || { echo "::error title=Tag not moved::${TAG} stays on its commit (the Actions token may not move a tag across a change of .github/workflows files): publish a new version."; exit 1; }
           gh release upload "${TAG}" "${ZIP}" --clobber
           gh release edit "${TAG}" \
             --title "${TITLE}" \

@@ -57,7 +57,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          filter: blob:none  # names only: no release zips
+          # The history (commits and trees: enough for git diff --name-only)
+          # and only tools/ci and the root files: blob:none alone still
+          # downloads every file at HEAD, the release zips included.
+          filter: blob:none
+          sparse-checkout: tools/ci
       - name: Skip the backup slot if tonight's run already started
         id: backup
         # The backup entry of on.schedule (tests/unit/test_ci_workflows.py).
