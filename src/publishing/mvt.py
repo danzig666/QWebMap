@@ -75,10 +75,17 @@ def _zigzag(value: int) -> int:
     return (value >> 1) ^ -(value & 1)
 
 
+def _text(data: bytes) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:  # callers only handle MvtDecodeError
+        raise MvtDecodeError(f"invalid UTF-8 text: {error}") from error
+
+
 def _value(data: bytes):
     for number, wire, value in _fields(data):
         if number == 1 and wire == 2:
-            return value.decode("utf-8")
+            return _text(value)
         if number == 2 and wire == 5:
             return struct.unpack("<f", value)[0]
         if number == 3 and wire == 1:
@@ -125,13 +132,13 @@ def decode(data: bytes, properties: bool = True, geometry: bool = False,
         features_raw: List[bytes] = []
         for l_number, l_wire, l_value in _fields(value):
             if l_number == 1 and l_wire == 2:
-                name = l_value.decode("utf-8")
+                name = _text(l_value)
             elif l_number == 15 and l_wire == 0:
                 version = l_value
             elif l_number == 5 and l_wire == 0:
                 extent = l_value
             elif l_number == 3 and l_wire == 2:
-                keys.append(l_value.decode("utf-8"))
+                keys.append(_text(l_value))
             elif l_number == 4 and l_wire == 2:
                 values.append(_value(l_value))
             elif l_number == 2 and l_wire == 2:
@@ -142,6 +149,8 @@ def decode(data: bytes, properties: bool = True, geometry: bool = False,
             continue
         if version not in (1, 2):
             raise MvtDecodeError(f"layer {name}: unsupported version {version}")
+        if extent <= 0:  # tile coordinates are divided by it
+            raise MvtDecodeError(f"layer {name}: extent {extent}")
         features = []
         for raw_feature in features_raw:
             feature = {"id": None, "type": 0, "properties": {}, "geometry_ints": 0}
@@ -215,9 +224,9 @@ def layer_summary(data: bytes) -> Dict[str, set]:
         name, keys = None, set()
         for l_number, l_wire, l_value in _fields(value):
             if l_number == 1 and l_wire == 2:
-                name = l_value.decode("utf-8")
+                name = _text(l_value)
             elif l_number == 3 and l_wire == 2:
-                keys.add(l_value.decode("utf-8"))
+                keys.add(_text(l_value))
         if name is None:
             raise MvtDecodeError("layer without a name")
         out.setdefault(name, set()).update(keys)

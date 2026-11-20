@@ -2,16 +2,20 @@
 // Twins of publishing/search_index.py (normalize, words) and
 // publishing/feature_index.py (fnv1a); tested with the same vectors.
 
+// The same characters as search_index.py (Python's and JavaScript's \s differ).
+const SPACE = "\\t\\n\\v\\f\\r \\x1c-\\x1f\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff";
+const SPACES = new RegExp(`[${SPACE}]+`, "gu");
+
 export function normalize(text) {
   return String(text ?? "")
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
     .toLowerCase()
-    .replace(/\s+/gu, " ")
-    .trim();
+    .replace(SPACES, " ")
+    .replace(/^ | $/gu, "");
 }
 
-const WORD_SPLIT = /[\s,;:()"'[\]]+/u;
+const WORD_SPLIT = new RegExp(`[${SPACE},;:()"'[\\]]+`, "u");
 
 export function words(text) {
   return normalize(text).split(WORD_SPLIT).filter(Boolean);
@@ -39,8 +43,9 @@ export function shardsForQuery(manifest, query, maxShards = 24) {
   const terms = words(query);
   if (!terms.length) return [];
   const length = manifest.prefixLength;
-  const forWord = (word) => (word.length >= length
-    ? manifest.shards.filter((s) => s.key === word.slice(0, length))
+  // By code point, as Python cuts the keys (not UTF-16 units: emoji).
+  const forWord = (word) => (Array.from(word).length >= length
+    ? manifest.shards.filter((s) => s.key === Array.from(word).slice(0, length).join(""))
     : manifest.shards.filter((s) => s.key.startsWith(word)));
   // The most selective word: the fewest bytes to download.
   let best = null;

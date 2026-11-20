@@ -97,3 +97,44 @@ def test_terrain_heights_fill_and_one_full_fill(plugin, tmp_path, monkeypatch):
         if z == min(steps):
             continue
         assert step <= 2.5 * relief.get(z, step) + 1.0, (z, step, relief.get(z))
+
+
+def test_terrain_pyramid_covers_only_the_area_and_stops_on_cancel(plugin, tmp_path, monkeypatch):
+    """A DEM much larger than the area: the pyramid (overviews) is built over
+    the DEM's part around the area, not the whole file (a national DEM took
+    hours and gigabytes); Cancel stops it and leaves no files behind."""
+    from q2vt_plugin.src.publishing import terrain  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.errors import Cancelled  # pylint: disable=import-error
+    from q2vt_plugin.src.publishing.progress import Progress  # pylint: disable=import-error
+    path = _eov_dem(tmp_path / "dem.tif", size=6000)
+    src, dst = osr.SpatialReference(), osr.SpatialReference()
+    src.ImportFromEPSG(23700)
+    dst.ImportFromEPSG(3857)
+    for srs in (src, dst):
+        srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    to_web = osr.CoordinateTransformation(src, dst)
+    # A 1.2 km square in the middle of the 6 km DEM.
+    corners = [to_web.TransformPoint(x, y)[:2] for x in (729400, 730600) for y in (281400, 282600)]
+    xs, ys = [c[0] for c in corners], [c[1] for c in corners]
+    area = (min(xs), min(ys), max(xs), max(ys))
+    built = []
+    original = terrain._pyramid  # pylint: disable=protected-access
+
+    def spy(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if result:
+            vrt = gdal.Open(result)
+            built.append((vrt.RasterXSize, vrt.RasterYSize, vrt.GetRasterBand(1).GetOverviewCount()))
+        return result
+    monkeypatch.setattr(terrain, "_pyramid", spy)
+    layer = QgsRasterLayer(path, "Domborzat")
+    out = str(tmp_path / "terrain.pmtiles")
+    assert terrain.render_terrain(layer, area, 12, 13, out) is not None
+    assert len(built) == 1 and max(built[0][:2]) < 1500 and built[0][2] >= 1, built  # ~1.2 km of 6 km
+    assert not [n for n in os.listdir(tmp_path) if ".dem.vrt" in n]
+    # Cancel while the overviews of the whole DEM are built.
+    calls = []
+    progress = Progress(cancel=lambda: bool(calls.append(1)) or len(calls) > 1)
+    with pytest.raises(Cancelled):
+        original(path, str(tmp_path / "x.dem.vrt"), None, None, progress)
+    assert not [n for n in os.listdir(tmp_path) if "x.dem.vrt" in n]

@@ -17,6 +17,7 @@ into the release as its own PMTiles archive (``data/basemap.pmtiles``).
 """
 
 import gzip
+import http.client
 import json
 import math
 import os
@@ -24,6 +25,7 @@ import shutil
 import time
 import urllib.error
 import urllib.request
+import zlib
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -31,7 +33,8 @@ from . import mvt
 from .errors import PublishingError
 from .pmtiles_builder import ArchiveDescriptor, TileSink
 from .progress import Progress
-from .vendor.pmtiles.tile import Compression, TileType, deserialize_directory, deserialize_header, zxy_to_tileid
+from .vendor.pmtiles.tile import (Compression, MagicNumberNotFound, SpecVersionUnsupported, TileType,
+                                  deserialize_directory, deserialize_header, zxy_to_tileid)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STYLES_DIR = os.path.join(ROOT, "resources", "basemaps", "protomaps")
@@ -112,7 +115,9 @@ class HttpReader:
                 if error.code not in (429, 500, 502, 503, 504):
                     raise PublishingError("Q2VT_PUB_BASEMAP",
                                           f"Basemap download failed: HTTP {error.code} ({self.url}).") from error
-            except (urllib.error.URLError, OSError, TimeoutError) as error:
+            # http.client.HTTPException: a connection cut mid-body (IncompleteRead,
+            # RemoteDisconnected) is not an OSError.
+            except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException) as error:
                 last = error
             self.sleep(min(30.0, 1.5 * 2 ** attempt))
         raise PublishingError("Q2VT_PUB_BASEMAP", f"Basemap download failed after retries: {last}")
@@ -230,8 +235,40 @@ def text_keys(flavor_layers: Iterable[dict]) -> Set[str]:
     return keys
 
 
+# What the vendored PMTiles parser raises on a file that is not a readable
+# PMTiles v3 archive (wrong magic or version, damaged gzip, cut varints).
+_BAD_ARCHIVE = (MagicNumberNotFound, SpecVersionUnsupported, zlib.error, EOFError, OSError,
+                IndexError, ValueError, KeyError)
+
+
+def _not_pmtiles(error) -> PublishingError:
+    return PublishingError("Q2VT_PUB_BASEMAP", "The basemap source is not a readable PMTiles v3 archive "
+                                               f"({type(error).__name__}: {error}).")
+
+
+def _directory(raw: bytes, compression) -> list:
+    """Directory entries; the vendored parser always gunzips."""
+    if compression == Compression.NONE:
+        raw = gzip.compress(raw, compresslevel=0)
+    elif compression != Compression.GZIP:
+        raise PublishingError("Q2VT_PUB_BASEMAP", f"Unsupported basemap directory compression {compression}.")
+    try:
+        return deserialize_directory(raw)
+    except _BAD_ARCHIVE as error:
+        raise _not_pmtiles(error) from error
+
+
 def _open_archive(reader) -> Tuple[dict, dict, list]:
     """Header, metadata and root directory of a Protomaps-schema MVT archive."""
+    try:
+        return _read_archive(reader)
+    except PublishingError:
+        raise
+    except _BAD_ARCHIVE as error:
+        raise _not_pmtiles(error) from error
+
+
+def _read_archive(reader) -> Tuple[dict, dict, list]:
     header = deserialize_header(reader.get(0, 127))
     if header["tile_type"] != TileType.MVT:
         raise PublishingError("Q2VT_PUB_NOT_MVT", "The basemap source does not hold vector tiles.")
@@ -245,13 +282,16 @@ def _open_archive(reader) -> Tuple[dict, dict, list]:
     if not any(isinstance(l, dict) and l.get("id") == "earth" for l in metadata.get("vector_layers", [])):
         raise PublishingError("Q2VT_PUB_BASEMAP",
                               "The basemap source is not in the Protomaps schema (no 'earth' layer).")
-    root = deserialize_directory(reader.get(header["root_offset"], header["root_length"]))
+    root = _directory(reader.get(header["root_offset"], header["root_length"]), header["internal_compression"])
     return header, metadata, root
 
 
 def _fetch(reader, header: dict, root: list, wanted: List[Tuple[int, int, int]], progress: Progress,
-           share: float = 1.0):
-    """([(z, x, y), offset, length] of the tiles that exist, {(offset, length): bytes})."""
+           consume: Callable[[Tuple[int, int, int], int, int, bytes], None], share: float = 1.0) -> int:
+    """Calls ``consume((z, x, y), offset, length, data)`` for each tile of
+    ``wanted`` that exists, a merged range at a time: only one range is in
+    memory (all payloads of a wide area were gigabytes). Returns the number
+    of tiles."""
     leaves: Dict[int, list] = {}
     located: List[Tuple[Tuple[int, int, int], int, int]] = []
     for index, (z, x, y) in enumerate(wanted):
@@ -266,37 +306,45 @@ def _fetch(reader, header: dict, root: list, wanted: List[Tuple[int, int, int]],
                     located.append(((z, x, y), entry.offset, entry.length))
                 break
             if entry.offset not in leaves:
-                leaves[entry.offset] = deserialize_directory(
-                    reader.get(header["leaf_directory_offset"] + entry.offset, entry.length))
+                leaves[entry.offset] = _directory(
+                    reader.get(header["leaf_directory_offset"] + entry.offset, entry.length),
+                    header["internal_compression"])
             entries = leaves[entry.offset]
         if index % 256 == 0:
             progress.check()
             progress.update(share * 0.25 * index / max(1, len(wanted)),
                             f"Basemap: locating {index}/{len(wanted)} tiles")
     # Fetch payloads in merged ranges (adjacent tiles are usually stored together).
-    spans = sorted({(offset, length) for _, offset, length in located})
-    blobs: Dict[Tuple[int, int], bytes] = {}
+    users: Dict[Tuple[int, int], List[Tuple[int, int, int]]] = {}  # identical tiles are stored once
+    for zxy, offset, length in located:
+        users.setdefault((offset, length), []).append(zxy)
+    spans = sorted(users)
     group: List[Tuple[int, int]] = []
+    done = 0
 
     def flush():
+        nonlocal done
         if not group:
             return
         start = group[0][0]
         end = max(o + n for o, n in group)
         data = reader.get(header["tile_data_offset"] + start, end - start)
         for o, n in group:
-            blobs[(o, n)] = data[o - start:o - start + n]
+            blob = data[o - start:o - start + n]
+            for zxy in users[(o, n)]:
+                consume(zxy, o, n, blob)
+        done += len(group)
         group.clear()
     for offset, length in spans:
         if group and (offset - max(o + n for o, n in group) > 128 * 1024
                       or offset + length - group[0][0] > 8 * 1024 * 1024):
             flush()
             progress.check()
-            progress.update(share * (0.25 + 0.6 * len(blobs) / len(spans)),
-                            f"Basemap: {len(blobs)}/{len(spans)} tiles")
+            progress.update(share * (0.25 + 0.6 * done / len(spans)),
+                            f"Basemap: {done}/{len(spans)} tiles")
         group.append((offset, length))
     flush()
-    return located, blobs
+    return len(located)
 
 
 def extract(reader, output: str, detail, overview, max_zoom: int, overview_zoom: int,
@@ -313,14 +361,11 @@ def extract(reader, output: str, detail, overview, max_zoom: int, overview_zoom:
         raise PublishingError("Q2VT_PUB_BASEMAP",
                               f"The basemap area needs {len(wanted)} tiles (limit {max_tiles}); "
                               "lower its maximum zoom, padding or overview size.")
-    located, blobs = _fetch(reader, header, root, wanted, progress)
-    if not located:
-        raise PublishingError("Q2VT_PUB_BASEMAP", "The basemap source has no tiles in this area.")
     chars: Set[str] = set()
     decoded = set()
     with TileSink(output) as sink:
-        for (z, x, y), offset, length in located:
-            data = blobs[(offset, length)]
+        def add(zxy, offset, length, data):
+            z, x, y = zxy
             sink.add(z, x, y, data)
             if (offset, length) not in decoded:
                 decoded.add((offset, length))
@@ -332,6 +377,8 @@ def extract(reader, output: str, detail, overview, max_zoom: int, overview_zoom:
                                     chars.update(value)
                 except mvt.MvtDecodeError as error:
                     raise PublishingError("Q2VT_PUB_NOT_MVT", f"Basemap tile {z}/{x}/{y}: {error}") from error
+        if not _fetch(reader, header, root, wanted, progress, add):
+            raise PublishingError("Q2VT_PUB_BASEMAP", "The basemap source has no tiles in this area.")
         out_meta = {key: metadata[key] for key in ("vector_layers", "attribution", "version",
                                                     "planetiler:version", "description")
                     if key in metadata}
@@ -407,15 +454,16 @@ def street_records(reader, bbox, clip: Optional[Callable] = None, locale: str = 
     if len(wanted) > max_tiles:
         raise PublishingError("Q2VT_PUB_BASEMAP", f"Street search: the area needs {len(wanted)} "
                                                   f"tiles (limit {max_tiles}).")
-    located, blobs = _fetch(reader, header, root, wanted, progress, share=0.8)
     names: Dict[str, dict] = {}
-    for (tz, tx, ty), offset, length in located:
+
+    def read(zxy, _offset, _length, data):
+        tz, tx, ty = zxy
         try:
-            roads = mvt.decode(blobs[(offset, length)], geometry=True, layers_wanted={"roads"}).get("roads")
+            roads = mvt.decode(data, geometry=True, layers_wanted={"roads"}).get("roads")
         except mvt.MvtDecodeError as error:
             raise PublishingError("Q2VT_PUB_NOT_MVT", f"Basemap tile {tz}/{tx}/{ty}: {error}") from error
         if not roads:
-            continue
+            return
         convert = _tile_lonlat(tz, tx, ty, roads["extent"])
         for feature in roads["features"]:
             props = feature["properties"]
@@ -432,6 +480,7 @@ def street_records(reader, bbox, clip: Optional[Callable] = None, locale: str = 
                 for piece in (clip(line) if clip else [line]):
                     if len(piece) >= 2:
                         entry["pieces"].append(piece)
+    _fetch(reader, header, root, wanted, progress, read, share=0.8)
     progress.update(0.9, "Street names: grouping")
     if pieces_out is not None:  # for the house numbers (never published)
         for name, entry in names.items():

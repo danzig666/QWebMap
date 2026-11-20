@@ -52,6 +52,22 @@ def test_python_and_javascript_agree():
     assert js == [[normalize(v), words(v), fnv1a(v)] for v in VECTORS]
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
+def test_prefix_shard_keys_agree_in_any_script():
+    """Prefix shard keys are cut by Python and asked for by the viewer: both
+    drop every mark (Devanagari, Thai vowel signs have no combining class),
+    split on the same whitespace and cut by code point (emoji)."""
+    vectors = ["किताब", "नमस्ते", "ไทย", "😀abc", "a\x1cb", "a﻿b", "x\x85y z"]
+    assert normalize("किताब") == "कतब"
+    js = node(f"import {{ normalize, words, shardsForQuery }} from {json.dumps('file://' + CORE)};"
+              f"const v = {json.dumps(vectors)};"
+              "const keys = (w) => Array.from(w).slice(0, 2).join('');"
+              "console.log(JSON.stringify(v.map((x) => [normalize(x), words(x), words(x).map((w) =>"
+              " shardsForQuery({mode: 'prefix', prefixLength: 2, shards: [{key: keys(w), bytes: 1}]}, w).length)])));")
+    assert js == [[normalize(v), words(v), [1] * len(words(v))] for v in vectors]
+    assert [w[:2] for w in words("😀abc")] == ["😀a"]
+
+
 def _records(n):
     for i in range(n):
         hrsz = f"{i:05d}/{i % 7}"

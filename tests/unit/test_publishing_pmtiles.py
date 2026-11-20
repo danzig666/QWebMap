@@ -293,3 +293,24 @@ def test_field_check_of_a_built_archive_uses_the_keys_gathered_while_writing(tmp
         assert len(read) == archive.addressed_tiles
     finally:
         mvt.layer_summary = original
+
+
+def test_mvt_decoder_refuses_bad_text_and_extent():
+    """Invalid UTF-8 in a layer name, key or string value, and a zero extent,
+    are MvtDecodeError (what every caller handles), not UnicodeDecodeError or
+    a division by zero."""
+    def field(number, payload):
+        return bytes([number << 3 | 2, len(payload)]) + payload
+
+    def tile(name=b"a", key=b"k", value=b"v", extent=None):
+        feature = field(2, bytes([0, 0])) + bytes([3 << 3, 1])  # tags 0,0; type Point
+        layer = (field(1, name) + field(3, key) + field(4, field(1, value)) + field(2, feature)
+                 + bytes([15 << 3, 2]) + (bytes([5 << 3, extent]) if extent is not None else b""))
+        return field(3, layer)
+    assert mvt.decode(tile())["a"]["features"][0]["properties"] == {"k": "v"}
+    for bad in (tile(name=b"\xff\xfe"), tile(key=b"\xff"), tile(value=b"\xc3"), tile(extent=0)):
+        with pytest.raises(mvt.MvtDecodeError):
+            mvt.decode(bad)
+    for bad in (tile(name=b"\xff\xfe"), tile(key=b"\xff")):
+        with pytest.raises(mvt.MvtDecodeError):
+            mvt.layer_summary(bad)

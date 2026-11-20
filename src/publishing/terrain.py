@@ -79,7 +79,9 @@ def render_terrain(layer, extent_3857, min_zoom: int, max_zoom: int, output: str
     dataset = None
     # The CRS QGIS uses for the layer (a file without one, or one set in QGIS).
     source_srs = layer.crs().toWkt() if layer.crs().isValid() else None
-    pyramid = None if has_overviews else _pyramid(source, output + ".dem.vrt")
+    # Only the DEM's part around the area: a pyramid of a whole national DEM
+    # read every pixel of it (hours, gigabytes) for a town's terrain.
+    pyramid = None if has_overviews else _pyramid(source, output + ".dem.vrt", extent_3857, source_srs, progress)
     zooms = list(range(int(min_zoom), int(max_zoom) + 1))
     below = None  # the zoom below, filled: (MEM dataset)
     try:
@@ -154,12 +156,57 @@ def render_terrain(layer, extent_3857, min_zoom: int, max_zoom: int, output: str
                     pass
 
 
-def _pyramid(source: str, path: str) -> Optional[str]:
-    """A VRT of ``source`` with averaged overviews (heights, nodata left out)
-    at ``path``, or None (then the DEM itself is read)."""
+def _window(dataset, extent_3857, source_srs: Optional[str]):
+    """The pixel window [x, y, width, height] of ``dataset`` around the 3857
+    extent (two pixels more on every side for bilinear), or None (unknown
+    CRS, rotated grid: the whole DEM)."""
+    from osgeo import osr  # pylint: disable=import-outside-toplevel
+    gt = dataset.GetGeoTransform(can_return_null=True)
+    wkt = source_srs or dataset.GetProjection()
+    if gt is None or gt[2] or gt[4] or not gt[1] or not gt[5] or not wkt:
+        return None
+    web, src = osr.SpatialReference(), osr.SpatialReference()
+    web.ImportFromEPSG(3857)
+    if src.SetFromUserInput(wkt) != 0:
+        return None
+    for srs in (web, src):
+        srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    x0, y0, x1, y1 = osr.CoordinateTransformation(web, src).TransformBounds(*extent_3857, 21)
+    cols = sorted(((x0 - gt[0]) / gt[1], (x1 - gt[0]) / gt[1]))
+    rows = sorted(((y0 - gt[3]) / gt[5], (y1 - gt[3]) / gt[5]))
+    left = max(0, int(math.floor(cols[0])) - 2)
+    top = max(0, int(math.floor(rows[0])) - 2)
+    right = min(dataset.RasterXSize, int(math.ceil(cols[1])) + 2)
+    bottom = min(dataset.RasterYSize, int(math.ceil(rows[1])) + 2)
+    return [left, top, max(0, right - left), max(0, bottom - top)]
+
+
+def _pyramid(source: str, path: str, extent_3857=None, source_srs: Optional[str] = None,
+             progress: Optional[Progress] = None) -> Optional[str]:
+    """A VRT of ``source`` (its part around ``extent_3857``) with averaged
+    overviews (heights, nodata left out) at ``path``, or None (then the DEM
+    itself is read). Cancel stops building the overviews."""
+    import os  # pylint: disable=import-outside-toplevel
     from osgeo import gdal  # pylint: disable=import-outside-toplevel
+    from .errors import Cancelled  # pylint: disable=import-outside-toplevel
+    progress = progress or Progress()
+    vrt = None
     try:
-        vrt = gdal.BuildVRT(path, [source])
+        dataset = gdal.Open(source)
+        window = None
+        if dataset is not None and extent_3857 is not None:
+            try:
+                window = _window(dataset, extent_3857, source_srs)
+            except (RuntimeError, AttributeError, TypeError, ValueError):  # no transformation: the whole DEM
+                window = None
+        whole = window is None or window == [0, 0, dataset.RasterXSize, dataset.RasterYSize]
+        dataset = None
+        if window is not None and (not window[2] or not window[3]):
+            return None  # the DEM is outside the area
+        if whole:
+            vrt = gdal.BuildVRT(path, [source])
+        else:
+            vrt = gdal.Translate(path, source, format="VRT", srcWin=window)
         if vrt is None:
             return None
         width, height = vrt.RasterXSize, vrt.RasterYSize
@@ -169,16 +216,30 @@ def _pyramid(source: str, path: str) -> Optional[str]:
             factor *= 2
         if not levels:
             vrt = None
-            return None
+            # The part of the DEM is small: read it (not the whole DEM) as is.
+            return None if whole else path
         gdal.SetConfigOption("COMPRESS_OVERVIEW", "ZSTD")
         try:
-            vrt.BuildOverviews("AVERAGE", levels)
+            done = vrt.BuildOverviews("AVERAGE", levels, callback=lambda *_: 0 if progress.canceled() else 1)
         finally:
             gdal.SetConfigOption("COMPRESS_OVERVIEW", None)
         vrt = None
+        progress.check()
+        if done not in (None, 0):  # GDAL without exceptions: an error code
+            raise RuntimeError("overviews failed")
         return path
-    except RuntimeError:  # GDAL (exceptions on): the DEM itself is read
-        return None
+    except (RuntimeError, Cancelled):  # GDAL (exceptions on): the DEM itself is read
+        pass
+    # Removed here: inside ``except`` the traceback still holds the open VRT.
+    vrt = None
+    for name in (path, path + ".ovr"):
+        try:
+            os.remove(name)
+        except OSError:
+            pass
+    if progress.canceled():
+        raise Cancelled()
+    return None
 
 
 def grow(extent_3857, fraction: float = 0.2):
