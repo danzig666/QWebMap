@@ -24,6 +24,10 @@ TILE = 256
 MAX_PIXELS = 48_000_000      # one zoom's warped area (~190 MB as float32)
 MAX_TERRAIN_ZOOM = 15
 NODATA = -32768.0
+# DEM pixels the pyramid may cover beyond the area (read once to build it):
+# the low zooms' tiles reach past the area, and get real heights there
+# instead of edge heights while that part of the DEM stays this small.
+PYRAMID_PIXELS = 100_000_000
 
 
 def encode_heights(heights) -> bytes:
@@ -79,10 +83,13 @@ def render_terrain(layer, extent_3857, min_zoom: int, max_zoom: int, output: str
     dataset = None
     # The CRS QGIS uses for the layer (a file without one, or one set in QGIS).
     source_srs = layer.crs().toWkt() if layer.crs().isValid() else None
+    zooms = list(range(int(min_zoom), int(max_zoom) + 1))
     # Only the DEM's part around the area: a pyramid of a whole national DEM
     # read every pixel of it (hours, gigabytes) for a town's terrain.
-    pyramid = None if has_overviews else _pyramid(source, output + ".dem.vrt", extent_3857, source_srs, progress)
-    zooms = list(range(int(min_zoom), int(max_zoom) + 1))
+    footprints = [_bounds(z, *span) for z, span in ((z, tile_span(extent_3857, z)) for z in zooms)
+                  if span[2] >= span[0] and span[3] >= span[1]]
+    pyramid = None if has_overviews else _pyramid(source, output + ".dem.vrt", extent_3857, source_srs,
+                                                  progress, wider=footprints)
     below = None  # the zoom below, filled: (MEM dataset)
     try:
         with TileSink(output) as sink:
@@ -95,9 +102,7 @@ def render_terrain(layer, extent_3857, min_zoom: int, max_zoom: int, output: str
                 if nx * ny * TILE * TILE > MAX_PIXELS:
                     progress.info(f"Terrain: zoom {z} and above left out (area too large)")
                     break
-                size = 2 * ORIGIN / (1 << z)
-                bounds = (-ORIGIN + x0 * size, ORIGIN - (y1 + 1) * size,
-                          -ORIGIN + (x1 + 1) * size, ORIGIN - y0 * size)
+                bounds = _bounds(z, x0, y0, x1, y1)
                 options = gdal.WarpOptions(format="MEM", outputBounds=bounds, width=nx * TILE,
                                            height=ny * TILE, dstSRS="EPSG:3857", resampleAlg="bilinear",
                                            outputType=gdal.GDT_Float32, dstNodata=NODATA,
@@ -156,6 +161,12 @@ def render_terrain(layer, extent_3857, min_zoom: int, max_zoom: int, output: str
                     pass
 
 
+def _bounds(z: int, x0: int, y0: int, x1: int, y1: int):
+    """3857 bounds of the tile range x0..x1, y0..y1 of zoom ``z``."""
+    size = 2 * ORIGIN / (1 << z)
+    return (-ORIGIN + x0 * size, ORIGIN - (y1 + 1) * size, -ORIGIN + (x1 + 1) * size, ORIGIN - y0 * size)
+
+
 def _window(dataset, extent_3857, source_srs: Optional[str]):
     """The pixel window [x, y, width, height] of ``dataset`` around the 3857
     extent (two pixels more on every side for bilinear), or None (unknown
@@ -182,10 +193,11 @@ def _window(dataset, extent_3857, source_srs: Optional[str]):
 
 
 def _pyramid(source: str, path: str, extent_3857=None, source_srs: Optional[str] = None,
-             progress: Optional[Progress] = None) -> Optional[str]:
-    """A VRT of ``source`` (its part around ``extent_3857``) with averaged
-    overviews (heights, nodata left out) at ``path``, or None (then the DEM
-    itself is read). Cancel stops building the overviews."""
+             progress: Optional[Progress] = None, wider=()) -> Optional[str]:
+    """A VRT of ``source`` (its part around ``extent_3857``, or around the
+    first extent of ``wider`` whose part has at most PYRAMID_PIXELS) with
+    averaged overviews (heights, nodata left out) at ``path``, or None (then
+    the DEM itself is read). Cancel stops building the overviews."""
     import os  # pylint: disable=import-outside-toplevel
     from osgeo import gdal  # pylint: disable=import-outside-toplevel
     from .errors import Cancelled  # pylint: disable=import-outside-toplevel
@@ -199,6 +211,20 @@ def _pyramid(source: str, path: str, extent_3857=None, source_srs: Optional[str]
                 window = _window(dataset, extent_3857, source_srs)
             except (RuntimeError, AttributeError, TypeError, ValueError):  # no transformation: the whole DEM
                 window = None
+            for extent in wider if window is not None and window[2] and window[3] else ():
+                try:
+                    bigger = _window(dataset, extent, source_srs)
+                except (RuntimeError, AttributeError, TypeError, ValueError):  # beyond the CRS's area
+                    continue
+                if bigger is None or not bigger[2] or not bigger[3]:
+                    continue
+                # Always holding the area (a far extent may transform oddly).
+                left, top = min(window[0], bigger[0]), min(window[1], bigger[1])
+                right = max(window[0] + window[2], bigger[0] + bigger[2])
+                bottom = max(window[1] + window[3], bigger[1] + bigger[3])
+                if (right - left) * (bottom - top) <= PYRAMID_PIXELS:
+                    window = [left, top, right - left, bottom - top]
+                    break
         whole = window is None or window == [0, 0, dataset.RasterXSize, dataset.RasterYSize]
         dataset = None
         if window is not None and (not window[2] or not window[3]):

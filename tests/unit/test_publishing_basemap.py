@@ -193,16 +193,33 @@ def test_uncompressed_directories_are_read():
     from publishing.vendor.pmtiles.tile import Compression, Entry, serialize_directory
     entries = [Entry(5, 10, 20, 1), Entry(9, 30, 40, 1)]
     raw = gzip.decompress(serialize_directory(entries))
-    for data, compression in ((raw, Compression.NONE), (serialize_directory(entries), Compression.GZIP)):
+    for data, compression in ((raw, Compression.NONE), (serialize_directory(entries), Compression.GZIP),
+                              # UNKNOWN (0), left by some writers: gzip when it looks like gzip
+                              (serialize_directory(entries), Compression.UNKNOWN), (raw, Compression.UNKNOWN)):
         assert [(e.tile_id, e.offset, e.length) for e in basemap._directory(data, compression)] == \
             [(5, 10, 20), (9, 30, 40)]  # pylint: disable=protected-access
     with pytest.raises(PublishingError):
         basemap._directory(b"\x01\x02", Compression.GZIP)  # pylint: disable=protected-access
 
 
-def test_extract_keeps_one_range_in_memory(tmp_path):
+def test_disk_errors_are_not_called_a_wrong_archive(tmp_path):
+    """A read error of the disk keeps its own message (it is not a file that
+    is not PMTiles)."""
+    path = tmp_path / "x.pmtiles"
+    path.write_bytes(b"PMTiles\x03" + b"\x00" * 200)
+    reader = basemap.LocalReader(str(path))
+    reader.handle.close()
+    reader.handle = io.BytesIO()
+    reader.handle.read = lambda *_: (_ for _ in ()).throw(OSError(5, "Input/output error"))
+    with pytest.raises(PublishingError) as caught:
+        basemap.street_records(reader, (18.95, 47.45, 19.05, 47.5))
+    assert "could not be read" in str(caught.value) and "Input/output" in str(caught.value)
+
+
+def test_extract_keeps_one_range_in_memory(tmp_path, monkeypatch):
     """The tiles are written as each merged range arrives: memory is bounded
-    by the range (8 MB), not by every tile of the area (gigabytes)."""
+    by the range (8 MB, 512 KB here), not by every tile of the area
+    (gigabytes)."""
     import tracemalloc
     from publishing.pmtiles_builder import TileSink
     from publishing.vendor.pmtiles.tile import Compression, TileType
@@ -211,12 +228,13 @@ def test_extract_keeps_one_range_in_memory(tmp_path):
     wanted = basemap.wanted_tiles(detail, overview, 14, 7)
     path = str(tmp_path / "big.pmtiles")
     with TileSink(path) as sink:
-        for z, x, y in wanted:  # ~1 MB of incompressible text per tile
+        for z, x, y in wanted:  # ~256 KB of incompressible text per tile
             sink.add(z, x, y, encode_tile({"earth": [("polygon", [[[0, 0], [10, 0], [10, 10], [0, 0]]],
-                                                      {"pad": os.urandom(512 * 1024).hex()}, None)]}))
+                                                      {"pad": os.urandom(128 * 1024).hex()}, None)]}))
         sink.write(TileType.MVT, Compression.NONE, {"vector_layers": [{"id": "earth", "fields": {}}]},
                    validate_kind="mvt")
     total = os.path.getsize(path)
+    monkeypatch.setattr(basemap, "_RANGE", 512 * 1024)
     reader = basemap.LocalReader(path)
     tracemalloc.start()
     try:
@@ -225,5 +243,5 @@ def test_extract_keeps_one_range_in_memory(tmp_path):
     finally:
         tracemalloc.stop()
         reader.close()
-    assert result.descriptor.addressed_tiles == len(wanted) and total > 40e6
+    assert result.descriptor.addressed_tiles == len(wanted) and total > 10e6
     assert peak < total / 2, (peak, total)

@@ -237,8 +237,10 @@ def text_keys(flavor_layers: Iterable[dict]) -> Set[str]:
 
 # What the vendored PMTiles parser raises on a file that is not a readable
 # PMTiles v3 archive (wrong magic or version, damaged gzip, cut varints).
-_BAD_ARCHIVE = (MagicNumberNotFound, SpecVersionUnsupported, zlib.error, EOFError, OSError,
-                IndexError, ValueError, KeyError)
+# Not OSError: a disk error is not a wrong file (BadGzipFile is the one
+# OSError that is).
+_BAD_ARCHIVE = (MagicNumberNotFound, SpecVersionUnsupported, zlib.error, gzip.BadGzipFile, EOFError,
+                IndexError, ValueError)
 
 
 def _not_pmtiles(error) -> PublishingError:
@@ -246,12 +248,20 @@ def _not_pmtiles(error) -> PublishingError:
                                                f"({type(error).__name__}: {error}).")
 
 
+def _gzipped(raw: bytes, compression) -> bool:
+    """Whether internal data (metadata, directories) is gzip. UNKNOWN (0),
+    left by some writers, is gzip when it starts like gzip."""
+    if compression == Compression.UNKNOWN:
+        return raw[:2] == b"\x1f\x8b"
+    if compression not in (Compression.NONE, Compression.GZIP):
+        raise PublishingError("Q2VT_PUB_BASEMAP", f"Unsupported basemap directory compression {compression}.")
+    return compression == Compression.GZIP
+
+
 def _directory(raw: bytes, compression) -> list:
     """Directory entries; the vendored parser always gunzips."""
-    if compression == Compression.NONE:
+    if not _gzipped(raw, compression):
         raw = gzip.compress(raw, compresslevel=0)
-    elif compression != Compression.GZIP:
-        raise PublishingError("Q2VT_PUB_BASEMAP", f"Unsupported basemap directory compression {compression}.")
     try:
         return deserialize_directory(raw)
     except _BAD_ARCHIVE as error:
@@ -266,6 +276,8 @@ def _open_archive(reader) -> Tuple[dict, dict, list]:
         raise
     except _BAD_ARCHIVE as error:
         raise _not_pmtiles(error) from error
+    except OSError as error:
+        raise PublishingError("Q2VT_PUB_BASEMAP", f"The basemap source could not be read: {error}") from error
 
 
 def _read_archive(reader) -> Tuple[dict, dict, list]:
@@ -276,7 +288,7 @@ def _read_archive(reader) -> Tuple[dict, dict, list]:
     if compression not in (Compression.GZIP, Compression.NONE):
         raise PublishingError("Q2VT_PUB_BASEMAP", f"Unsupported basemap tile compression {compression}.")
     raw_meta = reader.get(header["metadata_offset"], header["metadata_length"])
-    if header["internal_compression"] == Compression.GZIP:
+    if _gzipped(raw_meta, header["internal_compression"]):
         raw_meta = gzip.decompress(raw_meta)
     metadata = json.loads(raw_meta.decode("utf-8") or "{}")
     if not any(isinstance(l, dict) and l.get("id") == "earth" for l in metadata.get("vector_layers", [])):
@@ -284,6 +296,9 @@ def _read_archive(reader) -> Tuple[dict, dict, list]:
                               "The basemap source is not in the Protomaps schema (no 'earth' layer).")
     root = _directory(reader.get(header["root_offset"], header["root_length"]), header["internal_compression"])
     return header, metadata, root
+
+
+_RANGE = 8 * 1024 * 1024  # bytes of one merged tile request
 
 
 def _fetch(reader, header: dict, root: list, wanted: List[Tuple[int, int, int]], progress: Progress,
@@ -337,7 +352,7 @@ def _fetch(reader, header: dict, root: list, wanted: List[Tuple[int, int, int]],
         group.clear()
     for offset, length in spans:
         if group and (offset - max(o + n for o, n in group) > 128 * 1024
-                      or offset + length - group[0][0] > 8 * 1024 * 1024):
+                      or offset + length - group[0][0] > _RANGE):
             flush()
             progress.check()
             progress.update(share * (0.25 + 0.6 * done / len(spans)),
