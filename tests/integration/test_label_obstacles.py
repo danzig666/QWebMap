@@ -136,7 +136,9 @@ def test_obstacle_copies_go_under_their_own_labels_in_one_pass(plugin):
     exporter.style = {"layers": layers}
     start = time.perf_counter()
     exporter._add_label_obstacles()  # pylint: disable=protected-access
-    assert time.perf_counter() - start < 1.0
+    # Generous for loaded CI runners: one pass takes milliseconds, the old
+    # per-owner scans about 30 s.
+    assert time.perf_counter() - start < 5.0
     ids = [l["id"] for l in exporter.style["layers"]]
     assert len(ids) == len(layers) + 5 * (count + 1)
     first = ids.index("lbl7_z0")

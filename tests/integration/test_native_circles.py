@@ -341,6 +341,8 @@ def test_distinct_values_by_sql_and_cached(exporter, tmp_path, monkeypatch):
                                              key=str)
     assert len(exporter._distinct_values("pts", ["c", "n"])) == 6  # pylint: disable=protected-access
     assert exporter._distinct_values("pts", ["many"]) is None  # pylint: disable=protected-access
+    # Field names match case-insensitively, as OGR's GetFieldIndex does.
+    assert sorted(exporter._distinct_values("pts", ["N"])) == [(0,), (1,)]  # pylint: disable=protected-access
     opened = []
     monkeypatch.setattr(ogr, "Open", lambda *a: opened.append(a))
     assert len(exporter._distinct_values("pts", ["c", "missing"])) == 3  # pylint: disable=protected-access

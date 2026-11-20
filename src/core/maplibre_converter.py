@@ -3665,25 +3665,26 @@ class QgisMapLibreStyleExporter:
             return []
         layer = dataset.GetLayer(0)
         defn = layer.GetLayerDefn()
-        names = {defn.GetFieldDefn(i).GetName() for i in range(defn.GetFieldCount())}
-        present = [f for f in fields if f in names]
+        # Case-insensitive, as OGR's GetFieldIndex in the fallback below.
+        names = {defn.GetFieldDefn(i).GetName().lower(): defn.GetFieldDefn(i).GetName()
+                 for i in range(defn.GetFieldCount())}
+        present = [f for f in fields if f.lower() in names]
         if not present:
             return [tuple(None for _ in fields)] if layer.GetNextFeature() is not None else []
-        if present:
-            # SQL, not a Python loop over every feature (millions on big layers).
-            table = layer.GetName().replace('"', '""')
-            columns = ", ".join('"{}"'.format(f.replace('"', '""')) for f in present)
-            result = dataset.ExecuteSQL(f'SELECT DISTINCT {columns} FROM "{table}" '
-                                        f"LIMIT {self.MAX_VARIANTS + 1}")
-            if result is not None:
-                try:
-                    rows = [dict(zip(present, (feature.GetField(i) for i in range(len(present)))))
-                            for feature in result]
-                finally:
-                    dataset.ReleaseResultSet(result)
-                if len(rows) > self.MAX_VARIANTS:
-                    return None
-                return [tuple(row.get(f) for f in fields) for row in rows]
+        # SQL, not a Python loop over every feature (millions on big layers).
+        table = layer.GetName().replace('"', '""')
+        columns = ", ".join('"{}"'.format(names[f.lower()].replace('"', '""')) for f in present)
+        result = dataset.ExecuteSQL(f'SELECT DISTINCT {columns} FROM "{table}" '
+                                    f"LIMIT {self.MAX_VARIANTS + 1}")
+        if result is not None:
+            try:
+                rows = [dict(zip(present, (feature.GetField(i) for i in range(len(present)))))
+                        for feature in result]
+            finally:
+                dataset.ReleaseResultSet(result)
+            if len(rows) > self.MAX_VARIANTS:
+                return None
+            return [tuple(row.get(f) for f in fields) for row in rows]
         seen = []
         keys = set()
         for feature in layer:

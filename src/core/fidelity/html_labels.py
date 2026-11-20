@@ -287,9 +287,9 @@ def format_expression(color=None, fonts: Optional[list] = None) -> list:
 
 
 def register_expression_functions() -> None:
-    """``q2vt_html_text/scale/color/font(text, i)`` and
-    ``q2vt_html_flags(text)`` for the exporter's field calculation
-    (idempotent)."""
+    """``q2vt_html_text/scale/color/font(text, i, base_points)`` and
+    ``q2vt_html_flags(text, base_points)`` for the exporter's field
+    calculation (idempotent)."""
     from qgis.core import QgsExpression  # pylint: disable=import-outside-toplevel
     from qgis.core import qgsfunction  # pylint: disable=import-outside-toplevel
 
