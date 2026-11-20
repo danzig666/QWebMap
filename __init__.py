@@ -117,6 +117,7 @@ class QGIS2VectorTiles:
         if self.dialog is None:
             self.dialog = PublishDialog(self.iface)
             self.dialog.finished.connect(self._dialog_closed)
+            self.dialog.ask_first_view()  # (once per user: simple or advanced view)
         self.dialog.show()
         self.dialog.raise_()
         self.dialog.activateWindow()

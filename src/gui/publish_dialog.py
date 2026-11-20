@@ -181,6 +181,11 @@ class UploadTask(QgsTask):
 
 
 class PublishDialog(QDialog):
+    # (For the simple view, src/gui/simple_page.py.)
+    LAYER_ROLE, COL_PUBLISH, COL_VISIBLE = LAYER_ROLE, COL_PUBLISH, COL_VISIBLE
+    # Simple or advanced view, per user (QGIS settings): "simple", "advanced", unset (never chosen).
+    VIEW_KEY = "QWebMap/publishDialog/view"
+
     def __init__(self, iface=None, parent=None):
         super().__init__(parent or (iface.mainWindow() if iface else None))
         self.iface = iface
@@ -227,6 +232,7 @@ class PublishDialog(QDialog):
         root = self.project.layerTreeRoot()
         for signal in (root.addedChildren, root.removedChildren, root.nameChanged):
             signal.connect(self._layers_changed)
+        self.set_simple_view(QgsSettings().value(self.VIEW_KEY, "") == "simple", remember=False)
 
     def _layers_changed(self, *_):
         if not self._project_gone:
@@ -251,6 +257,8 @@ class PublishDialog(QDialog):
             self._fill_interaction_layers()
         except Exception:  # noqa: BLE001 - the Interaction tab fills itself when shown
             pass
+        if self.is_simple_view():
+            self.simple.refresh()
 
     def _profile_json(self):
         try:
@@ -355,8 +363,27 @@ class PublishDialog(QDialog):
     # ------------------------------------------------------------------ UI
     def _build(self):
         layout = QVBoxLayout(self)
+        # Simple / Advanced: the same settings, shown in full or only the essential ones.
+        mode_row = QHBoxLayout()
+        self.btn_simple = QToolButton()
+        self.btn_simple.setText(tr("Simple"))
+        self.btn_advanced = QToolButton()
+        self.btn_advanced.setText(tr("Advanced"))
+        for button, simple in ((self.btn_simple, True), (self.btn_advanced, False)):
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            button.setMinimumWidth(96)
+            button.clicked.connect(lambda _checked, on=simple: self.set_simple_view(on))
+            mode_row.addWidget(button)
+        self.mode_hint = QLabel()
+        mode_row.addWidget(self.mode_hint)
+        mode_row.addStretch(1)
+        layout.addLayout(mode_row)
+        self.view_stack = QStackedWidget()
+        layout.addWidget(self.view_stack, 1)
         self.tabs = QTabWidget()
-        layout.addWidget(self.tabs, 1)
+        self.view_stack.addWidget(self.tabs)
         # The widest tabs scroll: the window fits a 1366 × 768 screen.
         self.tabs.addTab(self._scrolled(self._map_tab()), tr("Map"))
         self.tabs.addTab(self._scrolled(self._interaction_tab()), tr("Interaction"))
@@ -367,6 +394,9 @@ class PublishDialog(QDialog):
         self.tabs.addTab(self._destination_tab(), tr("Destination"))
         self.tabs.addTab(self._review_tab(), tr("Review"))
         self.tabs.currentChanged.connect(self._tab_changed)
+        from .simple_page import SimplePage  # pylint: disable=import-outside-toplevel
+        self.simple = SimplePage(self)
+        self.view_stack.addWidget(self.simple)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.status = QLabel()
@@ -437,6 +467,50 @@ class PublishDialog(QDialog):
         for button in (self.btn_preview, self.btn_open, self.btn_copy, self.btn_folder):
             button.setEnabled(False)
         self.public_url = ""
+
+    def is_simple_view(self) -> bool:
+        return getattr(self, "view_stack", None) is not None and self.view_stack.currentIndex() == 1
+
+    def set_simple_view(self, on: bool, remember: bool = True):
+        """The simple view (the essential settings, local export) or all the
+        settings: the same settings either way, nothing changes or is lost."""
+        self.view_stack.setCurrentIndex(1 if on else 0)
+        self.btn_simple.setChecked(on)
+        self.btn_advanced.setChecked(not on)
+        self.mode_hint.setText(tr("Only the essential settings; the map is made in a folder on this computer.")
+                               if on else tr("All the settings, publishing online included."))
+        for widget in (self.btn_save, self.btn_settings_file, self.btn_export, self.btn_preview,
+                       self.btn_publish, self.btn_open, self.btn_copy, self.btn_embed, self.btn_folder,
+                       self.logbox):
+            widget.setVisible(not on)
+        # (Simple: the progress bar only while a map is made, see _busy.)
+        self.progress.setVisible(not on or self.btn_cancel.isEnabled())
+        self.btn_preset.setVisible(not on and bool(self.presets))
+        if on:
+            self.simple.refresh()
+        if remember:
+            QgsSettings().setValue(self.VIEW_KEY, "simple" if on else "advanced")
+
+    def ask_first_view(self):
+        """First use of the window by this user: simple or advanced view?
+        (Asked once; users of earlier versions keep the advanced view.)"""
+        settings = QgsSettings()
+        if settings.value(self.VIEW_KEY, ""):
+            return
+        if settings.value(self.GEOMETRY_KEY):  # the window was used before: as it was
+            settings.setValue(self.VIEW_KEY, "advanced")
+            return
+        box = QMessageBox(QMessageBox.Icon.Question, tr("Publish Web Map"), tr(
+            "How would you like to start?"), QMessageBox.StandardButton.NoButton, self)
+        box.setInformativeText(tr(
+            "Simple: the few settings a first web map needs, in plain words, and one button that makes "
+            "it in a folder on this computer.\n\nAdvanced: all the settings, publishing online "
+            "included.\n\nYou can switch at any time at the top of the window."))
+        simple = box.addButton(tr("Simple"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(tr("Advanced"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(simple)
+        box.exec()
+        self.set_simple_view(box.clickedButton() is simple)
 
     def _title_edited(self, text):
         # Only while the address is still the one made from the title (not typed in).
@@ -1443,6 +1517,8 @@ class PublishDialog(QDialog):
         area): says so, with the area's size and tile count, and lets the
         export be cancelled; "Don't ask again" is kept with the project."""
         view = self.profile.view
+        if self.is_simple_view():  # the simple view shows the area's size and tiles beside it
+            return True
         if not self._extent_is_canvas() or not view.confirm_canvas_extent or self.iface is None:
             return True
         extent = self._current_extent_3857()
@@ -3005,6 +3081,8 @@ class PublishDialog(QDialog):
             self.d_auth.setConfigId(dest.credential_ref)
         self._destination_kind_changed()
         self._update_address()
+        if self.is_simple_view():
+            self.simple.refresh()
 
     def _tab_changed(self, index):
         if self.tabs.widget(index) is not None and self.tabs.tabText(index) == tr("Interaction"):
@@ -3483,6 +3561,10 @@ class PublishDialog(QDialog):
         # The settings stay as the export / upload read them: no editing,
         # importing or presets meanwhile.
         self.tabs.setEnabled(not busy)
+        if getattr(self, "simple", None) is not None:
+            self.simple.setEnabled(not busy)
+            if self.is_simple_view():
+                self.progress.setVisible(busy)
         self.btn_settings_file.setEnabled(not busy)
         self.btn_preset.setEnabled(not busy)
         self.btn_cancel.setEnabled(busy)
@@ -3586,6 +3668,8 @@ class PublishDialog(QDialog):
 
     def _update_local_buttons(self, *_):
         available = bool(self._local_map_dir())
+        if getattr(self, "simple", None) is not None:
+            self.simple.update_buttons()
         for button in (self.btn_preview, self.btn_folder):
             button.setEnabled(available)
         self.btn_preview.setToolTip(

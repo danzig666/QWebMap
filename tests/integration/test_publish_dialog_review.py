@@ -199,3 +199,88 @@ def test_web_zoom_scales_become_the_projects_scale_list(plugin, monkeypatch, tmp
     finally:
         zm.configure(zm.WEB_MERCATOR_TOP_SCALE)
     dialog.close()
+
+
+def test_the_simple_view_shows_and_edits_the_same_settings(plugin, monkeypatch, tmp_path):
+    """The simple view writes into the advanced view's controls: switching
+    either way changes nothing; its layers, information, area, zoom,
+    background and folder are the window's settings."""
+    from q2vt_plugin.src.gui.simple_page import ZOOM_STOPS  # pylint: disable=import-error,import-outside-toplevel
+    from qgis.PyQt.QtCore import Qt as QtCore_Qt  # pylint: disable=import-outside-toplevel
+    dialog, parcels = _dialog(plugin, monkeypatch, tmp_path)
+    before = dialog._profile_json()  # pylint: disable=protected-access
+    dialog.set_simple_view(True, remember=False)
+    dialog.set_simple_view(False, remember=False)
+    dialog.set_simple_view(True, remember=False)
+    assert dialog._profile_json() == before  # pylint: disable=protected-access
+    page = dialog.simple
+    assert page.title.text() == dialog.e_title.text()
+    page.title.setText("Egyszerű térkép")
+    page._title_edited("Egyszerű térkép")  # pylint: disable=protected-access
+    assert dialog.e_title.text() == "Egyszerű térkép"
+    row = next(r for r in range(page.layers.rowCount())
+               if page.layers.item(r, 0).data(QtCore_Qt.ItemDataRole.UserRole) == parcels.id())
+    page.layers.item(row, 1).setCheckState(QtCore_Qt.CheckState.Unchecked)
+    assert parcels.id() not in [c.layer_id for c in dialog.collect().layers if c.included]
+    page.layers.item(row, 2).setCheckState(QtCore_Qt.CheckState.Checked)   # information: on the map too
+    profile = dialog.collect()
+    config = next(c for c in profile.layers if c.layer_id == parcels.id())
+    assert config.included and config.popup_fields
+    assert not any(p.field.lower() in ("fid", "id") for p in config.popup_fields)
+    page.layers.item(row, 2).setCheckState(QtCore_Qt.CheckState.Unchecked)
+    assert not next(c for c in dialog.collect().layers if c.layer_id == parcels.id()).popup_fields
+    page.zoom.setValue(len(ZOOM_STOPS) - 1)
+    assert dialog.e_max_zoom.value() == ZOOM_STOPS[-1][1]
+    page.area.setCurrentIndex(page.area.findData("layer"))
+    page.area_layer.setCurrentIndex(page.area_layer.findData(parcels.id()))
+    profile = dialog.collect()
+    assert profile.view.extent_mode == "layer" and profile.view.extent_layer == parcels.id()
+    assert profile.view.min_zoom <= profile.view.max_zoom
+    page.bg_osm.setChecked(True)
+    assert dialog.collect().basemap.kind == "protomaps"
+    page.bg_none.setChecked(True)
+    assert dialog.collect().basemap.kind == "none"
+    page.folder.setText(str(tmp_path / "maps"))
+    page._folder_edited(str(tmp_path / "maps"))  # pylint: disable=protected-access
+    assert dialog.collect().output.local_directory == str(tmp_path / "maps")
+    assert not dialog.btn_publish.isVisible() and page.isVisibleTo(dialog)
+    dialog.close()
+
+
+def test_the_simple_view_exports_locally_whatever_the_destination(plugin, monkeypatch, tmp_path):
+    """Make web map: a local export (no upload), no "Published area?" question."""
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    dialog.d_kind.setCurrentIndex(dialog.d_kind.findData("r2"))
+    dialog.set_simple_view(True, remember=False)
+    assert dialog._confirm_extent()  # pylint: disable=protected-access
+    calls = []
+    monkeypatch.setattr(dialog, "export_locally", lambda: calls.append("local") or True)
+    monkeypatch.setattr(dialog, "publish", lambda: calls.append("publish"))
+    dialog.simple.make_map()
+    assert calls == ["local"]
+    assert "online destination" in dialog.simple.advanced_note.text()
+    dialog.close()
+
+
+def test_the_first_view_question_only_for_new_users(plugin, monkeypatch, tmp_path):
+    from qgis.core import QgsSettings  # pylint: disable=import-outside-toplevel
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    settings = QgsSettings()
+    asked = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: asked.append(box.text()))
+    monkeypatch.setattr(QMessageBox, "clickedButton",
+                        lambda box: next(b for b in box.buttons() if b.text() == "Simple"))
+    try:
+        settings.remove(dialog.VIEW_KEY)
+        settings.setValue(dialog.GEOMETRY_KEY, dialog.saveGeometry())   # used the window before
+        dialog.ask_first_view()
+        assert not asked and settings.value(dialog.VIEW_KEY) == "advanced" and not dialog.is_simple_view()
+        settings.remove(dialog.VIEW_KEY)
+        settings.remove(dialog.GEOMETRY_KEY)                            # a new user
+        dialog.ask_first_view()
+        assert asked and settings.value(dialog.VIEW_KEY) == "simple" and dialog.is_simple_view()
+        dialog.ask_first_view()
+        assert len(asked) == 1                                          # once
+    finally:
+        settings.remove(dialog.VIEW_KEY)
+    dialog.close()
