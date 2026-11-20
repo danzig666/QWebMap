@@ -171,7 +171,8 @@ _REGISTRY: Dict[str, Capability] = {c.qgis_type: c for c in [
                ("tests/integration/test_line_shapes.py", "tests/integration/test_materialize.py",
                 "tests/integration/test_gradient_fills.py")),
     Capability("FilledLine", "line", Strategy.MATERIALIZED,
-               "Exported as a stroke of the fill width with the fill sub-symbol colour.",
+               "Exported as a stroke of the fill width with the fill sub-symbol colour, its "
+               "opacity, the line offset and the data-defined width, offset and fill colour.",
                ("Pattern/gradient fills inside the line are drawn with their base colour.",),
                ("tests/integration/test_materialize.py",)),
     Capability("LinePatternFill", "pattern", Strategy.SPRITE,
