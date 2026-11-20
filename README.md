@@ -588,7 +588,13 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.59.0**. Newest first:
+This README describes QWebMap **4.60.0**. Newest first:
+
+**4.60.0** — Simple view
+- The Publish window has a **Simple** view for first web maps: title, layers (with “show its information when clicked”), area, how close visitors can zoom, background map and folder, and one **Make web map** button that makes it on this computer. **Advanced** shows every setting; switch at any time, nothing is lost. Asked once on first use.
+- How close visitors can zoom is a QGIS map scale (1:100 000 – 1:500), chosen automatically from the size of the published features, with a preview of the project's map at that scale.
+
+<img src="docs/images/simple-view.png" alt="The Publish window's Simple view" width="640">
 
 **4.59.0** — ideas from the original plugin's November versions
 - No blank map on a fast zoom-in; line pieces joined when zoomed out; point symbols keep other labels off them.
