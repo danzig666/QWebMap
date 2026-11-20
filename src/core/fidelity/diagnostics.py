@@ -11,7 +11,6 @@ human-readable and may change between versions.
 
 import html
 import json
-import os
 import re
 import threading
 from dataclasses import asdict, dataclass
@@ -141,6 +140,10 @@ CODES: Dict[str, CodeInfo] = {
     "Q2VT_SPRITE_SHEET_TOO_LARGE": CodeInfo(
         Severity.ERROR, "Sprite sheet exceeds the GPU texture size of common browsers",
         "Reduce the number or size of map-unit markers, or the export's zoom range."),
+    "Q2VT_SPRITE_SHEET_LARGE": CodeInfo(
+        Severity.WARNING, "Sprite sheet exceeds the GPU texture size of some phones",
+        "Phones and integrated GPUs that allow 8192 px or less draw no icons or patterns; "
+        "reduce the number or size of markers and pattern textures.", fidelity_loss=False),
     "Q2VT_FONT_MARKER_SPRITE": CodeInfo(
         Severity.INFO, "Font marker exported as images instead of browser text",
         "Characters beyond U+FFFF or missing from the font (QGIS draws a fallback font) "
@@ -251,12 +254,18 @@ class Diagnostic:
         return {k: v for k, v in data.items() if v not in ("", None)}
 
 
-_PATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:[\\/][^\\/\s'\"]+){2,}")
+# A drive or a separator not inside a word (not "1/2", "km/h"), folders that
+# may contain spaces ("C:\Users\Jane Doe\My Maps": split at the spaces,
+# the user's name was left in clear; no ":", which starts the next path),
+# then a basename without spaces.
+_PATH_RE = re.compile(r"(?:(?<![\w.])[A-Za-z]:|(?<![\w.]))(?:[\\/][^\\/:'\"\r\n]*)+[\\/][^\\/\s'\"]+")
 
 
 def redact_paths(text: str) -> str:
     """Replace absolute file-system paths with ``<path>/basename``."""
-    return _PATH_RE.sub(lambda m: f"<path>/{os.path.basename(m.group(0))}", text or "")
+    # Both separators whatever the OS: a Windows path in a report written on
+    # Linux kept all its folders.
+    return _PATH_RE.sub(lambda m: "<path>/" + re.split(r"[\\/]", m.group(0))[-1], text or "")
 
 
 class StrictModeError(RuntimeError):
