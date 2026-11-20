@@ -110,3 +110,68 @@ def test_processing_algorithm_returns_archive_outputs(plugin, tmp_path, monkeypa
     params["OUTPUT_DIR"] = str(tmp_path / "proc_old")
     results, ok = alg.run(params, context, QgsProcessingFeedback())
     assert ok and "PMTILES" not in results and os.path.exists(results["MBTILES"])
+
+
+def _fake_algorithm(monkeypatch):
+    """The Processing algorithm with the exporter replaced: what it is given."""
+    from q2vt_plugin.src.processing import algorithms  # pylint: disable=import-error
+    seen = {}
+
+    class Exporter:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def convert_project_to_vector_tiles(self):
+            return seen["output_dir"]
+    monkeypatch.setattr(algorithms, "QGIS2VectorTiles", Exporter)
+    algorithm = algorithms.QGIS2VectorTilesAlgorithm()
+    algorithm.initAlgorithm()
+    return algorithm, seen
+
+
+def test_processing_extent_without_crs_is_in_the_project_crs(plugin, tmp_path, monkeypatch):
+    """An extent without [EPSG:...] was used as Web Mercator (an EOV box
+    landed in the Gulf of Guinea); QGIS reads it in the project CRS."""
+    import pytest  # pylint: disable=import-outside-toplevel
+    from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform,  # pylint: disable=import-outside-toplevel
+                           QgsProcessingException, QgsProcessingFeedback)
+    algorithm, seen = _fake_algorithm(monkeypatch)
+    project = reset_project()
+    project.setCrs(QgsCoordinateReferenceSystem("EPSG:23700"))
+    context = QgsProcessingContext()
+    context.setProject(project)
+    eov = QgsRectangle(640000, 230000, 660000, 250000)
+    expected = QgsCoordinateTransform(QgsCoordinateReferenceSystem("EPSG:23700"),
+                                      QgsCoordinateReferenceSystem("EPSG:3857"), project).transformBoundingBox(eov)
+    params = {"MIN_ZOOM": 10, "MAX_ZOOM": 11, "OUTPUT_DIR": str(tmp_path / "out")}
+    for value in ("640000,660000,230000,250000", "640000,660000,230000,250000 [EPSG:23700]"):
+        seen.clear()
+        algorithm.processAlgorithm(dict(params, EXTENT=value), context, QgsProcessingFeedback())
+        box = seen["extent"]
+        for got, want in zip((box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum()),
+                             (expected.xMinimum(), expected.yMinimum(), expected.xMaximum(), expected.yMaximum())):
+            assert abs(got - want) < 1.0, (value, box.toString(), expected.toString())
+    seen.clear()  # an extent given in Web Mercator stays as it is
+    algorithm.processAlgorithm(dict(params, EXTENT="2119000,2123000,6019000,6023000 [EPSG:3857]"),
+                               context, QgsProcessingFeedback())
+    assert seen["extent"] == EXTENT
+    with pytest.raises(QgsProcessingException):  # no extent: not a Null rectangle
+        algorithm.processAlgorithm(params, context, QgsProcessingFeedback())
+
+
+def test_processing_output_definition_is_resolved(plugin, tmp_path, monkeypatch):
+    """parameterAsString gave "" for an output definition (TEMPORARY_OUTPUT,
+    a model's): the export landed in the swept q2styledtiles_* folder."""
+    from qgis.core import QgsProcessingFeedback, QgsProcessingOutputLayerDefinition  # pylint: disable=import-outside-toplevel
+    algorithm, seen = _fake_algorithm(monkeypatch)
+    context = QgsProcessingContext()
+    context.setProject(reset_project())
+    for value in (QgsProcessingOutputLayerDefinition("TEMPORARY_OUTPUT"),
+                  QgsProcessingOutputLayerDefinition(str(tmp_path / "chosen"))):
+        seen.clear()
+        results = algorithm.processAlgorithm(
+            {"MIN_ZOOM": 10, "MAX_ZOOM": 11, "EXTENT": "2119000,2123000,6019000,6023000 [EPSG:3857]",
+             "OUTPUT_DIR": value}, context, QgsProcessingFeedback())
+        assert seen["output_dir"] and "q2styledtiles_" not in seen["output_dir"], seen["output_dir"]
+        assert results["OUTPUT_DIR"] == seen["output_dir"]
+    assert seen["output_dir"] == str(tmp_path / "chosen")

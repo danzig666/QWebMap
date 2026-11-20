@@ -11,6 +11,10 @@ from qgis.core import (
     QgsProcessingParameterExtent,
     QgsProcessingParameterFolderDestination,
     QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
+    QgsProject,
+    QgsRectangle,
+    QgsReferencedRectangle,
     QgsProcessingParameterEnum,
     QgsProcessingParameterBoolean,
     QgsProcessingOutputFile,
@@ -152,7 +156,10 @@ class QGIS2VectorTilesAlgorithm(QgsProcessingAlgorithm):
         )
         # Set default to current map canvas extent if available
         if iface and iface.mapCanvas():
-            extent_param.setDefaultValue(iface.mapCanvas().extent())
+            # With the canvas CRS: a bare rectangle is read in the project CRS.
+            canvas = iface.mapCanvas()
+            extent_param.setDefaultValue(QgsReferencedRectangle(
+                canvas.extent(), canvas.mapSettings().destinationCrs()))
         self.addParameter(extent_param)
 
         # CPU Percent parameter
@@ -292,6 +299,21 @@ class QGIS2VectorTilesAlgorithm(QgsProcessingAlgorithm):
 
         return super().checkParameterValues(parameters, context)
 
+    def _extent_3857(self, parameters, context):
+        """The extent in EPSG:3857. Without a [EPSG:...] suffix it is in the
+        project CRS (as QGIS reads it), not already in Web Mercator."""
+        rect = self.parameterAsExtent(parameters, self.EXTENT, context)
+        if rect is None or rect.isNull() or rect.isEmpty():
+            raise QgsProcessingException(self.tr("Give the tiles extent."))
+        crs = self.parameterAsExtentCrs(parameters, self.EXTENT, context)
+        if not crs.isValid():
+            project = context.project() or QgsProject.instance()
+            crs = project.crs()
+        target = QgsCoordinateReferenceSystem(f"EPSG:{_EPSG_CRS}")
+        if not crs.isValid() or crs == target:
+            return QgsRectangle(rect)
+        return QgsCoordinateTransform(crs, target, context.transformContext()).transformBoundingBox(rect)
+
     def processAlgorithm(self, parameters, context, feedback):
         """
         Main processing method. This is where your existing vector tiles generation logic
@@ -309,11 +331,13 @@ class QGIS2VectorTilesAlgorithm(QgsProcessingAlgorithm):
         # Extract parameter values
         min_zoom = self.parameterAsInt(parameters, self.MIN_ZOOM, context)
         max_zoom = self.parameterAsInt(parameters, self.MAX_ZOOM, context)
-        extent = self.parameterAsExtent(
-            parameters, self.EXTENT, context, QgsCoordinateReferenceSystem(f"EPSG:{_EPSG_CRS}")
-        )
+        extent = self._extent_3857(parameters, context)
         cpu_percent = self.parameterAsInt(parameters, self.CPU_PERCENT, context)
-        output_dir = self.parameterAsString(parameters, self.OUTPUT_DIR, context)
+        # Resolves an output definition too (TEMPORARY_OUTPUT, models), which
+        # parameterAsString returns as "".
+        output_dir = self.parameterAsFileOutput(parameters, self.OUTPUT_DIR, context)
+        if not output_dir:
+            raise QgsProcessingException(self.tr("Choose an output directory."))
         include_required_fields_only = self.parameterAsBool(
             parameters, self.REQUIRED_FIELDS_ONLY, context
         )

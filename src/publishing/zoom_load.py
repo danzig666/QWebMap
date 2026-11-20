@@ -177,6 +177,19 @@ def pixel_size(zoom: float) -> float:
 def zoom_scale_factor(project, extent_3857: QgsRectangle) -> float:
     """QGIS map scale of zoom 0 for this project (as the export converts):
     scale(z) = factor / 2**z."""
+    return _map_unit_context(project, extent_3857).top_scale
+
+
+def configure_zoom_levels(project, extent_3857) -> None:
+    """Set the export's zoom <-> scale (ZoomLevels) for this project and
+    extent, as the vector exporter does."""
+    from ..utils.zoom_levels import ZoomLevels  # pylint: disable=import-outside-toplevel
+    box = extent_3857 if isinstance(extent_3857, QgsRectangle) else QgsRectangle(*extent_3857)
+    context = _map_unit_context(project, box)
+    ZoomLevels.configure(context.top_scale, context.map_units_per_mm_0)
+
+
+def _map_unit_context(project, extent_3857: QgsRectangle) -> MapUnitContext:
     crs = project.crs()
     to_wgs = QgsCoordinateTransform(QgsCoordinateReferenceSystem("EPSG:3857"),
                                     QgsCoordinateReferenceSystem("EPSG:4326"), project)
@@ -185,9 +198,7 @@ def zoom_scale_factor(project, extent_3857: QgsRectangle) -> float:
     except Exception:  # noqa: BLE001 - a broken extent: the equator
         latitude = 0.0
     units = "degrees" if crs.isGeographic() else getattr(crs.mapUnits(), "name", "meters")
-    context = MapUnitContext.for_project(is_web_mercator(crs), str(units),
-                                         latitude)
-    return context.top_scale
+    return MapUnitContext.for_project(is_web_mercator(crs), str(units), latitude)
 
 
 def scale_for_zoom(factor: float, zoom: int) -> float:

@@ -179,6 +179,60 @@ def test_other_processing_temp_outputs_are_kept(plugin):
     assert not os.path.exists(stale)
 
 
+def test_a_running_exports_working_folder_is_not_swept(plugin, tmp_path):
+    """A second export (Processing while a publish runs) deleted the first
+    one's datasets under its tile processes."""
+    import gc
+    from q2vt_plugin.src.qgis2vectortiles import QGIS2VectorTiles  # pylint: disable=import-error
+    first = QGIS2VectorTiles(extent=EXTENT, output_dir=str(tmp_path), serve=False)
+    running = first.utils_dir
+    second = QGIS2VectorTiles(extent=EXTENT, output_dir=str(tmp_path), serve=False)
+    assert os.path.isdir(running) and os.path.isdir(second.utils_dir)
+    del first
+    gc.collect()  # finished and let go of: swept by the next export
+    third = QGIS2VectorTiles(extent=EXTENT, output_dir=str(tmp_path), serve=False)
+    assert not os.path.exists(running)
+    assert os.path.isdir(second.utils_dir) and os.path.isdir(third.utils_dir)
+
+
+def test_cancel_while_the_tiles_are_cut_is_a_cancel(export, tmp_path, monkeypatch):
+    """Cancel during tile generation (TilesGenerationCancelled, a
+    RuntimeError) ended as a crash: a traceback, "Export failed" in the log."""
+    from q2vt_plugin.src.core.tiles_generator import TilesGenerationCancelled  # pylint: disable=import-error
+    from q2vt_plugin.src.qgis2vectortiles import QGIS2VectorTiles  # pylint: disable=import-error
+
+    def cancelled(self, *args, **kwargs):
+        self.feedback.cancel()
+        raise TilesGenerationCancelled("Tile generation cancelled")
+    monkeypatch.setattr(QGIS2VectorTiles, "_generate_tiles", cancelled)
+    layer = zoning_layer(path=str(tmp_path / "zoning.gpkg"))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple({"color": "red"})))
+    exporter, result = export(layer)
+    assert result is None
+    log = open(os.path.join(exporter.export_folder, "export_log.txt"), encoding="utf-8").read()
+    assert "Export failed" not in log and ". Cancelled." in log
+
+
+def test_strict_failure_on_the_tiles_leaves_no_package(export, tmp_path, monkeypatch):
+    """An error found in the tiles (validation) failed strict mode only
+    after the static web package and the PMTiles were written: both stayed."""
+    from q2vt_plugin.src.qgis2vectortiles import QGIS2VectorTiles  # pylint: disable=import-error
+    validate = QGIS2VectorTiles._validate_tiles  # pylint: disable=protected-access
+
+    def failing(self, *args, **kwargs):
+        archive = validate(self, *args, **kwargs)
+        self.diagnostics.add("Q2VT_TILES_ZOOM_MISMATCH", "made up by the test")
+        return archive
+    monkeypatch.setattr(QGIS2VectorTiles, "_validate_tiles", failing)
+    layer = zoning_layer(path=str(tmp_path / "zoning.gpkg"))
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple({"color": "red"})))
+    with pytest.raises(QgsProcessingException, match="Strict export failed"):
+        export(layer, max_zoom=11, fidelity_mode=1, static_package=True, archive_format="both")
+    [output] = [d for d in (tmp_path / "out").iterdir() if d.is_dir()]
+    for name in ("web", "tiles.pmtiles", "tiles.mbtiles", "style"):
+        assert not (output / name).exists(), name
+
+
 def test_strict_mode_fails_before_publication(export, tmp_path):
     layer = zoning_layer(path=str(tmp_path / "zoning.gpkg"))
     symbol = QgsFillSymbol()
@@ -1400,7 +1454,7 @@ def test_output_folder_with_shell_and_url_characters(plugin, tmp_path, monkeypat
     [tiles] = QgsProject.instance().mapLayersByName("Vector Tiles")
     assert tiles.isValid(), tiles.source()
     with open(os.path.join(result, "activate_server.sh"), encoding="utf-8") as handle:
-        [line] = [l for l in handle.read().splitlines() if "tiles_server.py" in l]
+        [line] = [l for l in handle.read().splitlines() if "tiles_server.py" in l and "--port" in l]
     command = shlex.split(line)
     assert command[1] == os.path.join(result, "utils", "tiles_server.py"), line
     assert command[2:] == ["--port", command[3], "&"]

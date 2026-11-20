@@ -463,3 +463,51 @@ def test_legend_entry_without_its_layer_does_not_stop_the_export(project, tmp_pa
     assert any(n.layer() is None for n in project.layerTreeRoot().findLayers())
     result = export_local(project, _profile(parcels, tmp_path), EXTENT)
     assert result.state.value == "LOCAL_READY"
+
+
+def test_repeated_exports_do_not_pile_up_local_copies(project, tmp_path):
+    """Every export kept a whole local release and a work folder (tiles,
+    private records) forever; the simple view's ZIP packed all of them."""
+    import zipfile  # pylint: disable=import-outside-toplevel
+    from publishing.web_builder import list_releases, write_zip  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src.gui.simple_page import _current_release_dir  # pylint: disable=import-error
+    project, parcels = project
+    profile = _profile(parcels, tmp_path)
+    dest = profile.destination  # uploaded: the local releases are copies
+    dest.kind, dest.bucket, dest.account_id = "r2", "maps", "0123456789abcdef0123456789abcdef"
+    dest.public_base_url = "https://maps.example.test"
+    results = [export_local(project, profile, EXTENT) for _ in range(3)]
+    publication = results[-1].publication_dir
+    kept = list_releases(publication)
+    assert kept == sorted(r.release.release_id for r in results[-2:]), kept
+    work = os.path.dirname(results[-1].export_dir)
+    runs = [name for name in os.listdir(work) if name[:2].isdigit()]
+    assert runs == [os.path.basename(results[-1].export_dir)], runs
+    # The ZIP to send: the current release only.
+    release = _current_release_dir(publication)
+    assert release == results[-1].release.release_dir
+    with zipfile.ZipFile(write_zip(release, str(tmp_path / "map.zip"))) as archive:
+        names = archive.namelist()
+    assert "index.html" in names and not any(name.startswith("releases/") for name in names)
+    # A local site kept in versions is the user's own: nothing deleted there.
+    profile.destination.kind, profile.output.local_versions = "local", True
+    export_local(project, profile, EXTENT)
+    assert len(list_releases(publication)) == 3
+
+
+def test_cancel_while_the_tiles_are_cut_is_a_cancel(project, tmp_path, monkeypatch):
+    """Cancel during the background tiles: a traceback ("Export failed"),
+    not the window's "cancelled"."""
+    from qgis.core import QgsProcessingFeedback  # pylint: disable=import-outside-toplevel
+    from publishing.errors import Cancelled  # pylint: disable=import-outside-toplevel
+    from q2vt_plugin.src import qgis2vectortiles  # pylint: disable=import-error
+    from q2vt_plugin.src.core.tiles_generator import TilesGenerationCancelled  # pylint: disable=import-error
+
+    def cancelled(self, feedback):
+        self.abort()
+        feedback.cancel()
+        raise TilesGenerationCancelled("Tile generation cancelled")
+    monkeypatch.setattr(qgis2vectortiles.BackgroundTiles, "wait", cancelled)
+    project, parcels = project
+    with pytest.raises(Cancelled):
+        export_local(project, _profile(parcels, tmp_path), EXTENT, QgsProcessingFeedback())

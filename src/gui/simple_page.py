@@ -53,6 +53,28 @@ def visitor_fields(layer):
     return out
 
 
+def _current_release_dir(folder: str) -> str:
+    """The current release of a map kept in versions (releases/, current.json;
+    newer than a flat export into the same folder), else ""."""
+    import json  # pylint: disable=import-outside-toplevel
+    from ..publishing.controller import FLAT_STATE  # pylint: disable=import-outside-toplevel
+    from ..publishing.errors import PublishingError  # pylint: disable=import-outside-toplevel
+    from ..publishing.web_builder import read_current  # pylint: disable=import-outside-toplevel
+    try:
+        current = read_current(folder)
+    except (OSError, ValueError, PublishingError):
+        return ""
+    if not current:
+        return ""
+    try:
+        with open(os.path.join(folder, FLAT_STATE), encoding="utf-8") as handle:
+            flat = json.load(handle).get("release") or ""
+    except (OSError, ValueError, AttributeError):
+        flat = ""
+    release = os.path.join(folder, "releases", current["releaseId"])
+    return release if os.path.isdir(release) and str(flat) < current["releaseId"] else ""
+
+
 def _heading(number: int, text: str) -> QLabel:
     label = QLabel(f"<b>{number}.&nbsp;&nbsp;{text}</b>")
     font = label.font()
@@ -672,7 +694,12 @@ class SimplePage(QWidget):
             return ""
         base = folder.rstrip(os.sep)
         try:
-            archive = shutil.make_archive(base, "zip", os.path.dirname(base), os.path.basename(base))
+            release = _current_release_dir(folder)
+            if release:  # versions in releases/: only the map's current one
+                from ..publishing.web_builder import write_zip  # pylint: disable=import-outside-toplevel
+                archive = write_zip(release, base + ".zip")
+            else:
+                archive = shutil.make_archive(base, "zip", os.path.dirname(base), os.path.basename(base))
         except (OSError, ValueError) as error:  # disk full, write-protected, a file locked
             # (antivirus, OneDrive); ValueError: a file dated before 1980 (ZIP cannot store it)
             try:
