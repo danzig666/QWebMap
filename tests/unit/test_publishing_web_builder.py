@@ -280,3 +280,16 @@ def test_a_lock_of_an_ended_process_does_not_block(tmp_path, bundle, profile):
             build_release(bundle, profile, pub)
         assert error.value.code == "Q2VT_PUB_DESTINATION" and lock in error.value.detail, owner
 
+
+
+def test_retention_orders_releases_of_one_second_by_when_made(tmp_path):
+    """Ids made in the same second sort by their random part: the older one
+    by time goes, not the one whose suffix sorts first."""
+    import time  # pylint: disable=import-outside-toplevel
+    ids = ["r-20261120T215520Z-ffffffff", "r-20261120T215520Z-00000000", "r-20261120T215520Z-88888888"]
+    for release in ids:  # made in this order
+        folder = tmp_path / "releases" / release
+        folder.mkdir(parents=True)
+        (folder / "release.json").write_text("{}")
+        time.sleep(0.02)
+    assert apply_retention(str(tmp_path), 2, protect=[ids[-1]]) == [ids[0]]

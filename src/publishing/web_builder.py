@@ -279,7 +279,15 @@ def apply_retention(publication_dir: str, keep: int, protect: Iterable[str] = ()
     current = read_current(publication_dir)
     protected = set(protect) | ({current["releaseId"]} if current else set())
     releases = list_releases(publication_dir)
-    removable = [r for r in releases if r not in protected]
+
+    def made(release: str):
+        # Ids of one second sort by their random part: then by when made.
+        try:
+            stamp = os.path.getmtime(os.path.join(publication_dir, "releases", release))
+        except OSError:
+            stamp = 0.0
+        return release[:18], stamp
+    removable = sorted((r for r in releases if r not in protected), key=made)
     excess = max(0, len(releases) - max(1, keep))
     removed = []
     for release in removable[:excess]:
