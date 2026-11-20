@@ -502,6 +502,22 @@ def test_a_fixed_raster_detail_equal_to_the_map_zoom_stays_fixed(setup):
         dialog.current_layer_id = None
         dialog.i_layers.setCurrentRow(rows.index(ortho.id()))
         assert dialog.r_detail.currentData() == fixed
+        assert "(fixed, zoom {})".format(fixed) in dialog.r_detail.currentText()  # not like "Like the map"
         dialog.i_layers.setCurrentRow(rows.index(parcels.id()))
         config = dialog.collect().layer(ortho.id())
         assert (config.raster_max_zoom, config.raster_match_native) == (fixed, False)
+
+
+def test_an_inverted_scale_range_is_warned_on_the_review_tab(setup):
+    """Visible scales saved inverted by an older version (shown at no zoom):
+    the Review tab says so; the settings still load and save."""
+    dialog, project, parcels, zones, ortho = setup
+    items = _items(dialog)
+    dialog._set_item_scales(items[parcels.id()], 10000, 50000, 0)  # pylint: disable=protected-access
+    dialog._set_item_scales(items[zones.id()], 50000, 10000, 0)  # pylint: disable=protected-access
+    dialog.refresh_review()
+    text = dialog.review.toPlainText()
+    assert text.count("shown at no zoom") == 1, text
+    lines = text.splitlines()
+    header = next(i for i, line in enumerate(lines) if line.startswith("■ " + parcels.name() + " "))
+    assert "shown at no zoom" in lines[header + 1], text

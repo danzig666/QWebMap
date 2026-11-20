@@ -1983,6 +1983,8 @@ class PublishDialog(QDialog):
             if zoom in (best, map_zoom) and zoom != choice:
                 continue  # the two entries above (a saved fixed zoom keeps its own: it stays fixed)
             label = tr("{} per pixel").format(_metres(ground_resolution(zoom, lat)))
+            if zoom in (best, map_zoom):  # same size as an entry above: say which one is fixed
+                label = tr("{} (fixed, zoom {})").format(label, zoom)
             self.r_detail.addItem(label + (finer if best is not None and zoom > best else ""), zoom)
         index = self.r_detail.findData(choice)
         self.r_detail.setCurrentIndex(index if index >= 0 else self.r_detail.findData("map"))
@@ -3096,6 +3098,9 @@ class PublishDialog(QDialog):
             self.d_auth.setConfigId(dest.credential_ref)
         self._destination_kind_changed()
         self._update_address()
+        # Zooms from a settings file or a preset: showing the simple view
+        # never replaces them (__init__ then says what the opened settings are).
+        self.simple.settings_loaded(False, automatic=False)
         if self.is_simple_view():
             self.simple.refresh()
 
@@ -4025,6 +4030,11 @@ class PublishDialog(QDialog):
         DeploymentHistoryDialog(self, provider, self.profile, releases,
                                 pointer.get("releaseId") if pointer else None).exec()
 
+    @staticmethod
+    def _inverted_scales_note():
+        return tr("Visible scales: the zoomed-out limit is not a smaller scale than the zoomed-in "
+                  "limit, so the layer is shown at no zoom (Layers tab: Visible scales).")
+
     def refresh_review(self):
         profile = self.collect()
         dest = profile.destination
@@ -4039,10 +4049,15 @@ class PublishDialog(QDialog):
             layer = self.project.mapLayer(config.layer_id)
             if layer is None:
                 continue
+            # Saved inverted by an older version (not a validate() error: the
+            # settings would not load): the layer shows at no zoom.
+            inverted = bool(config.min_scale and config.max_scale and config.max_scale >= config.min_scale)
             if isinstance(layer, QgsRasterLayer):
                 lines.append(f"■ {config.title or layer.name()} — " + tr(
                     "raster layer: its image as QGIS draws it, inside the extent ({} format)").format(
                     config.raster_format.upper()))
+                if inverted:
+                    lines.append("   ⚠ " + self._inverted_scales_note())
                 if (layer.providerType() or "").lower() in ("wms", "xyz", "arcgismapserver", "wcs"):
                     lines.append("   ⚠ " + tr("Online map service: check that its licence allows republishing."))
                 if not config.toggleable:
@@ -4051,6 +4066,8 @@ class PublishDialog(QDialog):
             lines.append(f"■ {config.title or layer.name()} — {layer.featureCount()} "
                          + tr("features in the layer (published: those inside the extent drawn by "
                               "the exported rules)"))
+            if inverted:
+                lines.append("   ⚠ " + self._inverted_scales_note())
             if not config.toggleable:
                 lines.append("   " + tr("Always shown (visitors cannot switch it off)"))
             lines.append("   " + tr("Geometry and generated label/style values: public"))

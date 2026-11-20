@@ -4,6 +4,7 @@ imports nothing; the layer list follows the project; the basemap's settings
 are off without a basemap; the layer extent mode without its layer is the
 map view (and asks before the export like it)."""
 
+import os
 import json
 import time
 
@@ -357,6 +358,24 @@ def test_showing_the_simple_view_never_replaces_zooms_set_elsewhere(plugin, monk
     again.close()
 
 
+def test_imported_settings_keep_their_zooms_in_the_simple_view(plugin, monkeypatch, tmp_path):
+    """New settings (automatic detail pending), then a settings file imported:
+    its zooms are kept when the simple view is shown, "Choose automatically"
+    unticked, even when they equal the window's first zooms."""
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    assert dialog.new_settings
+    zooms = (dialog.e_min_zoom.value(), dialog.e_max_zoom.value())
+    path = tmp_path / "s.q2vt.json"
+    assert dialog.export_settings_file(str(path))
+    assert dialog.import_settings_file(str(path), same_map=True)
+    calls = []
+    monkeypatch.setattr(dialog.simple, "apply_auto", lambda: calls.append(1))
+    dialog.set_simple_view(True, remember=False)
+    assert not calls and not dialog.simple.auto.isChecked()
+    assert (dialog.e_min_zoom.value(), dialog.e_max_zoom.value()) == zooms
+    dialog.close()
+
+
 def test_a_zip_that_cannot_be_made_is_said(plugin, monkeypatch, tmp_path):
     """Make a ZIP to send: a disk or file error is said, no half-written ZIP."""
     import shutil  # pylint: disable=import-outside-toplevel
@@ -373,5 +392,23 @@ def test_a_zip_that_cannot_be_made_is_said(plugin, monkeypatch, tmp_path):
     monkeypatch.setattr(shutil, "make_archive", full)
     assert dialog.simple.make_zip() == ""
     assert warned and "No space left" in warned[0] and "No space left" in dialog.status.text()
+    assert not (tmp_path / "web_maps" / "terv.zip").exists()
+    dialog.close()
+
+
+def test_a_zip_of_a_file_dated_before_1980_is_said(plugin, monkeypatch, tmp_path):
+    """A file with an old or zero date (copies from some shares): ZIP cannot
+    store it; said, no half-written ZIP."""
+    dialog, _ = _dialog(plugin, monkeypatch, tmp_path)
+    folder = tmp_path / "web_maps" / "terv"
+    folder.mkdir(parents=True)
+    old = folder / "index.html"
+    old.write_text("<html></html>", encoding="utf-8")
+    os.utime(old, (0, 0))
+    monkeypatch.setattr(dialog, "_local_map_dir", lambda: str(folder))
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+    assert dialog.simple.make_zip() == ""
+    assert warned and "1980" in warned[0]
     assert not (tmp_path / "web_maps" / "terv.zip").exists()
     dialog.close()

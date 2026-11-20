@@ -427,10 +427,12 @@ class SimplePage(QWidget):
     def _zooms(self):
         return self.dialog.e_min_zoom.value(), self.dialog.e_max_zoom.value()
 
-    def settings_loaded(self, new: bool):
+    def settings_loaded(self, new: bool, automatic: bool = True):
         """The window's zooms as loaded are the automatic ones (if it is on);
-        ``new`` settings get the automatic choice when first shown."""
-        self._auto_zooms = self._zooms()
+        ``new`` settings get the automatic choice when first shown. Not
+        ``automatic``: zooms from elsewhere (a settings file, a preset), shown
+        with "Choose automatically" unticked and kept."""
+        self._auto_zooms = self._zooms() if automatic else None
         self._auto_pending = new
 
     def apply_auto(self):
@@ -671,7 +673,8 @@ class SimplePage(QWidget):
         base = folder.rstrip(os.sep)
         try:
             archive = shutil.make_archive(base, "zip", os.path.dirname(base), os.path.basename(base))
-        except OSError as error:  # disk full, write-protected, a file locked (antivirus, OneDrive)
+        except (OSError, ValueError) as error:  # disk full, write-protected, a file locked
+            # (antivirus, OneDrive); ValueError: a file dated before 1980 (ZIP cannot store it)
             try:
                 os.remove(base + ".zip")  # (no half-written archive left)
             except OSError:
