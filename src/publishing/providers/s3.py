@@ -94,12 +94,18 @@ def _load_sdk():
     try:
         import boto3  # pylint: disable=import-outside-toplevel
         import botocore  # noqa: F401  pylint: disable=import-outside-toplevel,unused-import
-        if _from_vendor(boto3) or _has_conditional_writes():
+        # Both: a VENDOR left on sys.path (an in-session upgrade) can give
+        # the vendored boto3 over a system botocore.
+        if (_from_vendor(boto3) and _from_vendor(botocore)) or _has_conditional_writes():
             return boto3
-    except ImportError:
+    except Exception:  # noqa: BLE001 - a mixed pair can fail with any error (AttributeError)
         pass
     # Missing, partial (a system botocore without boto3) or too old: the
-    # vendored SDK as a whole, never its boto3 over another botocore.
+    # vendored SDK as a whole, never its boto3 over another botocore. This
+    # swaps the SDK for the whole QGIS process: a plugin that already holds
+    # the old modules keeps them, but its later imports (and the ClientError
+    # they raise) are the vendored ones. No private copy is possible: boto3
+    # imports itself and botocore by absolute name.
     for name in [n for n in sys.modules if n.split(".")[0] in _SDK_PACKAGES]:
         if not _from_vendor(sys.modules[name]):
             del sys.modules[name]
@@ -142,6 +148,7 @@ CREDENTIAL_CODES = {"AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch
                     "ExpiredToken", "InvalidToken", "Unauthorized", "403", "401"}
 # Not a bare 409: OperationAborted (409) is a transient clash, not a publisher.
 CONFLICT_CODES = {"PreconditionFailed", "412", "ConditionalRequestConflict"}
+
 
 class S3Provider(Provider):
     kind = "s3"

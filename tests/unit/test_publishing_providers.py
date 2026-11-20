@@ -369,54 +369,74 @@ def test_s3_clients_send_checksums_only_when_required():
         assert config.response_checksum_validation == "when_required"
 
 
-@pytest.mark.parametrize("with_boto3", [True, False])
-def test_old_system_sdk_is_not_used(tmp_path, with_boto3):
-    """A system boto3/botocore from before conditional writes (distro
-    packages) rejects If-None-Match client-side: every publish failed. The
-    vendored SDK is used instead, as a whole (never its boto3 over the
-    system botocore)."""
-    import subprocess
-    import sys
+def _fake_system_sdk(root, conditional: bool, with_boto3: bool = True):
+    """A system boto3/botocore whose S3 model has (or lacks) conditional writes."""
     import textwrap
-    system = tmp_path / "system"
-    (system / "botocore").mkdir(parents=True)
-    (system / "botocore" / "__init__.py").write_text("__version__ = '1.29.0'\n")
-    (system / "botocore" / "loaders.py").write_text(textwrap.dedent("""
+    (root / "botocore").mkdir(parents=True)
+    (root / "botocore" / "__init__.py").write_text("__version__ = '1.29.0'\n")
+    members = '{"Bucket": {}, "IfMatch": {}, "IfNoneMatch": {}}' if conditional else '{"Bucket": {}}'
+    (root / "botocore" / "loaders.py").write_text(textwrap.dedent(f"""
         class _Loader:
             def load_service_model(self, service, kind):
-                return {"shapes": {"PutObjectRequest": {"members": {"Bucket": {}}},
-                                   "CompleteMultipartUploadRequest": {"members": {"Bucket": {}}}}}
+                return {{"shapes": {{"PutObjectRequest": {{"members": {members}}},
+                                    "CompleteMultipartUploadRequest": {{"members": {members}}}}}}}
         def create_loader():
             return _Loader()
         """))
+    (root / "botocore" / "config.py").write_text("class Config:\n    pass\n")
+    (root / "botocore" / "exceptions.py").write_text("class ClientError(Exception):\n    pass\n")
     if with_boto3:
-        (system / "boto3").mkdir()
-        (system / "boto3" / "__init__.py").write_text("__version__ = '1.26.0'\n")
+        (root / "boto3").mkdir()
+        (root / "boto3" / "__init__.py").write_text("__version__ = '1.26.0'\n")
+
+
+def _sdk_in_subprocess(tmp_path, system, before=""):
+    """(vendored, botocore version used, botocore version imported afterwards)."""
+    import subprocess
+    import sys
+    import textwrap
     src = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src")
     script = textwrap.dedent(f"""
         import sys
         sys.path[:0] = [{str(system)!r}, {src!r}]
+        from publishing.providers import s3
+        {before}
         import botocore  # (another plugin imported the system one first)
-        from publishing.providers.s3 import sdk_versions
-        versions = sdk_versions()
+        versions = s3.sdk_versions()
         import botocore, botocore.config
         print(versions["vendored"], versions["botocore"], botocore.__version__)
         """)
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120,
                          cwd=str(tmp_path), check=False)
     assert out.returncode == 0, out.stderr
-    vendored, version, imported = out.stdout.split()
+    return out.stdout.split()
+
+
+@pytest.mark.parametrize("with_boto3, vendor_on_path", [(True, False), (False, False), (False, True)])
+def test_old_system_sdk_is_not_used(tmp_path, with_boto3, vendor_on_path):
+    """A system boto3/botocore from before conditional writes (distro
+    packages) rejects If-None-Match client-side: every publish failed. The
+    vendored SDK is used instead, as a whole (never its boto3 over the
+    system botocore, also when an earlier plugin version left the vendored
+    directory on sys.path)."""
+    system = tmp_path / "system"
+    _fake_system_sdk(system, conditional=False, with_boto3=with_boto3)
+    # A vendored boto3 already loaded over the system botocore (stands in
+    # for one that imported cleanly).
+    before = ("import os, types; sys.path.append(s3.VENDOR); m = types.ModuleType('boto3'); "
+              "m.__file__ = os.path.join(s3.VENDOR, 'boto3', '__init__.py'); m.__version__ = '1'; "
+              "sys.modules['boto3'] = m") if vendor_on_path else ""
+    vendored, version, imported = _sdk_in_subprocess(tmp_path, system, before)
     assert vendored == "True" and version == imported == "1.43.106"
 
 
 def test_new_enough_system_sdk_is_kept(tmp_path):
-    """The system SDK stays first when it can do conditional writes (the
-    vendored model stands in for a current system botocore)."""
-    from publishing.providers import s3
-    import botocore
-    if not s3._from_vendor(botocore):  # pylint: disable=protected-access
-        pytest.skip("a system SDK is installed")
-    assert s3._has_conditional_writes()  # pylint: disable=protected-access
+    """The system SDK stays first (not purged, not replaced) when it can do
+    conditional writes."""
+    system = tmp_path / "system"
+    _fake_system_sdk(system, conditional=True)
+    vendored, version, imported = _sdk_in_subprocess(tmp_path, system)
+    assert vendored == "False" and version == imported == "1.29.0"
 
 
 def test_lost_multipart_completion_is_reconciled(env, tmp_path):
