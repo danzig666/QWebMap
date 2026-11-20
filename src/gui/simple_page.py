@@ -15,20 +15,23 @@ import os
 import shutil
 
 from qgis.core import QgsMapLayer, QgsRasterLayer
-from qgis.PyQt.QtCore import QCoreApplication, Qt
-from qgis.PyQt.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame,
+from qgis.PyQt.QtCore import QCoreApplication, QSize, Qt, QTimer
+from qgis.PyQt.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
                                  QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
                                  QRadioButton, QScrollArea, QSlider, QTableWidget,
                                  QTableWidgetItem, QVBoxLayout, QWidget)
 
-# How close visitors can zoom: (words, tile zoom). The browser zooms a
-# little closer still (it enlarges the last tiles).
-ZOOM_STOPS = (("Region", 12), ("Town", 14), ("Streets", 16), ("Buildings", 18))
+PREVIEW = QSize(300, 200)
+# Per project: the detail chosen automatically (simple view), or the slider's.
+AUTO_SCOPE, AUTO_KEY = "QWebMap", "simple/autoDetail"
 # Fields left out of "Show its information when clicked": ids and the
 # like, not information for visitors.
 TECHNICAL_FIELDS = {"fid", "id", "ogc_fid", "objectid", "gid", "oid", "rowid", "pk", "uuid", "guid",
                     "shape_length", "shape_area", "shape_leng"}
 CHECKED, UNCHECKED = Qt.CheckState.Checked, Qt.CheckState.Unchecked
+
+from .detail_scale import (SCALES, nearest_index, nice, preview_settings,  # noqa: E402
+                           recommend, scale_of_zoom, zoom_for_scale)
 
 
 def tr(text: str) -> str:
@@ -145,23 +148,56 @@ class SimplePage(QWidget):
         self.area_info = _hint("")
         layout.addWidget(self.area_info)
 
-        # 4. How close visitors can zoom
+        # 4. How close visitors can zoom: a map scale, chosen from the project
+        # by default, with the project's own map drawn at it.
         layout.addWidget(_heading(4, tr("How close visitors can zoom")))
+        detail = QHBoxLayout()
+        left = QVBoxLayout()
+        self.auto = QCheckBox(tr("Choose automatically from the project"))
+        self.auto.toggled.connect(self._auto_toggled)
+        left.addWidget(self.auto)
         self.zoom = QSlider(Qt.Orientation.Horizontal)
-        self.zoom.setRange(0, len(ZOOM_STOPS) - 1)
+        self.zoom.setRange(0, len(SCALES) - 1)
         self.zoom.setPageStep(1)
         self.zoom.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.zoom.setTickInterval(1)
         self.zoom.valueChanged.connect(self._zoom_changed)
-        layout.addWidget(self.zoom)
-        words_row = QHBoxLayout()  # under the stops: the first and last at the ends
-        for index, (words, _zoom) in enumerate(ZOOM_STOPS):
+        left.addWidget(self.zoom)
+        scales_row = QHBoxLayout()  # under the stops: the first and last at the ends
+        for index, scale in enumerate(SCALES):
             if index:
-                words_row.addStretch(1)
-            words_row.addWidget(QLabel(tr(words)))
-        layout.addLayout(words_row)
+                scales_row.addStretch(1)
+            label = QLabel(nice(scale))
+            small = label.font()
+            small.setPointSizeF(small.pointSizeF() * 0.85)
+            label.setFont(small)
+            scales_row.addWidget(label)
+        left.addLayout(scales_row)
         self.zoom_info = _hint("")
-        layout.addWidget(self.zoom_info)
+        left.addWidget(self.zoom_info)
+        left.addStretch(1)
+        detail.addLayout(left, 1)
+        right = QVBoxLayout()
+        self.preview = QLabel()
+        self.preview.setFixedSize(PREVIEW)
+        self.preview.setFrameShape(QFrame.Shape.Box)
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right.addWidget(self.preview)
+        self.preview_caption = _hint(tr("What visitors see when fully zoomed in"))
+        self.preview_caption.setMaximumWidth(PREVIEW.width())
+        right.addWidget(self.preview_caption)
+        detail.addLayout(right)
+        layout.addLayout(detail)
+        self._preview_job = None
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(250)
+        self._preview_timer.timeout.connect(self._render_preview)
+        self._auto_timer = QTimer(self)  # (measuring the layers takes a moment: after a burst of changes)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.setInterval(400)
+        self._auto_timer.timeout.connect(self.apply_auto)
+        self._reasons = []
 
         # 5. Background map
         layout.addWidget(_heading(5, tr("Background map")))
@@ -246,15 +282,19 @@ class SimplePage(QWidget):
             self.area.setCurrentIndex(max(0, self.area.findData(mode)))
             self.area.blockSignals(False)
             self._fill_area_layers()
-            maximum = dialog.e_max_zoom.value()
-            nearest = min(range(len(ZOOM_STOPS)), key=lambda i: abs(ZOOM_STOPS[i][1] - maximum))
-            self.zoom.setValue(nearest)
+            self.zoom.setValue(nearest_index(scale_of_zoom(self._factor(), dialog.e_max_zoom.value())))
+            auto, _found = dialog.project.readBoolEntry(AUTO_SCOPE, AUTO_KEY, bool(getattr(dialog, "new_settings", False)))
+            self.auto.setChecked(auto)
+            self.zoom.setEnabled(not auto)
             (self.bg_osm if dialog.b_kind.currentData() == "protomaps" else self.bg_none).setChecked(True)
             self.folder.setText(dialog.o_dir.text())
         finally:
             self._updating = False
         self._show_area()
-        self._show_zoom()
+        if self.auto.isChecked():
+            self.apply_auto()
+        else:
+            self._show_zoom()
         self.update_buttons()
         self._show_advanced()
 
@@ -332,12 +372,119 @@ class SimplePage(QWidget):
         self.area_info.setText(tr("About {w:.1f} × {h:.1f} km, {tiles} tiles.").format(
             w=width, h=height, tiles=f"{tiles:,}".replace(",", " ")))
 
+    def _factor(self) -> float:
+        """QGIS scale of web zoom 0 for this project and area (as the export converts)."""
+        from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+        from ..publishing.zoom_load import zoom_scale_factor  # pylint: disable=import-outside-toplevel
+        extent = self._extent()
+        box = QgsRectangle(*extent) if extent else QgsRectangle(0, 0, 0, 0)
+        try:
+            return zoom_scale_factor(self.dialog.project, box)
+        except Exception:  # noqa: BLE001
+            from ..core.fidelity.zoom import WEB_MERCATOR_TOP_SCALE  # pylint: disable=import-outside-toplevel
+            return WEB_MERCATOR_TOP_SCALE
+
+    def _extent(self):
+        try:
+            return self.dialog._current_extent_3857()  # pylint: disable=protected-access
+        except Exception:  # noqa: BLE001 - shown as unknown
+            return None
+
+    def published_layers(self):
+        """The layers on the map, top first."""
+        dialog = self.dialog
+        out = []
+        for item in self._ordered_items():
+            if item.checkState(dialog.COL_PUBLISH) == CHECKED:
+                layer = dialog.project.mapLayer(item.data(0, dialog.LAYER_ROLE))
+                if layer is not None:
+                    out.append(layer)
+        return out
+
     def _show_zoom(self):
         dialog = self.dialog
-        self.zoom_info.setText(tr("Detail up to zoom level {z} (about 1:{scale}); the map opens zoomed out "
-                                  "to the whole area.").format(
-            z=dialog.e_max_zoom.value(),
-            scale=f"{round(591657527.6 / 2 ** dialog.e_max_zoom.value(), -1):,.0f}".replace(",", " ")))
+        zoom = dialog.e_max_zoom.value()
+        factor = self._factor()
+        chosen = SCALES[self.zoom.value()]
+        # The slider's scale while it gives this zoom (1:1 000, not the zoom's exact 1:564).
+        shown = chosen if zoom_for_scale(factor, chosen) == zoom else scale_of_zoom(factor, zoom)
+        text = tr("Visitors can zoom in to {scale} (web zoom {z}); the map opens showing the whole "
+                  "area.").format(scale=nice(shown), z=zoom)
+        if self.auto.isChecked() and self._reasons:
+            text += " " + tr("Chosen because {}.").format("; ".join(self._reasons))
+        self.zoom_info.setText(text)
+        self._preview_timer.start()
+
+    def apply_auto(self):
+        """The recommended detail for the layers on the map and the area."""
+        from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+        dialog = self.dialog
+        extent = self._extent()
+        factor = self._factor()
+        scale, self._reasons = recommend(dialog.project, self.published_layers(),
+                                         QgsRectangle(*extent) if extent else None, factor,
+                                         dialog.e_min_zoom.value())
+        self._updating = True
+        try:
+            self.zoom.setValue(nearest_index(scale))
+        finally:
+            self._updating = False
+        dialog.e_max_zoom.setValue(zoom_for_scale(factor, scale))
+        self._fit_min_zoom()
+        self._show_zoom()
+        self._show_area()
+
+    def _auto_toggled(self, on):
+        self.zoom.setEnabled(not on)
+        if self._updating:
+            return
+        self.dialog.project.writeEntryBool(AUTO_SCOPE, AUTO_KEY, on)
+        if on:
+            self.apply_auto()
+        else:
+            self._reasons = []
+            self._show_zoom()
+
+    def _render_preview(self):
+        """The project's own map (the layers on the map) at the chosen scale."""
+        from qgis.core import QgsMapRendererParallelJob  # pylint: disable=import-outside-toplevel
+        from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+        from qgis.PyQt.QtGui import QPixmap  # pylint: disable=import-outside-toplevel
+        if not self.isVisible():
+            return
+        extent = self._extent()
+        factor = self._factor()
+        scale = scale_of_zoom(factor, self.dialog.e_max_zoom.value())
+        chosen = SCALES[self.zoom.value()]
+        label = chosen if zoom_for_scale(factor, chosen) == self.dialog.e_max_zoom.value() else scale
+        settings = preview_settings(self.dialog.project, self.published_layers(),
+                                    QgsRectangle(*extent) if extent else None, scale, PREVIEW)
+        if settings is None:
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText(tr("No layer on the map yet"))
+            return
+        if self._preview_job is not None:
+            self._preview_job.cancelWithoutBlocking()
+        job = QgsMapRendererParallelJob(settings)
+        self._preview_job = job
+
+        def done():
+            if self._preview_job is job:
+                self.preview.setPixmap(QPixmap.fromImage(job.renderedImage()))
+                self.preview_caption.setText(tr("What visitors see when fully zoomed in ({}), where the "
+                                                "area has most detail").format(nice(label)))
+                self._preview_job = None
+        job.finished.connect(done)
+        job.start()
+
+    def wait_for_preview(self, timeout_ms: int = 10000):
+        """(Tests, screenshots.)"""
+        if self._preview_timer.isActive():
+            self._preview_timer.stop()
+            self._render_preview()
+        if self._preview_job is not None:
+            self._preview_job.waitForFinished()
+            QCoreApplication.processEvents()
 
     def _show_advanced(self):
         """One line naming the advanced settings this project uses: kept and
@@ -389,6 +536,7 @@ class SimplePage(QWidget):
                 item.setCheckState(dialog.COL_PUBLISH, CHECKED if on else UNCHECKED)
                 if on:
                     item.setCheckState(dialog.COL_VISIBLE, CHECKED)
+            self._changed_layers_or_area()
         elif cell.column() == 2:
             self.set_information(layer_id, on)
             if on:  # information of a layer not on the map is nowhere to click
@@ -435,11 +583,18 @@ class SimplePage(QWidget):
             dialog.e_extent_mode.setCurrentIndex(max(0, dialog.e_extent_mode.findData(mode)))
         self._fit_min_zoom()
         self._show_area()
+        self._changed_layers_or_area()
+
+    def _changed_layers_or_area(self):
+        if self.auto.isChecked():
+            self._auto_timer.start()
+        else:
+            self._preview_timer.start()
 
     def _zoom_changed(self, index):
         if self._updating:
             return
-        self.dialog.e_max_zoom.setValue(ZOOM_STOPS[index][1])
+        self.dialog.e_max_zoom.setValue(zoom_for_scale(self._factor(), SCALES[index]))
         self._fit_min_zoom()
         self._show_zoom()
         self._show_area()

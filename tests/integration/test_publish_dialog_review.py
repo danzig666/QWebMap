@@ -205,7 +205,7 @@ def test_the_simple_view_shows_and_edits_the_same_settings(plugin, monkeypatch, 
     """The simple view writes into the advanced view's controls: switching
     either way changes nothing; its layers, information, area, zoom,
     background and folder are the window's settings."""
-    from q2vt_plugin.src.gui.simple_page import ZOOM_STOPS  # pylint: disable=import-error,import-outside-toplevel
+    from q2vt_plugin.src.gui.detail_scale import SCALES, zoom_for_scale  # pylint: disable=import-error,import-outside-toplevel
     from qgis.PyQt.QtCore import Qt as QtCore_Qt  # pylint: disable=import-outside-toplevel
     dialog, parcels = _dialog(plugin, monkeypatch, tmp_path)
     before = dialog._profile_json()  # pylint: disable=protected-access
@@ -229,8 +229,9 @@ def test_the_simple_view_shows_and_edits_the_same_settings(plugin, monkeypatch, 
     assert not any(p.field.lower() in ("fid", "id") for p in config.popup_fields)
     page.layers.item(row, 2).setCheckState(QtCore_Qt.CheckState.Unchecked)
     assert not next(c for c in dialog.collect().layers if c.layer_id == parcels.id()).popup_fields
-    page.zoom.setValue(len(ZOOM_STOPS) - 1)
-    assert dialog.e_max_zoom.value() == ZOOM_STOPS[-1][1]
+    page.auto.setChecked(False)                      # the slider: a map scale
+    page.zoom.setValue(len(SCALES) - 1)
+    assert dialog.e_max_zoom.value() == zoom_for_scale(page._factor(), SCALES[-1])  # pylint: disable=protected-access
     page.area.setCurrentIndex(page.area.findData("layer"))
     page.area_layer.setCurrentIndex(page.area_layer.findData(parcels.id()))
     profile = dialog.collect()
@@ -283,4 +284,35 @@ def test_the_first_view_question_only_for_new_users(plugin, monkeypatch, tmp_pat
         assert len(asked) == 1                                          # once
     finally:
         settings.remove(dialog.VIEW_KEY)
+    dialog.close()
+
+
+def test_the_simple_view_recommends_a_scale_from_the_layers(plugin, monkeypatch, tmp_path):
+    """Automatic detail: the features' size sets the scale (small parcels: a
+    detailed scale), a layer shown only when zoomed in needs its scale; the
+    choice is kept with the project; a preview of the map at that scale."""
+    from q2vt_plugin.src.gui.detail_scale import recommend, scale_of_zoom  # pylint: disable=import-error,import-outside-toplevel
+    from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+    dialog, parcels = _dialog(plugin, monkeypatch, tmp_path)
+    page = dialog.simple
+    dialog.profile.view.extent = [2119000, 6019000, 2123000, 6023000]
+    dialog.profile.view.extent_mode = "fixed"
+    factor = page._factor()  # pylint: disable=protected-access
+    box = QgsRectangle(*dialog.profile.view.extent)
+    scale, reasons = recommend(dialog.project, [parcels], box, factor, 0)
+    assert scale == 50000 and reasons and "676 m across" in reasons[0]   # 1 km Mercator squares at 47.4°N
+    parcels.setScaleBasedVisibility(True)
+    parcels.setMinimumScale(1000.0)                   # shown from 1:1 000 on: needs 1:500
+    assert recommend(dialog.project, [parcels], box, factor, 0)[0] <= 500
+    parcels.setScaleBasedVisibility(False)
+    dialog.show()
+    dialog.set_simple_view(True, remember=False)
+    assert page.auto.isChecked()                      # new settings: automatic
+    page.auto.setChecked(False)
+    assert not dialog.project.readBoolEntry("QWebMap", "simple/autoDetail", True)[0]
+    page.auto.setChecked(True)
+    assert abs(scale_of_zoom(factor, dialog.e_max_zoom.value())) <= scale * 1.01
+    assert dialog.project.readBoolEntry("QWebMap", "simple/autoDetail", False)[0]
+    page.wait_for_preview()
+    assert page.preview.pixmap() is not None and not page.preview.pixmap().isNull()
     dialog.close()

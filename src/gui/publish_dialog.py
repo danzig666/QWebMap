@@ -330,6 +330,7 @@ class PublishDialog(QDialog):
         # The address follows the title only for new settings (never saved,
         # so never exported or published): later it is the map's address.
         self._slug_follows = not found
+        self.new_settings = not found  # (the simple view chooses the detail itself for these)
         if not found:
             return self._default_profile()
         profile, saved_from = found
