@@ -779,26 +779,31 @@ def test_publish_reuses_the_export_only_while_the_layers_stay_as_exported(projec
     """Publish after a local export of the same settings uploads that export,
     unless a layer's data or style changed since (the window is not modal)."""
     project, parcels = project
-    dialog = _dialog()
-    _configure(dialog, parcels, tmp_path)
-    dialog.d_kind.setCurrentIndex(dialog.d_kind.findData("r2"))
-    dialog.d_account.setText("abc123")
-    dialog.d_bucket.setText("maps")
-    dialog.d_public.setText("https://maps.example.org")
-    try:
-        assert dialog.export_locally(), messages
-        dialog.refresh_review()
-        dialog.approve.setChecked(True)
-        exported = []
-        monkeypatch.setattr(dialog, "export_locally", lambda: exported.append(1) and False)
-        dialog.publish()  # (no keys: stops before the upload)
-        assert not exported and dialog.status.text().startswith("Q2VT_PUB_CREDENTIALS")  # the same export
-        parcels.setOpacity(0.5)
-        parcels.triggerRepaint()                                          # a style changed in QGIS
-        dialog.publish()
-        assert exported                                                   # exported again
-    finally:
-        dialog.close()
+    exported = []
+    for edit in (False, True):
+        dialog = _dialog()
+        if not edit:  # (then saved by the export)
+            _configure(dialog, parcels, tmp_path)
+            dialog.d_kind.setCurrentIndex(dialog.d_kind.findData("r2"))
+            dialog.d_account.setText("abc123")
+            dialog.d_bucket.setText("maps")
+            dialog.d_public.setText("https://maps.example.org")
+        try:
+            assert dialog.export_locally(), messages
+            dialog.refresh_review()
+            dialog.approve.setChecked(True)
+            monkeypatch.setattr(dialog, "export_locally", lambda: exported.append(edit) and False)
+            if edit:                                                      # data edited in QGIS
+                feature = next(parcels.getFeatures())
+                assert parcels.startEditing()
+                parcels.changeAttributeValue(feature.id(), parcels.fields().indexOf("hrsz"), "999/9")
+                assert parcels.commitChanges()
+            dialog.publish()  # (no keys: stops before the upload)
+            if not edit:
+                assert dialog.status.text().startswith("Q2VT_PUB_CREDENTIALS")
+        finally:
+            dialog.close()
+    assert exported == [True]  # the same export, then a new one
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
