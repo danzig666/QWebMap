@@ -2,7 +2,9 @@
 # Runs each test file given in its own pytest process (used by
 # .github/workflows/tests.yml): a crash of QGIS in one file fails that file
 # only, the others still run. JUnit reports go to test-reports/<title>/, a summary to
-# the job summary. Exit 1 if any file failed.
+# the job summary. Exit 1 if any file failed. A file that hangs (a modal
+# dialog no test answers waits forever offscreen) is stopped after
+# Q2VT_FILE_TIMEOUT seconds and counts as failed; the other files still run.
 set -u
 title="$1"
 shift
@@ -14,12 +16,16 @@ for file in "$@"; do
   name="$(echo "${file%.py}" | tr '/' '_')"
   echo "::group::${file}"
   start=$SECONDS
-  python3 -m pytest -q -rfE -p no:cacheprovider --junitxml="${reports}/${name}.xml" "${file}"
+  # Plain TERM: uutils' timeout (the QGIS 4 image) reports a timeout with
+  # --kill-after as exit 125.
+  timeout "${Q2VT_FILE_TIMEOUT:-3600}" \
+    python3 -m pytest -q -rfE -p no:cacheprovider --junitxml="${reports}/${name}.xml" "${file}"
   code=$?
   echo "::endgroup::"
   echo "${file}: exit ${code} in $((SECONDS - start)) s"
   case "${code}" in
     0|5) passed=$((passed + 1)) ;;  # 5: no tests collected (all skipped by conftest)
+    124) failed+=("${file} (timed out after ${Q2VT_FILE_TIMEOUT:-3600} s)") ;;
     *)
       failed+=("${file} (exit ${code}$([ "${code}" -ge 128 ] && echo ", crashed: signal $((code - 128))"))")
       ;;

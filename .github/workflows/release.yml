@@ -6,8 +6,13 @@
 # and zip carry the variant suffix: v<version>-<suffix>,
 # QWebMap-<version>-<suffix>.zip. Notes:
 # releases/RELEASE_NOTES_<version>[-<suffix>].md (the variant file if it
-# exists, else the generic one). "replace" first deletes an existing release
-# and tag of that version. "notes_only" only rewrites the title and notes of
+# exists, else the generic one). The zip must be this commit's plugin (rebuilt
+# here and compared), and the commit's code must have passed the tests: the
+# branch's last successful Tests run, with no change in tools/ci/tested_paths
+# since ("untested" skips this check). "replace" moves an existing release's
+# tag to this commit and replaces its zip, title and notes (the release is
+# never deleted, so a failed upload leaves it in place; run it again).
+# "notes_only" only rewrites the title and notes of
 # an existing release (no zip, no tag change, "Latest" left as it is). Only generic releases become
 # the repository's "Latest" release; variant releases never do, so the
 # default download stays the generic plugin. A variant's release title is
@@ -28,19 +33,30 @@ on:
         description: "Only update the title and notes of the existing release"
         type: boolean
         default: false
+      untested:
+        description: "Release without a successful test run of this code (not recommended)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  actions: read  # the Tests runs of the branch
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the last tested commit
+          filter: blob:none  # older release zips are not downloaded
       - name: Resolve the variant, zip and notes
         env:
           VERSION: ${{ inputs.version }}
           NOTES_ONLY: ${{ inputs.notes_only }}
+          UNTESTED: ${{ inputs.untested }}
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
         run: |
           SUFFIX=""
           LATEST="true"
@@ -61,6 +77,20 @@ jobs:
             # The zipped metadata is this commit's (only the variant name may differ).
             unzip -p "${ZIP}" "${FOLDER}/metadata.txt" | grep -v '^name=' > zipped.txt
             grep -v '^name=' metadata.txt | cmp - zipped.txt
+            # Every file, not only metadata.txt: a zip built before the last
+            # code commit (or from uncommitted edits) is refused.
+            python3 tools/build_release.py --compare "${ZIP}"
+            if [ "${UNTESTED}" != "true" ]; then
+              last="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/tests.yml/runs?branch=${BRANCH}&status=success&per_page=1" \
+                      --jq '.workflow_runs[0].head_sha // ""')"
+              fail() { echo "::error title=Not tested::$1 Run Tests on ${BRANCH} (Actions tab), or tick \"untested\"."; exit 1; }
+              [ -n "${last}" ] || fail "No successful Tests run on ${BRANCH}."
+              git merge-base --is-ancestor "${last}" HEAD 2>/dev/null || fail "The last tested commit ${last:0:7} is not in this branch's history."
+              mapfile -t paths < <(grep -v '^#' tools/ci/tested_paths)
+              changed="$(git diff --name-only "${last}" HEAD -- "${paths[@]}" variant.json)"
+              [ -z "${changed}" ] || fail "Changed since the last successful Tests run (${last:0:7}): $(echo "${changed}" | head -5 | paste -sd ' ')."
+              echo "Tested: the code is that of ${last:0:7}, which passed the tests."
+            fi
           fi
           {
             echo "TAG=v${VERSION}${SUFFIX}"
@@ -69,13 +99,27 @@ jobs:
             echo "TITLE=${TITLE}"
             echo "LATEST=${LATEST}"
           } >> "${GITHUB_ENV}"
-      - name: Remove the previous release
+      - name: Replace the existing release
+        id: replace
         if: ${{ inputs.replace && !inputs.notes_only }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release delete "${TAG}" --cleanup-tag --yes || true
+        run: |
+          # In place, not delete and create: if the upload fails the
+          # published release and its download link stay.
+          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "No release ${TAG} yet: it is created."
+            exit 0
+          fi
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
+          gh release upload "${TAG}" "${ZIP}" --clobber
+          gh release edit "${TAG}" \
+            --title "${TITLE}" \
+            --notes-file "${NOTES}" \
+            --latest="${LATEST}"
+          echo "done=true" >> "${GITHUB_OUTPUT}"
       - name: Create the release
-        if: ${{ !inputs.notes_only }}
+        if: ${{ !inputs.notes_only && steps.replace.outputs.done != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

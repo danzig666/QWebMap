@@ -1,7 +1,7 @@
 # The full test suite under Qt6: the official QGIS 4 image (QGIS 4 is built
 # with Qt6 / PyQt6; the plugin declares supportsQt6 in metadata.txt). Part of
 # the nightly tests (tests.yml calls it after its plan job, so it runs and
-# skips with the 3.34 jobs); "Run workflow" in the Actions tab runs it alone.
+# skips with the 3.44 jobs); "Run workflow" in the Actions tab runs it alone.
 # Each step continues after failures so one run shows everything.
 name: Tests (Qt6, QGIS 4)
 
@@ -24,14 +24,25 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      Q2VT_REQUIRE_TOOLS: "1"
     steps:
       - name: Git for the checkout
         # The QGIS 4 image has no git: without it actions/checkout unpacks a
         # tarball with no .git, and the release build lists files with git.
         run: command -v git || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null; }
       - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            /*
+            !/releases/
+          sparse-checkout-cone-mode: false
       - name: Prepare
         run: tools/ci/prepare_qgis_container.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Tools of the parity tests
+        run: tools/ci/prepare_test_tools.sh
       - name: Qt and plugin load
         if: success() || failure()
         run: |
@@ -72,6 +83,11 @@ jobs:
         # tarball with no .git, and the release build lists files with git.
         run: command -v git || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null; }
       - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            /*
+            !/releases/
+          sparse-checkout-cone-mode: false
       - name: Prepare
         run: tools/ci/prepare_qgis_container.sh
       - uses: actions/setup-node@v5

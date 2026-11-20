@@ -8,17 +8,21 @@ import os
 import shutil
 import subprocess
 
-import pytest
-
 from publishing.feature_index import build_feature_index, fnv1a, shard_key
 from publishing.identifiers import encode_compound, key_expression, validate_keys
 from publishing.search_index import build_search_index, normalize, words
 from publishing.shard_pack import read_shard
+from q2vt_support import missing_tool
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CORE = os.path.join(ROOT, "resources", "web_viewer", "search_core.mjs")
 VECTORS = ["Őrbottyán", "ŐRBOTTYÁN", "Szabályozás  Övezet", "Kőszeg/12-3", "  Ünnep   út ",
            "Árvíztűrő tükörfúrógép", "00123/4", "ʼDéaʼk", "égy", "İzmir"]
+
+
+def _needs_node():
+    if shutil.which("node") is None:
+        missing_tool("needs Node")
 
 
 def node(script):
@@ -44,8 +48,8 @@ def test_hungarian_normalization():
     assert words("Kőszeg/12-3, Ünnep út") == ["koszeg/12-3", "unnep", "ut"]
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
 def test_python_and_javascript_agree():
+    _needs_node()
     js = node(f"import {{ normalize, words, fnv1a }} from {json.dumps('file://' + CORE)};"
               f"const v = {json.dumps(VECTORS)};"
               "console.log(JSON.stringify(v.map((x) => [normalize(x), words(x), fnv1a(x)])));")
@@ -70,10 +74,10 @@ def test_single_file_index(tmp_path):
     assert "secret" not in json.dumps(data)  # only label/terms/anchor/bounds
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
 def test_sharded_index_is_complete_and_searchable(tmp_path):
     """A11: 120,000 records, skewed prefixes, no truncation; every record
     is in a shard reachable from its own key."""
+    _needs_node()
     n = 120000
     manifest = build_search_index(_records(n), {"lyr-a": ["hrsz"], "lyr-b": ["hrsz"]}, str(tmp_path),
                                   budget_records=50000, shard_bytes=256 * 1024)
@@ -130,12 +134,12 @@ def test_feature_index_shards(tmp_path):
     assert set(record) == {"l", "k", "t", "a", "p", "b", "z"}  # no geometry
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node")
 def test_the_viewer_reads_packed_shards_by_range(tmp_path):
     """A city's search index was tens of thousands of shard files; they are
     one pack now. shards.mjs reads a shard with one range request, and from
     the whole pack when a server ignores Range; the shards of one pack are
     told apart (they share its path)."""
+    _needs_node()
     import functools  # pylint: disable=import-outside-toplevel
     import http.server  # pylint: disable=import-outside-toplevel
     import threading  # pylint: disable=import-outside-toplevel

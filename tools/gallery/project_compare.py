@@ -24,7 +24,6 @@ import json
 import math
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -40,7 +39,7 @@ ROOT = bg.ROOT
 def view_center(layer, project):
     """lon/lat of a feature close to the middle of the layer's extent."""
     from qgis.core import (QgsCoordinateReferenceSystem, QgsCoordinateTransform,  # pylint: disable=import-outside-toplevel
-                           QgsFeatureRequest, QgsGeometry, QgsPointXY, QgsRectangle)
+                           QgsFeatureRequest, QgsPointXY, QgsRectangle)
     middle = layer.extent().center()
     best = None
     box = QgsRectangle(layer.extent())
@@ -122,8 +121,7 @@ def main() -> int:
     from qgis.core import QgsProcessingFeedback, QgsProject, QgsRectangle  # pylint: disable=import-outside-toplevel
     from q2vt_plugin.src.qgis2vectortiles import QGIS2VectorTiles  # pylint: disable=import-error,import-outside-toplevel
 
-    out = os.path.abspath(args.out)
-    shutil.rmtree(out, ignore_errors=True)
+    out = bg.fresh_out_dir(args.out)
     img_dir = os.path.join(out, "images")
     os.makedirs(img_dir)
     project = QgsProject.instance()

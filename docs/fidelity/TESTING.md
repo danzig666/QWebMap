@@ -38,15 +38,19 @@ headless application (in the recorded container it was `~/.local/share/profiles/
 
 ### On GitHub (nightly)
 
-`.github/workflows/tests.yml` runs everything in the official `qgis/qgis:3.34.15-noble` image
-(QGIS 3.34 LTR on Ubuntu 24.04, Python 3.12, pytest 7.4.4; the image of exactly 3.34.4 has
-broken Python bindings): unit + integration tests in one job, browser tests
-in another, each test file in its own process (`tools/ci/run_test_files.sh`), so a QGIS crash
-fails only that file. Nightly at 1:23 Budapest time (backup slot 2:47, used only if GitHub dropped the 1:23 run) on `main`, which also starts the run of
-`hu-hesz`; a nightly run is skipped when nothing under `src/`, `tests/`, `schemas/`,
-`resources/`, `tools/`, `metadata.txt`, `pytest.ini` or the workflow changed since the
-branch's last successful run (on `hu-hesz` only its own files count). *Run workflow* in the
-Actions tab always runs everything. JUnit reports are attached to each run.
+`.github/workflows/tests.yml` runs everything in the official `qgis/qgis:3.44.15-noble` image
+(QGIS 3.44 LTR, the plugin's minimum, on Ubuntu 24.04, Python 3.12, pytest 7.4.4): unit +
+integration tests in one job, browser tests
+in another, each test file in its own process (`tools/ci/run_test_files.sh`, at most an hour
+each), so a QGIS crash or a hang fails only that file. The unit job also installs Node with
+MapLibre (`tools/maplibre`), a moto S3 server and the go-pmtiles CLI
+(`tools/ci/prepare_test_tools.sh`); with `Q2VT_REQUIRE_TOOLS=1` the tests that compare against
+them fail instead of skipping when one is missing. Nightly at 1:23 Budapest time (backup slot 2:47, used only if GitHub dropped the 1:23 run) on `main`, which also starts the run of
+`hu-hesz`; a nightly run is skipped when nothing listed in `tools/ci/tested_paths` (the plugin
+files, `tests/`, `schemas/`, `tools/`, `pytest.ini`, the workflows) changed since the
+branch's last successful run (on `hu-hesz` main's merged changes count too). *Run workflow* in the
+Actions tab always runs everything. JUnit reports are attached to each run. The *Release*
+workflow wants the branch's last successful run to have tested the released code.
 
 The same nightly run also runs the whole suite under Qt6, in the official `qgis/qgis:4.2.3`
 image (`.github/workflows/qt6.yml`, called as the `qt6` job: unit + integration in one job,

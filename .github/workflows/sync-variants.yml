@@ -17,6 +17,12 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # One sync of a branch at a time: two overlapping runs (two quick pushes
+    # to main) would both start from the same commit, and the second push
+    # would be refused.
+    concurrency:
+      group: sync-${{ matrix.branch }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +31,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          filter: blob:none  # history without every release zip
       - name: Merge main into ${{ matrix.branch }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,15 +43,28 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "${BRANCH}" "origin/${BRANCH}"
           problem=""
-          if git merge --no-edit origin/main; then
+          for attempt in 1 2; do
+            # The latest main and branch on the second attempt (another push
+            # may have moved either since this run started).
+            git fetch --quiet origin main "${BRANCH}"
+            git checkout -B "${BRANCH}" "origin/${BRANCH}"
+            if ! git merge --no-edit origin/main; then
+              git merge --abort
+              problem="the merge has conflicts"
+              break
+            fi
+            if git push origin "${BRANCH}"; then
+              problem=""
+              break
+            fi
             # The Actions token may not push changes of .github/workflows files.
-            git push origin "${BRANCH}" || problem="the push was refused (main changed a workflow file; the Actions token cannot push those)"
-          else
-            git merge --abort
-            problem="the merge has conflicts"
-          fi
+            if [ -n "$(git diff --name-only "origin/${BRANCH}" HEAD -- .github/workflows)" ]; then
+              problem="the push was refused (main changed a workflow file; the Actions token cannot push those)"
+              break
+            fi
+            problem="the push was refused twice (${BRANCH} or main moved during the sync)"
+          done
           if [ -n "${problem}" ]; then
             gh issue create --title "Sync: merging main into ${BRANCH} needs a person" \
               --body "Merging main (${GITHUB_SHA}) into ${BRANCH} did not complete: ${problem}. Merge it by hand: git checkout ${BRANCH} && git merge main && git push. Keep variant changes in new files (docs/BRANCHES.md)."

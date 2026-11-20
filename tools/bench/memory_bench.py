@@ -143,9 +143,7 @@ def main(argv=None):
     from q2vt_plugin.src.publishing.controller import export_local  # pylint: disable=import-error,import-outside-toplevel
     from q2vt_plugin.src.publishing.models import LayerConfig, PopupField, PublicationProfile  # pylint: disable=import-error,import-outside-toplevel
     from q2vt_plugin.src.publishing.preview_server import PreviewServer  # pylint: disable=import-error,import-outside-toplevel
-    out = os.path.abspath(args.out)
-    shutil.rmtree(out, ignore_errors=True)
-    os.makedirs(out)
+    out = bg.fresh_out_dir(args.out)
     project, parcels, streets, length = build_project(out, args.parcels)
     profile = PublicationProfile(title="Memory bench", slug="bench", locale="hu")
     profile.view.min_zoom, profile.view.max_zoom = 11, 16

@@ -22,11 +22,14 @@ def plugin():
 def _no_blocking_questions(monkeypatch):
     """A question box no test answers (closing a shown window with settings
     that cannot be saved asks first) would wait forever offscreen: Yes.
-    Tests that check a question patch it themselves."""
+    Message boxes likewise: Ok. Tests that check one patch it themselves."""
     if QGIS_AVAILABLE:
         from qgis.PyQt.QtWidgets import QMessageBox  # pylint: disable=import-outside-toplevel
         monkeypatch.setattr(QMessageBox, "question",
                             staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+        for name in ("warning", "information", "critical"):
+            monkeypatch.setattr(QMessageBox, name,
+                                staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
 
 
 def pytest_sessionfinish(session, exitstatus):

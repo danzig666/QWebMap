@@ -4,9 +4,12 @@ src/publishing/vendor/s3, trimmed to the S3 service, from pinned,
 hash-checked wheels. Development tool; the plugin never runs pip.
 
     python3 tools/publishing/vendor_s3.py
+    python3 tools/publishing/vendor_s3.py --record   # after changing WHEELS
 
-Pinned wheels (PyPI) and their SHA-256 are listed in WHEELS; the script
-refuses a wheel whose hash differs. Licences are copied next to the code.
+Pinned wheels (PyPI) are listed in WHEELS, their SHA-256 in vendor_s3.sha256;
+the script refuses a wheel whose hash differs or is not pinned (``--record``
+writes the hashes of the downloaded wheels instead). All wheels are checked
+before the vendored copy is replaced. Licences are copied next to the code.
 """
 
 import hashlib
@@ -45,21 +48,39 @@ def _pypi_url(name: str) -> str:
     raise SystemExit(f"{name} not on PyPI")
 
 
-def main() -> int:
+def pinned_hashes() -> dict:
     expected = {}
     if os.path.exists(HASHES_FILE):
-        for line in open(HASHES_FILE, encoding="utf-8"):
-            digest, name = line.split()
-            expected[name] = digest
-    shutil.rmtree(TARGET, ignore_errors=True)
-    os.makedirs(os.path.join(TARGET, "licenses"))
-    recorded = []
+        with open(HASHES_FILE, encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    digest, name = line.split()
+                    expected[name] = digest
+    return expected
+
+
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    record = "--record" in argv
+    expected = pinned_hashes()
+    unpinned = [name for name in WHEELS if name not in expected]
+    if unpinned and not record:
+        # Trust on first use only when asked: a new wheel would otherwise be
+        # vendored (and shipped) unchecked.
+        raise SystemExit(f"No pinned SHA-256 for {', '.join(unpinned)}: run with --record")
+    downloads, recorded = {}, []
     for name in WHEELS:
         data = urllib.request.urlopen(_pypi_url(name), timeout=120).read()
         digest = hashlib.sha256(data).hexdigest()
-        if name in expected and expected[name] != digest:
+        if not record and expected[name] != digest:
             raise SystemExit(f"{name}: SHA-256 {digest} != pinned {expected[name]}")
+        downloads[name] = data
         recorded.append(f"{digest}  {name}")
+    # Only now, every wheel at hand and checked: a failed download leaves the
+    # vendored SDK as it was.
+    shutil.rmtree(TARGET, ignore_errors=True)
+    os.makedirs(os.path.join(TARGET, "licenses"))
+    for name, data in downloads.items():
         with zipfile.ZipFile(io.BytesIO(data)) as wheel:
             for member in wheel.namelist():
                 parts = member.split("/")
@@ -83,7 +104,7 @@ def main() -> int:
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with open(dest, "wb") as handle:
                     handle.write(wheel.read(member))
-    if not expected:
+    if record:
         with open(HASHES_FILE, "w", encoding="utf-8") as handle:
             handle.write("\n".join(recorded) + "\n")
     print("\n".join(recorded))
