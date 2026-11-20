@@ -481,8 +481,11 @@ def test_retention_keeps_complete_releases_over_interrupted_ones(env):
     Those older than the newest complete one are abandoned and go; newer
     ones may still be uploading and stay."""
     provider = env["provider"]
-    # (Sorted: two releases made in the same second sort by their random suffix.)
-    ids = sorted(_publish(env, _release(env, name)).release_id for name in ("a", "b"))
+    published = [_publish(env, _release(env, name)).release_id for name in ("a", "b")]
+    # (Two releases of the same second sort by their random suffix; the one
+    # published last is current, never deleted.)
+    ids = sorted(published)
+    earlier = published[0]
 
     def interrupted(release_id):
         provider.put_bytes(f"releases/{release_id}/style.json", b"{}", "application/json", "x")
@@ -492,4 +495,4 @@ def test_retention_keeps_complete_releases_over_interrupted_ones(env):
         interrupted(release_id)
     assert provider.list_releases() == [stale, ids[0], ids[1], fresh]
     assert retention_plan(provider, keep=2) == [stale]
-    assert retention_plan(provider, keep=1) == [stale, ids[0]]
+    assert retention_plan(provider, keep=1) == sorted([stale, earlier])
