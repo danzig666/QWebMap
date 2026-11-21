@@ -17,9 +17,13 @@ Directory layout assumed:
 """
 
 import argparse
+import errno
 import hashlib
+import os
+import socket
 import sqlite3
 import threading
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
@@ -34,6 +38,13 @@ STYLE_DIR   = ROOT_DIR / "style"
 VIEWER_DIR  = HERE / "viewer"
 # Names of this computer the viewer may be opened with (no other site).
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+# Files holding this server's own address (style.json's tile, glyph and
+# sprite URLs, the viewer's style URL): moved with the port.
+TEXT_SUFFIXES = (".json", ".html", ".js", ".mjs")
+# Ports tried after the one asked for, when another program uses it.
+PORT_TRIES = 50
 
 
 # Pre-built mime map — avoids per-request mimetypes.guess_type() overhead
@@ -118,12 +129,14 @@ def load_mbtiles(directory: Path) -> dict:
 class StaticCache:
     """Lazy thread-safe in-memory cache, scoped to a list of allowed dirs."""
 
-    __slots__ = ("_cache", "_lock", "_allowed")
+    __slots__ = ("_cache", "_lock", "_allowed", "_rewrite")
 
-    def __init__(self, allowed_dirs):
+    def __init__(self, allowed_dirs, rewrite=None):
         self._cache   = {}
         self._lock    = threading.Lock()
         self._allowed = [d.resolve() for d in allowed_dirs]
+        # (old bytes, new bytes) pairs for the text files (the port moved).
+        self._rewrite = rewrite or []
 
     def get(self, file_path: Path):
         """Return (bytes, mime, etag) — or None if missing or out of scope."""
@@ -146,6 +159,9 @@ class StaticCache:
             data  = target.read_bytes()
             mime  = MIME_TYPES.get(target.suffix.lower(),
                                    "application/octet-stream")
+            if target.suffix.lower() in TEXT_SUFFIXES:
+                for old, new in self._rewrite:
+                    data = data.replace(old, new)
             etag  = '"' + hashlib.md5(data, usedforsecurity=False).hexdigest()[:16] + '"'
             entry = (data, mime, etag)
             self._cache[key] = entry
@@ -311,22 +327,75 @@ class Handler(BaseHTTPRequestHandler):
 # ----------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------
-def run(port: int = 18111991):
+class _Server(ThreadingHTTPServer):
+    """No SO_REUSEADDR on Windows: there it lets a second program bind a port
+    that is already listened on (the requests then go to either)."""
+    allow_reuse_address = os.name != "nt"
+
+
+def _answers(host: str, port: int) -> bool:
+    """Something accepts connections on host:port."""
+    try:
+        with socket.create_connection((host, port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def bind(port: int):
+    """A server on ``port``, else on the next free one of PORT_TRIES, else on
+    any free port: another program (MinIO, PHP-FPM, Portainer…) may use it.
+
+    Bound but not yet listening, the port is checked for another program
+    listening on all addresses (macOS and Windows let 127.0.0.1 be bound
+    beside it, and would split the requests) or on [::1] ("localhost" may
+    reach it first)."""
+    for candidate in [p for p in range(port, port + PORT_TRIES) if p < 65536] + [0]:
+        try:
+            server = _Server(("127.0.0.1", candidate), Handler, bind_and_activate=False)
+        except OSError:
+            continue
+        try:
+            server.server_bind()
+            actual = server.server_address[1]
+            if candidate and (_answers("127.0.0.1", actual) or _answers("::1", actual)):
+                server.server_close()
+                continue
+            server.server_activate()
+            return server
+        except OSError as error:
+            server.server_close()
+            if error.errno not in (errno.EADDRINUSE, errno.EACCES, 10048, 10013):
+                raise
+    raise OSError(errno.EADDRINUSE, "no free port")
+
+
+def run(port: int = 18111991, open_path: str = ""):
 
     layers = load_mbtiles(ROOT_DIR)
     if not layers:
         print("No .mbtiles found in:", ROOT_DIR)
 
-    server                = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server                = bind(port)
+    actual                = server.server_address[1]
     server.daemon_threads = True
     server.layers         = layers
-    server.static_cache   = StaticCache([VIEWER_DIR, STYLE_DIR])
+    moved = [] if actual == port else [
+        (f"{host}:{port}/".encode(), f"{host}:{actual}/".encode())
+        for host in ("localhost", "127.0.0.1")]
+    server.static_cache   = StaticCache([VIEWER_DIR, STYLE_DIR], rewrite=moved)
 
-    print(f"\nServer running at http://localhost:{port}")
-    print(f"  Viewer:  http://localhost:{port}/viewer/viewer.html")
+    if actual != port:
+        print(f"\nPort {port} is used by another program: using {actual}.")
+    print(f"\nServer running at http://localhost:{actual}")
+    print(f"  Viewer:  http://localhost:{actual}/viewer/viewer.html")
     print( "  Style:   /style/style.json")
     print( "  Sprite:  /style/sprite/sprite.{json,png}")
     print( "  Tiles:   /tiles/{layer}/{z}/{x}/{y}.pbf\n")
+    if open_path:
+        # Here, not in the launcher: only this server knows its port.
+        threading.Timer(0.5, webbrowser.open,
+                        [f"http://localhost:{actual}/{open_path.lstrip('/')}"]).start()
 
     try:
         server.serve_forever()
@@ -344,6 +413,9 @@ def run(port: int = 18111991):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MBTiles tile server")
     parser.add_argument("--port", type=int, default=18111991,
-                        help="TCP port to listen on (1–65535, default %(default)s)")
+                        help="TCP port to listen on (1–65535, default %(default)s); "
+                             "the next free one if another program uses it")
+    parser.add_argument("--open", default="",
+                        help="open this page of the server in the browser once it listens")
     args = parser.parse_args()
-    run(args.port)
+    run(args.port, args.open)

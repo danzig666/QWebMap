@@ -2447,6 +2447,18 @@ Reimplemented, no code copied.
   grid paths), remote (S3 SDK choice, checksums, error classes, retention), data (raster cache key,
   terrain pyramid, search shards, basemap reads), GUI (simple view zooms, scale ranges, export reuse,
   ZIP), viewer JS (pole search, evaluate operators, pack fetch) and CI (tested zip, QGIS 3.44).
-* Not fixed: port 9000 taken by another program, synchronous network calls in upload dialogs,
+* Not fixed: synchronous network calls in upload dialogs,
   archive re-hashing, long Windows paths only warned, process-wide S3 SDK choice, some global state
   shared by simultaneous exports, repeated fid values in multipart sources.
+
+## 4.61.1 — local viewer port
+
+* `resources/tiles_server.py` `bind()`: the asked port, else the next free of `PORT_TRIES` (50), else
+  any free port; bound before listening, the port is skipped if something answers on 127.0.0.1
+  (a program on 0.0.0.0, which macOS and Windows let 127.0.0.1 be bound beside) or [::1]. No
+  SO_REUSEADDR on Windows. A moved port is rewritten in the served text files
+  (`localhost:<asked>/`, `127.0.0.1:<asked>/`); `--open` opens the browser on the actual port.
+* Launchers (`server_initializer.py`): stop earlier `tiles_server.py --port <asked>` processes by
+  command line (pgrep; PowerShell or wmic for Python processes only), no browser opening.
+* Tests: tests/unit/test_tiles_server.py (moved port and URLs, wildcard listener, check after
+  binding), tests/integration/test_local_server.py (moved earlier server stopped, Windows filters).
