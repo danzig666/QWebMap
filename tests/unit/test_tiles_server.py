@@ -200,3 +200,45 @@ def test_a_free_port_is_used_as_asked(tmp_path):
         assert httpd.server_address[1] == port
     finally:
         httpd.server_close()
+
+
+def test_a_program_listening_on_all_addresses_is_not_shared(tmp_path):
+    """macOS and Windows let 127.0.0.1:port be bound beside a program on
+    0.0.0.0:port (the requests then go to either): the port is skipped."""
+    import socket  # pylint: disable=import-outside-toplevel
+    module = _module()
+    other = socket.socket()
+    other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    other.bind(("0.0.0.0", 0))
+    other.listen(1)
+    taken = other.getsockname()[1]
+    try:
+        httpd = module.bind(taken)
+        try:
+            assert httpd.server_address[1] != taken
+        finally:
+            httpd.server_close()
+    finally:
+        other.close()
+
+
+def test_a_bound_port_another_program_answers_on_is_left(monkeypatch):
+    """The check after binding (macOS, Windows, [::1]): the port is released
+    and the next one taken."""
+    module = _module()
+    seen = []
+
+    def answers(host, port):
+        seen.append(port)
+        return len(seen) <= 2  # the first port: someone answers
+    monkeypatch.setattr(module, "_answers", answers)
+    import socket  # pylint: disable=import-outside-toplevel
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    first = probe.getsockname()[1]
+    probe.close()
+    httpd = module.bind(first)
+    try:
+        assert httpd.server_address[1] != first and seen[0] == first
+    finally:
+        httpd.server_close()

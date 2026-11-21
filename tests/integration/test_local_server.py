@@ -30,19 +30,21 @@ def _free_port():
         return probe.getsockname()[1]
 
 
-def _listener(folder, name, port):
-    """A process listening on ``port`` whose command line names ``name``."""
+def _listener(folder, name, port, listen=None):
+    """A process whose command line names ``name`` and ``--port port``,
+    listening on ``listen`` (default ``port``)."""
     script = folder / name
     script.write_text("import socket, sys, time\n"
-                      "s = socket.socket(); s.bind(('127.0.0.1', int(sys.argv[1]))); s.listen()\n"
+                      "s = socket.socket(); s.bind(('127.0.0.1', int(sys.argv[-1]))); s.listen()\n"
                       "print('up', flush=True); time.sleep(120)\n", encoding="utf-8")
-    proc = subprocess.Popen([sys.executable, str(script), str(port)], stdout=subprocess.PIPE)
+    proc = subprocess.Popen([sys.executable, str(script), "--port", str(port), str(listen or port)],
+                            stdout=subprocess.PIPE)
     assert proc.stdout.readline().strip() == b"up"
     return proc
 
 
-@pytest.mark.skipif(platform.system() == "Windows" or not shutil.which("lsof"),
-                    reason="the bash launcher, with lsof")
+@pytest.mark.skipif(platform.system() == "Windows" or not shutil.which("pgrep"),
+                    reason="the bash launcher, with pgrep")
 def test_launcher_stops_only_an_earlier_tile_server(server_initializer, tmp_path):
     """The launcher killed whatever listened on port 9000 (MinIO, PHP-FPM...)."""
     script = server_initializer.ServerInitializer.LINUX_ACTIVATOR
@@ -51,7 +53,7 @@ def test_launcher_stops_only_an_earlier_tile_server(server_initializer, tmp_path
         port = _free_port()
         proc = _listener(tmp_path, name, port)
         try:
-            subprocess.run(["bash", "-c", script[start:end].replace("18111991", str(port)).replace("_Q2VT_LASTPORT", str(port))],
+            subprocess.run(["bash", "-c", script[start:end].replace("18111991", str(port))],
                            check=False, timeout=60)
             for _ in range(50):
                 if proc.poll() is not None:
@@ -61,6 +63,28 @@ def test_launcher_stops_only_an_earlier_tile_server(server_initializer, tmp_path
         finally:
             proc.kill()
             proc.wait()
+
+
+@pytest.mark.skipif(platform.system() == "Windows" or not shutil.which("pgrep"),
+                    reason="the bash launcher, with pgrep")
+def test_launcher_stops_an_earlier_tile_server_on_a_moved_port(server_initializer, tmp_path):
+    """An earlier server that took another port (the asked one used by
+    another program) is stopped too: hidden servers did not pile up."""
+    script = server_initializer.ServerInitializer.LINUX_ACTIVATOR
+    start, end = script.index("for pid in"), script.index("done") + len("done")
+    asked, moved = _free_port(), _free_port()
+    proc = _listener(tmp_path, "tiles_server.py", asked, listen=moved)
+    try:
+        subprocess.run(["bash", "-c", script[start:end].replace("18111991", str(asked))],
+                       check=False, timeout=60)
+        for _ in range(50):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        assert proc.poll() is not None
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 def test_windows_launcher_survives_special_characters_and_does_not_wait(server_initializer):
@@ -78,10 +102,14 @@ def test_windows_launcher_survives_special_characters_and_does_not_wait(server_i
     assert not re.search(r"^\s*pause\b", batch, re.MULTILINE | re.IGNORECASE), batch
     # Only a process whose command line is the tile server is stopped.
     assert "*tiles_server.py*" in batch
-    # The fallback without PowerShell too: taskkill only after the check.
-    for line in batch.splitlines():
-        if "taskkill" in line:
-            assert 'findstr /c:"tiles_server.py" >nul && taskkill' in line, line
+    # By its command line (whatever port it got), Python processes only (the
+    # query's own wmic / PowerShell command line holds the pattern too); the
+    # fallback without PowerShell likewise.
+    [ps] = [l for l in batch.splitlines() if l.startswith("powershell")]
+    assert "$_.Name -like 'python*'" in ps and "--port 18111991*'" in ps, ps
+    [wmic] = [l.strip() for l in batch.splitlines() if l.strip().startswith("wmic")]
+    assert "Name like 'python%%' and CommandLine like '%%tiles_server.py%%--port 18111991%%'" in wmic, wmic
+    assert "taskkill" not in batch and "LocalPort" not in batch
 
 
 def test_macos_python_is_found_in_bin(server_initializer, tmp_path, monkeypatch):

@@ -1457,7 +1457,7 @@ def test_output_folder_with_shell_and_url_characters(plugin, tmp_path, monkeypat
         [line] = [l for l in handle.read().splitlines() if "tiles_server.py" in l and "--port" in l]
     command = shlex.split(line)
     assert command[1] == os.path.join(result, "utils", "tiles_server.py"), line
-    assert command[2:] == ["--port", command[3], "&"]
+    assert command[2:] == ["--port", command[3], "--open", "viewer/viewer.html?v=1", "&"], command
     # The Windows batch file: the paths in double quotes, % doubled.
     from q2vt_plugin.src.core import server_initializer  # pylint: disable=import-error
     monkeypatch.setattr(server_initializer.platform, "system", lambda: "Windows")

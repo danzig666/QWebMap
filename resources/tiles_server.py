@@ -328,21 +328,15 @@ class Handler(BaseHTTPRequestHandler):
 # Entry point
 # ----------------------------------------------------------------------
 class _Server(ThreadingHTTPServer):
-    """No address reuse on Windows: there SO_REUSEADDR lets a second program
-    bind a port that is already listened on (the requests then go to either)."""
+    """No SO_REUSEADDR on Windows: there it lets a second program bind a port
+    that is already listened on (the requests then go to either)."""
     allow_reuse_address = os.name != "nt"
 
-    def server_bind(self):
-        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
 
-
-def _taken_on_ipv6(port: int) -> bool:
-    """Something listens on [::1]:port: "localhost" may reach it instead of
-    this server (browsers try ::1 first), so the port is not ours."""
+def _answers(host: str, port: int) -> bool:
+    """Something accepts connections on host:port."""
     try:
-        with socket.create_connection(("::1", port), timeout=0.3):
+        with socket.create_connection((host, port), timeout=0.2):
             return True
     except OSError:
         return False
@@ -350,13 +344,27 @@ def _taken_on_ipv6(port: int) -> bool:
 
 def bind(port: int):
     """A server on ``port``, else on the next free one of PORT_TRIES, else on
-    any free port: another program (MinIO, PHP-FPM, Portainer…) may use it."""
+    any free port: another program (MinIO, PHP-FPM, Portainer…) may use it.
+
+    Bound but not yet listening, the port is checked for another program
+    listening on all addresses (macOS and Windows let 127.0.0.1 be bound
+    beside it, and would split the requests) or on [::1] ("localhost" may
+    reach it first)."""
     for candidate in [p for p in range(port, port + PORT_TRIES) if p < 65536] + [0]:
-        if candidate and _taken_on_ipv6(candidate):
+        try:
+            server = _Server(("127.0.0.1", candidate), Handler, bind_and_activate=False)
+        except OSError:
             continue
         try:
-            return _Server(("127.0.0.1", candidate), Handler)
+            server.server_bind()
+            actual = server.server_address[1]
+            if candidate and (_answers("127.0.0.1", actual) or _answers("::1", actual)):
+                server.server_close()
+                continue
+            server.server_activate()
+            return server
         except OSError as error:
+            server.server_close()
             if error.errno not in (errno.EADDRINUSE, errno.EACCES, 10048, 10013):
                 raise
     raise OSError(errno.EADDRINUSE, "no free port")

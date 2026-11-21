@@ -39,11 +39,13 @@ class ServerInitializer:
 
     LINUX_ACTIVATOR = r'''
 #!/bin/bash
-# Only an earlier tile server listening on the ports it uses (not browsers
-# connected to it, nor another program using a port, such as MinIO).
-for pid in $(lsof -t -iTCP:18111991-_Q2VT_LASTPORT -sTCP:LISTEN 2>/dev/null); do
-    ps -p "$pid" -o args= 2>/dev/null | grep -q tiles_server.py && kill "$pid" 2>/dev/null
+# Only an earlier tile server (whatever port it got), not another program.
+stopped=""
+for pid in $(pgrep -f "tiles_server[.]py.* --port 18111991( |$)" 2>/dev/null); do
+    kill "$pid" 2>/dev/null && stopped=1
 done
+# (Its port free again before the new one checks it.)
+[ -n "$stopped" ] && sleep 0.5
 cd "$(dirname "$0")"
 echo "Starting MBTiles server..."
 # The server takes the next free port if another program uses this one, and
@@ -54,14 +56,10 @@ _Q2VT_PYTHON _Q2VT_UTILS --port 18111991 --open "viewer/viewer.html?v=10031993" 
 @echo off
 rem UTF-8 from here on: the Python path below may hold non-ASCII letters
 chcp 65001 > nul
-rem Only an earlier tile server on its ports, not another program using one (MinIO...)
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -ge 18111991 -and $_.LocalPort -le _Q2VT_LASTPORT } | ForEach-Object { Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_.OwningProcess) } | Where-Object { $_.CommandLine -like '*tiles_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" || (
-    rem PowerShell blocked by AppLocker or GPO: netstat for the listening PIDs,
-    rem wmic for their command lines. Without wmic either, an earlier server
-    rem stays (the new one takes the next free port).
-    for /f "tokens=5" %%p in ('netstat -ano -p tcp ^| findstr /c:"LISTENING"') do (
-        wmic process where "ProcessId=%%p" get CommandLine 2>nul | findstr /c:"tiles_server.py" >nul && taskkill /f /pid %%p >nul
-    )
+rem Only an earlier tile server (whatever port it got), not another program (MinIO...)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'python*' -and $_.CommandLine -like '*tiles_server.py*--port 18111991*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" || (
+    rem PowerShell blocked by AppLocker or GPO: wmic (where it still exists).
+    wmic process where "Name like 'python%%' and CommandLine like '%%tiles_server.py%%--port 18111991%%'" call terminate >nul 2>&1
 )
 cd /d "%~dp0"
 echo Starting MBTiles server...
@@ -69,6 +67,7 @@ rem The server takes the next free port if another program uses this one,
 rem and opens the viewer in the browser on the port it got.
 start "MBTiles Server" "_Q2VT_PYTHON" "_Q2VT_UTILS" --port 18111991 --open "viewer/viewer.html?v=10031993"
 '''
+
     WINDOWS_WRAPPER = r'''
 Set WshShell = CreateObject("WScript.Shell")
 base = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\"))
@@ -255,7 +254,6 @@ Set WshShell = Nothing
             join(activator_dir, basename(activator)),
             {
                 "18111991": str(self.port),
-                "_Q2VT_LASTPORT": str(self.port + 49),  # (tiles_server.PORT_TRIES)
                 "10031993": str(self.viewer + 1),
                 # Last: the paths are not searched for the other placeholders.
                 "_Q2VT_PYTHON": python_exe,
