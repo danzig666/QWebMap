@@ -51,7 +51,7 @@ def test_launcher_stops_only_an_earlier_tile_server(server_initializer, tmp_path
         port = _free_port()
         proc = _listener(tmp_path, name, port)
         try:
-            subprocess.run(["bash", "-c", script[start:end].replace("18111991", str(port))],
+            subprocess.run(["bash", "-c", script[start:end].replace("18111991", str(port)).replace("_Q2VT_LASTPORT", str(port))],
                            check=False, timeout=60)
             for _ in range(50):
                 if proc.poll() is not None:

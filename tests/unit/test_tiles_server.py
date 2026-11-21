@@ -144,3 +144,59 @@ def test_tile_coordinates_out_of_range_are_rejected(server, path):
     assert status == 400 and body == b""
     assert _get(server, "/tiles/tiles/0/0/0.pbf")[0] == 200  # the server still answers
 
+
+
+
+def test_a_port_used_by_another_program_moves_the_server_and_its_urls(tmp_path):
+    """Another program (MinIO, PHP-FPM, Portainer...) on the port: the server
+    takes the next free one, and the style and viewer name the port it got."""
+    import socket  # pylint: disable=import-outside-toplevel
+    module = _module()
+    _mbtiles(tmp_path / "export")
+    style = tmp_path / "export" / "style"
+    style.mkdir()
+    module.STYLE_DIR, module.ROOT_DIR = style, tmp_path / "export"
+    other = socket.socket()
+    other.bind(("127.0.0.1", 0))
+    other.listen(1)
+    taken = other.getsockname()[1]
+    text = ('{"glyphs": "http://localhost:%d/style/glyphs/{fontstack}/{range}.pbf", '
+            '"sprite": "http://127.0.0.1:%d/style/sprite/sprite", "value": "localhost:%d"}' % (taken, taken, taken))
+    (style / "style.json").write_text(text, encoding="utf-8")
+    try:
+        httpd = module.bind(taken)
+        actual = httpd.server_address[1]
+        assert actual != taken
+        moved = [(f"{h}:{taken}/".encode(), f"{h}:{actual}/".encode()) for h in ("localhost", "127.0.0.1")]
+        httpd.daemon_threads = True
+        httpd.layers = module.load_mbtiles(tmp_path / "export")
+        httpd.static_cache = module.StaticCache([style], rewrite=moved)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            status, _, body = _get(actual, "/style/style.json")
+            assert status == 200
+            # The URLs follow the port; a value that only looks like one does not.
+            assert body.decode() == text.replace(f"localhost:{taken}/", f"localhost:{actual}/").replace(
+                f"127.0.0.1:{taken}/", f"127.0.0.1:{actual}/")
+            assert f'"localhost:{taken}"' in body.decode()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            for layer in httpd.layers.values():
+                layer["conn"].close()
+    finally:
+        other.close()
+
+
+def test_a_free_port_is_used_as_asked(tmp_path):
+    import socket  # pylint: disable=import-outside-toplevel
+    module = _module()
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    httpd = module.bind(port)
+    try:
+        assert httpd.server_address[1] == port
+    finally:
+        httpd.server_close()

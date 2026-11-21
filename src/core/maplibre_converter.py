@@ -53,7 +53,7 @@ from .fidelity.patterns import (LinePatternSpec, qgis_image_hatch, render_line_p
                                  solve_periodic_cell)
 from .fidelity.units import LengthConverter, MapUnitScale, UnitError, normalize_unit
 from ..utils.config import (_SPRITE_QUALITY, _MAPLIBRE_LABELS_FACTOR, _FIELD_PREFIX,
-                            _MAPLIBRE_BASELINE_BELOW_MIDDLE_EM)
+                            _MAPLIBRE_BASELINE_BELOW_MIDDLE_EM, _PORT)
 
 
 def _enum_int(value, default=None):
@@ -2358,13 +2358,13 @@ class QgisMapLibreStyleExporter:
             "sources": {
                 self.source_name: {
                     "type": "vector",
-                    "tiles": ["http://localhost:9000/tiles/tiles/{z}/{x}/{y}.pbf?v=10031993"],
+                    "tiles": [f"http://localhost:{_PORT}/tiles/tiles/{{z}}/{{x}}/{{y}}.pbf?v=10031993"],
                     "minzoom": max(0, int(self.minzoom)),
                     "maxzoom": max(int(self.minzoom), int(self.maxzoom)),
                 }
             },
-            "glyphs": "http://localhost:9000/style/glyphs/{fontstack}/{range}.pbf",
-            "sprite": "http://localhost:9000/style/sprite/sprite",
+            "glyphs": f"http://localhost:{_PORT}/style/glyphs/{{fontstack}}/{{range}}.pbf",
+            "sprite": f"http://localhost:{_PORT}/style/sprite/sprite",
             "layers": [],
         }
 
