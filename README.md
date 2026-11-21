@@ -673,7 +673,9 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.61.0**. Newest first:
+This README describes QWebMap **4.61.1**. Newest first:
+
+**4.61.1** — the local viewer starts when another program uses port 9000 (it takes the next free port).
 
 **4.61.0** — bug fixes after a full code audit
 - About 120 problems fixed: no false “absolute local path” stops at the end of an export, online publishing with old system S3 SDKs, antimeridian features, heatmaps in geographic projects, HTML labels, stale raster images, safe replacing of a local map, and a local tile server that only answers this computer.
