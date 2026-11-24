@@ -312,6 +312,9 @@ def test_the_simple_view_recommends_a_scale_from_the_layers(plugin, monkeypatch,
     page.auto.setChecked(False)
     assert not dialog.project.readBoolEntry("QWebMap", "simple/autoDetail", True)[0]
     page.auto.setChecked(True)
+    assert page.busy.isVisible()                      # measured in the background
+    page.wait_for_preview()
+    assert not page.busy.isVisible()
     assert abs(scale_of_zoom(factor, dialog.e_max_zoom.value())) <= scale * 1.01
     assert dialog.project.readBoolEntry("QWebMap", "simple/autoDetail", False)[0]
     page.wait_for_preview()
@@ -375,6 +378,7 @@ def test_showing_the_simple_view_never_replaces_zooms_set_elsewhere(plugin, monk
     dialog._busy(False)  # pylint: disable=protected-access
     assert dialog.btn_simple.isEnabled()
     dialog.simple.auto.setChecked(True)               # ticked again: the automatic choice
+    dialog.simple.wait_for_preview()
     assert (dialog.e_min_zoom.value(), dialog.e_max_zoom.value()) != (5, 19)
     dialog.e_min_zoom.setValue(5)
     dialog.e_max_zoom.setValue(19)
