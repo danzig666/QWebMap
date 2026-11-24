@@ -2302,12 +2302,7 @@ class RulesExporter:
                     "geometrybyexpression", "native", INPUT=transbase, OUTPUT_GEOMETRY=1,
                     EXPRESSION=self._LONGEST_PART)
         elif keep_biggest_part:
-            dissolved = self._run_alg_safe(
-                "dissolve", "native",
-                INPUT=refactored,
-                FIELD=[f'{_FIELD_PREFIX}_orig_id'],
-                SEPARATE_DISJOINT=False
-            )
+            dissolved = self._dissolve_parts(refactored)
             singlepart = self._run_alg_safe(
                 "keepnbiggestparts", "native",
                 POLYGONS=dissolved,
@@ -4022,6 +4017,31 @@ class RulesExporter:
     # -------------------------------------------------------------------
     # Worker-safe processing runner
     # -------------------------------------------------------------------
+    def _dissolve_parts(self, layer):
+        """The parts of each feature dissolved into one (a polygon label goes
+        on the biggest part, as in QGIS). Shapes snapped to a coarse zoom's
+        grid can be invalid (a ring touching itself), and GEOS then fails the
+        whole step ("The algorithm returned no output"): every label of the
+        layer was lost for two such polygons. Repaired and dissolved again;
+        failing that, the parts are grouped without dissolving."""
+        field = [f"{_FIELD_PREFIX}_orig_id"]
+        try:
+            return self._run_alg_safe("dissolve", "native", INPUT=layer, FIELD=field,
+                                      SEPARATE_DISJOINT=False)
+        except _Cancelled:
+            raise
+        except Exception as error:  # noqa: BLE001 - GEOS topology errors
+            crash_log.note(f"  dissolve failed ({error}): geometries repaired")
+        try:
+            fixed = self._run_alg_safe("fixgeometries", "native", INPUT=layer, METHOD=1)
+            return self._run_alg_safe("dissolve", "native", INPUT=fixed, FIELD=field,
+                                      SEPARATE_DISJOINT=False)
+        except _Cancelled:
+            raise
+        except Exception as error:  # noqa: BLE001
+            crash_log.note(f"  dissolve of the repaired geometries failed ({error}): parts collected")
+        return self._run_alg_safe("collect", "native", INPUT=layer, FIELD=field)
+
     def _run_alg_safe(
         self,
         algorithm: str,
