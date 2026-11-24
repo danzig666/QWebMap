@@ -260,38 +260,65 @@ def analyse_layer(layer: QgsVectorLayer, config, extent_3857: QgsRectangle, zoom
         rect = to_layer.transformBoundingBox(extent_3857)
     except Exception:  # noqa: BLE001 - outside the layer CRS's area
         return None
-    request = QgsFeatureRequest().setFilterRect(rect).setNoAttributes() \
-        .setFlags(QgsFeatureRequest.Flag.NoGeometry)
-    ids = [feature.id() for feature in layer.getFeatures(request)]
-    if not ids:
-        return None
-    rng = random.Random(seed)
-    sample_ids = ids if len(ids) <= SAMPLE else rng.sample(ids, SAMPLE)
     settings = _label_settings(layer)
     label_expression = None
     context = QgsExpressionContext()
     context.appendScopes(QgsExpressionContextUtils.globalProjectLayerScopes(layer))
+    request = QgsFeatureRequest().setFilterRect(rect)
     if settings is not None:
         text = settings.getLabelExpression().expression() if settings.isExpression else \
             QgsExpression.quotedColumnRef(settings.fieldName)
         label_expression = QgsExpression(text)
         label_expression.prepare(context)
-    sizes, vertices, centres, label_lengths = [], [], [], []
-    for feature in layer.getFeatures(QgsFeatureRequest().setFilterFids(sample_ids)):
+        request.setSubsetOfAttributes(label_expression.referencedColumns(), layer.fields())
+    else:
+        request.setNoAttributes()
+    # One pass over the area, a random sample of SAMPLE features kept as it
+    # goes (reservoir sampling): no second request by feature id, which
+    # crashed in GDAL (QGIS 3.44 on Windows) and reads each id on its own
+    # (slow for many formats).
+    rng = random.Random(seed)
+    sample = []  # (size, vertices, centre, label length)
+    count = 0
+
+    def measure(feature):
         geometry = feature.geometry()
         if geometry is None or geometry.isEmpty():
-            continue
+            return None
         try:
             box = to_web.transformBoundingBox(geometry.boundingBox())
         except Exception:  # noqa: BLE001
-            continue
-        sizes.append(max(box.width(), box.height()))
-        vertices.append(max(1, geometry.constGet().nCoordinates()))
-        centres.append((box.center().x(), box.center().y()))
+            return None
+        length = None
         if label_expression is not None:
             context.setFeature(feature)
             value = label_expression.evaluate(context)
-            label_lengths.append(len(str(value)) if value not in (None, "") and str(value) != "NULL" else 0)
+            length = len(str(value)) if value not in (None, "") and str(value) != "NULL" else 0
+        return (max(box.width(), box.height()), max(1, geometry.constGet().nCoordinates()),
+                (box.center().x(), box.center().y()), length)
+
+    for feature in layer.getFeatures(request):
+        count += 1
+        if len(sample) < SAMPLE:
+            slot = len(sample)
+        else:
+            slot = rng.randrange(count)
+            if slot >= SAMPLE:
+                continue
+        measured = measure(feature)
+        if measured is None:
+            continue
+        if slot == len(sample):
+            sample.append(measured)
+        else:
+            sample[slot] = measured
+    if not count:
+        return None
+    ids = range(count)  # (only their number is used below)
+    sizes = [m[0] for m in sample]
+    vertices = [m[1] for m in sample]
+    centres = [m[2] for m in sample]
+    label_lengths = [m[3] for m in sample] if label_expression is not None else []
     if not centres:
         return None
     kind = _kind(layer)

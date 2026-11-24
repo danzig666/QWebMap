@@ -17,8 +17,8 @@ import shutil
 from qgis.core import QgsMapLayer, QgsRasterLayer
 from qgis.PyQt.QtCore import QCoreApplication, QSize, Qt, QTimer
 from qgis.PyQt.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
-                                 QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
-                                 QRadioButton, QScrollArea, QSlider, QTableWidget,
+                                 QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QProgressBar,
+                                 QPushButton, QRadioButton, QScrollArea, QSlider, QTableWidget,
                                  QTableWidgetItem, QVBoxLayout, QWidget)
 
 PREVIEW = QSize(300, 200)
@@ -30,8 +30,8 @@ TECHNICAL_FIELDS = {"fid", "id", "ogc_fid", "objectid", "gid", "oid", "rowid", "
                     "shape_length", "shape_area", "shape_leng"}
 CHECKED, UNCHECKED = Qt.CheckState.Checked, Qt.CheckState.Unchecked
 
-from .detail_scale import (SCALES, nearest_index, nice, preview_settings,  # noqa: E402
-                           recommend, scale_of_zoom, zoom_for_scale)
+from .detail_scale import (SCALES, MeasureTask, nearest_index, nice, preview_settings,  # noqa: E402
+                           scale_of_zoom, snapshot, zoom_for_scale)
 
 
 def tr(text: str) -> str:
@@ -205,12 +205,22 @@ class SimplePage(QWidget):
         self.preview.setFrameShape(QFrame.Shape.Box)
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         right.addWidget(self.preview)
+        # While the layers are measured and the preview drawn (in the
+        # background: a large project does not freeze the window).
+        self.busy = QProgressBar()
+        self.busy.setRange(0, 0)
+        self.busy.setTextVisible(False)
+        self.busy.setFixedSize(PREVIEW.width(), 6)
+        self.busy.setVisible(False)
+        right.addWidget(self.busy)
         self.preview_caption = _hint(tr("What visitors see when fully zoomed in"))
         self.preview_caption.setMaximumWidth(PREVIEW.width())
         right.addWidget(self.preview_caption)
         detail.addLayout(right)
         layout.addLayout(detail)
         self._preview_job = None
+        self._measure_task = None
+        self._tasks = set()  # (every task until it ends: its Python object must outlive it)
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(250)
@@ -432,7 +442,7 @@ class SimplePage(QWidget):
                     out.append(layer)
         return out
 
-    def _show_zoom(self):
+    def _show_zoom(self, preview: bool = True):
         dialog = self.dialog
         zoom = dialog.e_max_zoom.value()
         factor = self._factor()
@@ -444,7 +454,8 @@ class SimplePage(QWidget):
         if self.auto.isChecked() and self._reasons:
             text += " " + tr("Chosen because {}.").format("; ".join(self._reasons))
         self.zoom_info.setText(text)
-        self._preview_timer.start()
+        if preview:
+            self._preview_timer.start()
 
     def _zooms(self):
         return self.dialog.e_min_zoom.value(), self.dialog.e_max_zoom.value()
@@ -458,14 +469,14 @@ class SimplePage(QWidget):
         self._auto_pending = new
 
     def apply_auto(self):
-        """The recommended detail for the layers on the map and the area."""
-        from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+        """The recommended detail for the layers on the map and the area
+        (measured in the background; applied when done)."""
+        self._measure(auto=True)
+
+    def _apply_recommended(self, scale: float, reasons):
         dialog = self.dialog
-        extent = self._extent()
         factor = self._factor()
-        scale, self._reasons = recommend(dialog.project, self.published_layers(),
-                                         QgsRectangle(*extent) if extent else None, factor,
-                                         dialog.e_min_zoom.value())
+        self._reasons = reasons
         self._updating = True
         try:
             self.zoom.setValue(nearest_index(scale))
@@ -474,7 +485,7 @@ class SimplePage(QWidget):
         dialog.e_max_zoom.setValue(zoom_for_scale(factor, scale))
         self._fit_min_zoom()
         self._auto_zooms, self._auto_pending = self._zooms(), False
-        self._show_zoom()
+        self._show_zoom(preview=False)
         self._show_area()
 
     def _auto_toggled(self, on):
@@ -490,10 +501,57 @@ class SimplePage(QWidget):
 
     def _render_preview(self):
         """The project's own map (the layers on the map) at the chosen scale."""
-        from qgis.core import QgsMapRendererParallelJob  # pylint: disable=import-outside-toplevel
-        from qgis.core import QgsRectangle  # pylint: disable=import-outside-toplevel
+        if self.isVisible():
+            self._measure(auto=False)
+
+    def _measure(self, auto: bool):
+        """Measure the layers in the background (``auto``: the recommended
+        scale too), then draw the preview where they have most detail."""
+        from qgis.core import QgsApplication, QgsRectangle  # pylint: disable=import-outside-toplevel
+        from qgis.PyQt.QtGui import QPixmap  # pylint: disable=import-outside-toplevel
+        self._preview_timer.stop()
+        self.stop_background(wait=False)
+        extent = self._extent()
+        layers = snapshot(self.published_layers())
+        if not extent or not layers:
+            if auto:  # nothing to measure: the default recommendation
+                self._apply_recommended(5000.0, [])
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText(tr("No layer on the map yet"))
+            self._show_busy()
+            return
+        factor = self._factor()
+        scale = scale_of_zoom(factor, self.dialog.e_max_zoom.value())
+        task = MeasureTask(layers, QgsRectangle(*extent), factor, self.dialog.e_min_zoom.value(),
+                           self.dialog.project.transformContext(), auto, scale, PREVIEW, self._measured)
+        self._measure_task = task
+        if auto:
+            self.zoom_info.setText(tr("Measuring the layers to choose how close visitors can zoom…"))
+        if self.preview.pixmap() is None or self.preview.pixmap().isNull():
+            self.preview.setText(tr("Drawing the preview…"))
+        self._show_busy()
+        self._tasks.add(task)
+        QgsApplication.taskManager().addTask(task)
+
+    def _measured(self, task, ok: bool):
+        self._tasks.discard(task)
+        if task is not self._measure_task:
+            return  # replaced by a newer one
+        self._measure_task = None
+        if not ok:
+            self._show_busy()
+            if task.auto:
+                self._show_zoom(preview=False)
+            return
+        if task.auto and task.recommended is not None:
+            self._apply_recommended(task.recommended, task.reasons)
+        self._draw(task.centre)
+
+    def _draw(self, centre):
+        from qgis.core import QgsMapRendererParallelJob, QgsRectangle  # pylint: disable=import-outside-toplevel
         from qgis.PyQt.QtGui import QPixmap  # pylint: disable=import-outside-toplevel
         if not self.isVisible():
+            self._show_busy()
             return
         extent = self._extent()
         factor = self._factor()
@@ -501,10 +559,11 @@ class SimplePage(QWidget):
         chosen = SCALES[self.zoom.value()]
         label = chosen if zoom_for_scale(factor, chosen) == self.dialog.e_max_zoom.value() else scale
         settings = preview_settings(self.dialog.project, self.published_layers(),
-                                    QgsRectangle(*extent) if extent else None, scale, PREVIEW)
+                                    QgsRectangle(*extent) if extent else None, scale, PREVIEW, centre)
         if settings is None:
             self.preview.setPixmap(QPixmap())
             self.preview.setText(tr("No layer on the map yet"))
+            self._show_busy()
             return
         if self._preview_job is not None:
             self._preview_job.cancelWithoutBlocking()
@@ -517,17 +576,45 @@ class SimplePage(QWidget):
                 self.preview_caption.setText(tr("What visitors see when fully zoomed in ({}), where the "
                                                 "area has most detail").format(nice(label)))
                 self._preview_job = None
+                self._show_busy()
         job.finished.connect(done)
         job.start()
+        self._show_busy()
 
-    def wait_for_preview(self, timeout_ms: int = 10000):
-        """(Tests, screenshots.)"""
-        if self._preview_timer.isActive():
+    def _show_busy(self):
+        self.busy.setVisible(self._measure_task is not None or self._preview_job is not None)
+
+    def stop_background(self, wait: bool = True):
+        """Stop measuring and drawing (before an export: nothing else reads
+        the layers meanwhile; the view hidden)."""
+        self._preview_timer.stop()
+        task, self._measure_task = self._measure_task, None
+        if task is not None and not task.ended:
+            task.cancel()
+            if wait:
+                task.waitForFinished(10000)
+        job, self._preview_job = self._preview_job, None
+        if job is not None:
+            job.cancelWithoutBlocking()
+            if wait:
+                job.waitForFinished()
+        self._show_busy()
+
+    def wait_for_preview(self, timeout_ms: int = 20000):
+        """(Tests, screenshots.) Until the measuring and the preview are done."""
+        import time  # pylint: disable=import-outside-toplevel
+        if self._preview_timer.isActive() or self._auto_timer.isActive():
+            auto = self._auto_timer.isActive()
             self._preview_timer.stop()
-            self._render_preview()
-        if self._preview_job is not None:
-            self._preview_job.waitForFinished()
+            self._auto_timer.stop()
+            self._measure(auto=auto)
+        end = time.monotonic() + timeout_ms / 1000.0
+        while (self._measure_task is not None or self._preview_job is not None) and time.monotonic() < end:
+            if self._preview_job is not None:
+                self._preview_job.waitForFinished()
             QCoreApplication.processEvents()
+            time.sleep(0.01)
+        QCoreApplication.processEvents()
 
     def _show_advanced(self):
         """One line naming the advanced settings this project uses: kept and

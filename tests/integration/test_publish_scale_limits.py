@@ -534,3 +534,34 @@ def test_merging_suits_only_plain_fills_of_a_few_styles(plugin):
     assert plain.suggested_mode == "merged" and outlined.suggested_mode == "image"
     assert outlined.modes() == ("full", "merged", "image")  # still offered by hand
     assert _heavy_load(styles=12).merged_share() == 2 * plain.merged_share()
+
+
+def test_zoomed_out_load_samples_a_large_layer_in_one_pass(plugin, monkeypatch):
+    """The sample was read again by feature id (setFilterFids): GDAL crashed
+    there (QGIS 3.44, Windows), and it is slow for many formats. One pass
+    over the area keeps a random sample; the count is of every feature."""
+    import random  # pylint: disable=import-outside-toplevel
+    from qgis.core import (QgsCoordinateReferenceSystem, QgsFeature, QgsFeatureRequest,  # pylint: disable=import-outside-toplevel
+                           QgsGeometry, QgsPointXY, QgsProject, QgsRectangle, QgsVectorLayer)
+    from q2vt_plugin.src.publishing import zoom_load  # pylint: disable=import-error,import-outside-toplevel
+    from q2vt_plugin.src.publishing.models import LayerConfig  # pylint: disable=import-error,import-outside-toplevel
+
+    def no_ids(*_args, **_kwargs):
+        raise AssertionError("features read by id")
+    monkeypatch.setattr(QgsFeatureRequest, "setFilterFids", no_ids)
+    layer = QgsVectorLayer("Point?crs=EPSG:3857&field=name:string", "many points", "memory")
+    rng = random.Random(1)
+    features = []
+    for i in range(zoom_load.SAMPLE + 700):
+        feature = QgsFeature(layer.fields())
+        feature.setAttributes([f"p{i}"])
+        feature.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(rng.uniform(0, 4000), rng.uniform(0, 4000))))
+        features.append(feature)
+    layer.dataProvider().addFeatures(features)
+    project = QgsProject.instance()
+    project.setCrs(QgsCoordinateReferenceSystem("EPSG:3857"))
+    load = zoom_load.analyse_layer(layer, LayerConfig(layer_id=layer.id()), QgsRectangle(0, 0, 4000, 4000),
+                                   (10, 14), zoom_load.zoom_scale_factor(project, QgsRectangle(0, 0, 4000, 4000)),
+                                   project)
+    assert load is not None and load.features == zoom_load.SAMPLE + 700
+    assert 0 < load.tile_features[14] <= load.features

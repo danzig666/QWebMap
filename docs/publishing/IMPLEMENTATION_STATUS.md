@@ -2462,3 +2462,15 @@ Reimplemented, no code copied.
   command line (pgrep; PowerShell or wmic for Python processes only), no browser opening.
 * Tests: tests/unit/test_tiles_server.py (moved port and URLs, wildcard listener, check after
   binding), tests/integration/test_local_server.py (moved earlier server stopped, Windows filters).
+
+## 4.61.2 — zoomed-out load sampling, simple view in the background
+
+* `zoom_load.analyse_layer`: one request over the area (geometry, the label expression's
+  attributes only), a reservoir sample of `SAMPLE` features; no `setFilterFids` (a GDAL access
+  violation in `nextFeatureFilterFids` on QGIS 3.44 Windows; one random read per id elsewhere)
+  (tests/integration/test_publish_scale_limits.py::test_zoomed_out_load_samples_a_large_layer_in_one_pass).
+* `gui/detail_scale.py`: `snapshot` (feature sources made on the main thread), `recommend_inputs`,
+  `centre_inputs`, `MeasureTask` (QgsTask, cancellable through a QgsFeedback on the requests).
+  `SimplePage._measure` runs it, `_measured` applies the recommendation and draws; a busy bar
+  under the preview; `stop_background` before exports (`_busy`, the zoom-load estimate), on
+  switching to Advanced and on closing.

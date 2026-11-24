@@ -490,6 +490,8 @@ class PublishDialog(QDialog):
         self.btn_preset.setVisible(not on and bool(self.presets))
         if on:
             self.simple.refresh()
+        else:
+            self._stop_simple_preview()
         if remember:
             QgsSettings().setValue(self.VIEW_KEY, "simple" if on else "advanced")
 
@@ -1008,6 +1010,7 @@ class PublishDialog(QDialog):
         """(profile, loads, factor) of the published vector layers, or None
         (no extent, or cancelled)."""
         from ..publishing import zoom_load  # pylint: disable=import-outside-toplevel
+        self._stop_simple_preview()  # (nothing else reads the layers meanwhile)
         try:
             extent = self._extent()
         except PublishingError as error:
@@ -3563,7 +3566,13 @@ class PublishDialog(QDialog):
         self.d_session_secret.clear()
         self.log(tr("Object storage keys imported and saved encrypted in QGIS as “{}”.").format(name))
 
+    def _stop_simple_preview(self):
+        if getattr(self, "simple", None) is not None:
+            self.simple.stop_background()
+
     def _busy(self, busy: bool):
+        if busy:
+            self._stop_simple_preview()
         for button in (self.btn_save, self.btn_export, self.btn_publish, self.btn_close):
             button.setEnabled(not busy)
         # The settings stay as the export / upload read them: no editing,
@@ -4323,6 +4332,7 @@ class PublishDialog(QDialog):
             return  # a local export is running (its Cancel button stops it)
         if self.isVisible() and not self._may_close():
             return  # back to the settings
+        self._stop_simple_preview()
         self._closing()
         super().done(result)
 
