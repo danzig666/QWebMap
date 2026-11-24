@@ -673,7 +673,9 @@ Technical documentation: [`docs/publishing/`](docs/publishing/), covering
 
 ## What's new
 
-This README describes QWebMap **4.61.2**. Newest first:
+This README describes QWebMap **4.61.3**. Newest first:
+
+**4.61.3** — polygon labels no longer vanish for a whole layer when a few shapes become invalid at a low zoom.
 
 **4.61.2** — no crash when making a map on QGIS 3.44 / Windows (zoomed-out load check); the simple view measures the layers in the background, with a busy bar, instead of freezing on large projects.
 

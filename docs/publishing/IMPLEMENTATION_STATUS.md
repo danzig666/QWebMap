@@ -2474,3 +2474,9 @@ Reimplemented, no code copied.
   `SimplePage._measure` runs it, `_measured` applies the recommendation and draws; a busy bar
   under the preview; `stop_background` before exports (`_busy`, the zoom-load estimate), on
   switching to Advanced and on closing.
+
+## 4.61.3 — label dissolve on invalid snapped shapes
+
+* `RulesExporter._dissolve_parts`: the keep-biggest-part dissolve of polygon labels, on failure
+  (GEOS TopologyException, "The algorithm returned no output") `native:fixgeometries` (structure)
+  and dissolve again, then `native:collect` (tests/integration/test_label_dissolve.py).
